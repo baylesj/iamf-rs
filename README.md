@@ -21,9 +21,9 @@ OBU parser → codec decoders → element reconstructor → renderer → mixer �
 ## Milestones
 
 1. **OBU framing** — header/trimming/extension parsing, fuzz target. *(done)*
-2. **Descriptors** — codec config, audio element, mix presentation, parameter
-   blocks; validated against [iamf-tools](https://github.com/AOMediaCodec/iamf-tools)
-   test vectors.
+2. **Descriptors** — codec config, audio element, mix presentation; validated
+   against libiamf test vectors (`tools/fetch_vectors.sh`). *(done — parameter
+   block data OBUs land with milestone 3)*
 3. **Opus path** — wire a pure-Rust Opus decoder; decode simple-profile
    streams substream-by-substream.
 4. **Reconstruction & rendering** — demixing/recon gain, loudspeaker layouts
@@ -42,7 +42,9 @@ cargo +nightly fuzz run parse_obu
 cargo run -p iamfdec -- file.iamf
 ```
 
-Conformance vectors go in `tests/vectors/` (git-ignored; fetch script TBD).
+Conformance vectors go in `tests/vectors/` (git-ignored); populate with
+`tools/fetch_vectors.sh` (curated set), `tools/fetch_vectors.sh --all`, or
+specific names. `cargo test` picks them up automatically when present.
 
 ## License
 

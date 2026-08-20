@@ -14,8 +14,11 @@ pub enum Error {
     /// An OBU declared a size that is inconsistent with its own fields
     /// (e.g. smaller than its trimming/extension headers).
     InvalidObuSize { offset: usize },
-    /// A reserved OBU type (24..=30) was encountered.
+    /// A reserved OBU type (25..=30) was encountered.
     ReservedObuType { obu_type: u8, offset: usize },
+    /// A descriptor payload violated the spec (bad 4CC, zero count where
+    /// nonzero is required, reserved enum value, ...).
+    InvalidDescriptor { offset: usize },
 }
 
 impl fmt::Display for Error {
@@ -32,6 +35,9 @@ impl fmt::Display for Error {
             }
             Error::ReservedObuType { obu_type, offset } => {
                 write!(f, "reserved OBU type {obu_type} at byte {offset}")
+            }
+            Error::InvalidDescriptor { offset } => {
+                write!(f, "invalid descriptor near byte {offset}")
             }
         }
     }
