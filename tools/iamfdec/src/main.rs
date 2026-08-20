@@ -7,17 +7,25 @@
 use std::process::ExitCode;
 
 use iamf_codecs::DefaultFactory;
-use iamf_dec::element::ElementDecoder;
+use iamf_dec::layout::SoundSystem;
+use iamf_dec::presentation::{Descriptors, PresentationDecoder};
 use iamf_obu::descriptors::{self, AudioElementConfig, Descriptor, Layout};
 use iamf_obu::{AudioFrame, ObuIter};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (path, wav_out) = match args.as_slice() {
-        [path] => (path.clone(), None),
-        [path, flag, out] if flag == "-o" => (path.clone(), Some(out.clone())),
+    let (path, wav_out, sound_system) = match args.as_slice() {
+        [path] => (path.clone(), None, 0),
+        [path, flag, out] if flag == "-o" => (path.clone(), Some(out.clone()), 0),
+        [path, flag, out, s_flag, s] if flag == "-o" && s_flag == "-s" => {
+            let Ok(s) = s.parse::<u8>() else {
+                eprintln!("error: -s expects a sound system number (0..=13)");
+                return ExitCode::FAILURE;
+            };
+            (path.clone(), Some(out.clone()), s)
+        }
         _ => {
-            eprintln!("usage: iamfdec <file.iamf> [-o out.wav]");
+            eprintln!("usage: iamfdec <file.iamf> [-o out.wav [-s sound_system]]");
             return ExitCode::FAILURE;
         }
     };
@@ -29,7 +37,7 @@ fn main() -> ExitCode {
         }
     };
     if let Some(out) = wav_out {
-        return decode_to_wav(&data, &out);
+        return decode_to_wav(&data, &out, sound_system);
     }
 
     let mut counts = (0usize, 0usize); // (descriptor OBUs, audio frame OBUs)
@@ -64,16 +72,29 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Decodes the first audio element substream-by-substream and writes the
-/// concatenated substream channels as a 16-bit WAV. Channel ordering is
-/// substream order — real layout mapping arrives with the renderer
-/// (milestone 4).
-fn decode_to_wav(data: &[u8], out_path: &str) -> ExitCode {
-    let mut codec_config = None;
-    let mut element = None;
-    let mut decoder: Option<ElementDecoder> = None;
-    let mut frames = 0usize;
+/// Decodes the first mix presentation and renders it to the target sound
+/// system, writing 16-bit WAV.
+fn decode_to_wav(data: &[u8], out_path: &str, sound_system: u8) -> ExitCode {
+    let Some(target) = SoundSystem::from_u8(sound_system) else {
+        eprintln!("error: unknown sound system {sound_system}");
+        return ExitCode::FAILURE;
+    };
+    let descriptors = match Descriptors::collect(data) {
+        Ok(d) => d,
+        Err(err) => {
+            eprintln!("error: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut decoder = match PresentationDecoder::new(&descriptors, 0, target, &DefaultFactory) {
+        Ok(d) => d,
+        Err(err) => {
+            eprintln!("error: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
 
+    let mut frames = 0usize;
     for result in ObuIter::new(data) {
         let obu = match result {
             Ok(obu) => obu,
@@ -82,17 +103,6 @@ fn decode_to_wav(data: &[u8], out_path: &str) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
-
-        match descriptors::parse(&obu) {
-            Ok(Some(Descriptor::CodecConfig(cc))) => codec_config = Some(cc),
-            Ok(Some(Descriptor::AudioElement(ae))) if element.is_none() => element = Some(ae),
-            Ok(Some(_)) | Ok(None) => {}
-            Err(err) => {
-                eprintln!("error: {:?}: {err}", obu.header.obu_type);
-                return ExitCode::FAILURE;
-            }
-        }
-
         let frame = match AudioFrame::from_obu(&obu) {
             Ok(Some(frame)) => frame,
             Ok(None) => continue,
@@ -101,21 +111,7 @@ fn decode_to_wav(data: &[u8], out_path: &str) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
-
-        if decoder.is_none() {
-            let (Some(cc), Some(ae)) = (&codec_config, &element) else {
-                eprintln!("error: audio frame before descriptors");
-                return ExitCode::FAILURE;
-            };
-            decoder = match ElementDecoder::new(ae, cc, &DefaultFactory) {
-                Ok(d) => Some(d),
-                Err(err) => {
-                    eprintln!("error: {err}");
-                    return ExitCode::FAILURE;
-                }
-            };
-        }
-        match decoder.as_mut().unwrap().decode_frame(&frame) {
+        match decoder.decode_frame(&frame) {
             Ok(consumed) => frames += usize::from(consumed),
             Err(err) => {
                 eprintln!("error: substream {}: {err}", frame.substream_id);
@@ -124,36 +120,26 @@ fn decode_to_wav(data: &[u8], out_path: &str) -> ExitCode {
         }
     }
 
-    let Some(decoder) = decoder else {
-        eprintln!("error: no audio frames found");
-        return ExitCode::FAILURE;
-    };
-    let substreams = decoder.finish();
-    let sample_rate = substreams[0].sample_rate;
-    let total_channels: usize = substreams.iter().map(|s| usize::from(s.channels)).sum();
-    let frame_count = substreams
-        .iter()
-        .map(|s| s.samples.len() / usize::from(s.channels).max(1))
-        .min()
-        .unwrap_or(0);
-
-    let mut interleaved = vec![0.0f32; frame_count * total_channels];
-    let mut channel_offset = 0usize;
-    for sub in &substreams {
-        let ch = usize::from(sub.channels);
-        for t in 0..frame_count {
-            interleaved[t * total_channels + channel_offset..][..ch]
-                .copy_from_slice(&sub.samples[t * ch..][..ch]);
+    let mix = match decoder.finish() {
+        Ok(mix) => mix,
+        Err(err) => {
+            eprintln!("error: {err}");
+            return ExitCode::FAILURE;
         }
-        channel_offset += ch;
-    }
-
-    if let Err(err) = write_wav_s16(out_path, &interleaved, total_channels as u16, sample_rate) {
+    };
+    let frame_count = mix.interleaved.len() / mix.channels.max(1);
+    if let Err(err) = write_wav_s16(
+        out_path,
+        &mix.interleaved,
+        mix.channels as u16,
+        mix.sample_rate,
+    ) {
         eprintln!("error: writing {out_path}: {err}");
         return ExitCode::FAILURE;
     }
     println!(
-        "decoded {frames} frames -> {frame_count} samples x {total_channels} ch @ {sample_rate} Hz -> {out_path}"
+        "rendered {frames} frames -> {frame_count} samples x {} ch @ {} Hz (sound system {sound_system}) -> {out_path}",
+        mix.channels, mix.sample_rate
     );
     ExitCode::SUCCESS
 }
@@ -179,9 +165,11 @@ fn write_wav_s16(
     wav.extend(16u16.to_le_bytes()); // bits per sample
     wav.extend(b"data");
     wav.extend(data_len.to_le_bytes());
+    // Matches libiamf's FLOAT2INT16: scale by 32768, clamp, round to
+    // nearest with ties-to-even (lrintf).
     for &sample in samples {
-        let clamped = (sample.clamp(-1.0, 1.0) * 32767.0).round() as i16;
-        wav.extend(clamped.to_le_bytes());
+        let scaled = (sample * 32768.0).clamp(-32768.0, 32767.0);
+        wav.extend((scaled.round_ties_even() as i16).to_le_bytes());
     }
     std::fs::write(path, wav)
 }

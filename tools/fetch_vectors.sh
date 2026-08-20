@@ -17,8 +17,8 @@ DEST="$(cd "$(dirname "$0")/.." && pwd)/tests/vectors"
 # elements, plus two should-fail-to-decode cases (000007, 000025).
 DEFAULT_VECTORS=(
   test_000002 test_000005 test_000007 test_000024 test_000025 test_000026
-  test_000032 test_000033 test_000038 test_000039 test_000086 test_000090
-  test_000092
+  test_000032 test_000033 test_000038 test_000039 test_000069 test_000070
+  test_000082 test_000086 test_000090 test_000092
 )
 
 if [[ "${1:-}" == "--all" ]]; then
@@ -39,6 +39,14 @@ fi
 mkdir -p "$DEST"
 ok=0 fail=0
 for name in "$@"; do
+  # Rendered reference WAVs (used by render conformance tests). All current
+  # vectors use mix presentation id 42 / sub mix 0; missing layouts 404
+  # harmlessly.
+  for layout in 0 1 2; do
+    ref="${name}_rendered_id_42_sub_mix_0_layout_${layout}.wav"
+    [[ -s "$DEST/$ref" ]] && continue
+    curl -fsSL "$BASE_URL/$ref" -o "$DEST/$ref" 2>/dev/null || rm -f "$DEST/$ref"
+  done
   for ext in iamf textproto; do
     out="$DEST/$name.$ext"
     if [[ -s "$out" ]]; then

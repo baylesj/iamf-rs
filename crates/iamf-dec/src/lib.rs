@@ -9,7 +9,11 @@
 
 pub mod element;
 pub mod layout;
+pub mod matrices;
 pub mod params;
+pub mod presentation;
+pub mod reconstruct;
+pub mod render;
 
 use iamf_obu::descriptors::CodecConfig;
 
