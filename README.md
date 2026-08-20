@@ -24,8 +24,12 @@ OBU parser → codec decoders → element reconstructor → renderer → mixer �
 2. **Descriptors** — codec config, audio element, mix presentation; validated
    against libiamf test vectors (`tools/fetch_vectors.sh`). *(done — parameter
    block data OBUs land with milestone 3)*
-3. **Opus path** — wire a pure-Rust Opus decoder; decode simple-profile
-   streams substream-by-substream.
+3. **Opus path** — decode simple-profile streams substream-by-substream:
+   Opus via the pure-Rust [opus-decoder](https://crates.io/crates/opus-decoder)
+   crate (RFC 8251 conformant, no unsafe), LPCM natively; per-frame trimming;
+   parameter block parsing (mix gain, demixing, recon gain);
+   `iamfdec -o out.wav`. *(done — LPCM output verified bit-exact against
+   libiamf's rendered reference)*
 4. **Reconstruction & rendering** — demixing/recon gain, loudspeaker layouts
    (stereo, 5.1, 7.1.4), mixing, loudness normalization, peak limiter;
    sample-exactness checked against libiamf conformance output.

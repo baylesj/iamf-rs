@@ -7,7 +7,9 @@
 
 #![forbid(unsafe_code)]
 
+pub mod element;
 pub mod layout;
+pub mod params;
 
 use iamf_obu::descriptors::CodecConfig;
 
@@ -31,10 +33,15 @@ pub trait SubstreamDecoder {
 }
 
 /// Constructs [`SubstreamDecoder`]s for a codec config. Integrators register
-/// one factory per codec they support.
+/// one factory per codec they support. `channels` is the substream's channel
+/// count (1, or 2 for coupled substreams), derived from the audio element.
 pub trait CodecFactory {
     fn supports(&self, config: &CodecConfig) -> bool;
-    fn create(&self, config: &CodecConfig) -> Result<Box<dyn SubstreamDecoder>, DecodeError>;
+    fn create(
+        &self,
+        config: &CodecConfig,
+        channels: u8,
+    ) -> Result<Box<dyn SubstreamDecoder>, DecodeError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,12 +50,26 @@ pub enum DecodeError {
     UnsupportedCodec,
     /// The codec rejected a packet.
     CorruptPacket(String),
+    /// Descriptors are inconsistent (e.g. substream counts disagree).
+    InvalidDescriptors(String),
     /// Pipeline stage not yet implemented in this milestone.
     Unimplemented(&'static str),
 }
 
-// TODO(milestone 3): element reconstructor (demixing, recon gain).
-// TODO(milestone 4): renderer (channel layouts first, ambisonics after),
-// mixer, loudness normalization, peak limiter — see
-// libiamf/code/src/iamf_dec/{iamf_element_reconstructor,iamf_renderer,
-// iamf_post_processor,audio_effect_peak_limiter}.c for reference behavior.
+impl core::fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            DecodeError::UnsupportedCodec => write!(f, "unsupported codec"),
+            DecodeError::CorruptPacket(msg) => write!(f, "corrupt packet: {msg}"),
+            DecodeError::InvalidDescriptors(msg) => write!(f, "invalid descriptors: {msg}"),
+            DecodeError::Unimplemented(what) => write!(f, "not yet implemented: {what}"),
+        }
+    }
+}
+
+impl std::error::Error for DecodeError {}
+
+// TODO(milestone 4): element reconstructor (demixing, recon gain), renderer
+// (channel layouts first, ambisonics after), mixer, loudness normalization,
+// peak limiter — see libiamf/code/src/iamf_dec/{iamf_element_reconstructor,
+// iamf_renderer,iamf_post_processor,audio_effect_peak_limiter}.c.

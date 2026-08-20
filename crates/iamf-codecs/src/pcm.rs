@@ -1,6 +1,7 @@
 //! LPCM substream decoder (IAMF §3.6.4 ipcm).
 
-use iamf_dec::{DecodeError, DecodedFrame, SubstreamDecoder};
+use iamf_dec::{CodecFactory, DecodeError, DecodedFrame, SubstreamDecoder};
+use iamf_obu::descriptors::{CodecConfig, CodecId, DecoderConfig};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SampleFormat {
@@ -78,6 +79,49 @@ impl SubstreamDecoder for PcmDecoder {
     }
 
     fn reset(&mut self) {}
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PcmFactory;
+
+impl CodecFactory for PcmFactory {
+    fn supports(&self, config: &CodecConfig) -> bool {
+        config.codec_id == CodecId::Lpcm
+            && matches!(
+                &config.decoder_config,
+                DecoderConfig::Lpcm {
+                    sample_size: 16 | 24 | 32,
+                    ..
+                }
+            )
+    }
+
+    fn create(
+        &self,
+        config: &CodecConfig,
+        channels: u8,
+    ) -> Result<Box<dyn SubstreamDecoder>, DecodeError> {
+        let DecoderConfig::Lpcm {
+            little_endian,
+            sample_size,
+            sample_rate,
+        } = config.decoder_config
+        else {
+            return Err(DecodeError::UnsupportedCodec);
+        };
+        let format = match sample_size {
+            16 => SampleFormat::S16,
+            24 => SampleFormat::S24,
+            32 => SampleFormat::S32,
+            _ => return Err(DecodeError::UnsupportedCodec),
+        };
+        Ok(Box::new(PcmDecoder::new(
+            format,
+            little_endian,
+            channels,
+            sample_rate,
+        )))
+    }
 }
 
 #[cfg(test)]
