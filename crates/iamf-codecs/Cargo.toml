@@ -1,0 +1,25 @@
+[package]
+name = "iamf-codecs"
+description = "SubstreamDecoder implementations for the codecs IAMF carries (LPCM now; Opus, FLAC, AAC-LC planned)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["pcm"]
+pcm = []
+# TODO(milestone 3): wire pure-Rust codec crates behind these features once
+# their APIs are evaluated (candidates: opus-decoder or opus_rs for Opus,
+# claxon or symphonia-bundle-flac for FLAC, symphonia-codec-aac for AAC-LC).
+# opus = ["dep:opus-decoder"]
+# flac = ["dep:claxon"]
+# aac = ["dep:symphonia-codec-aac"]
+
+[dependencies]
+iamf-dec = { path = "../iamf-dec" }
+iamf-obu = { path = "../iamf-obu" }
+
+[lints]
+workspace = true

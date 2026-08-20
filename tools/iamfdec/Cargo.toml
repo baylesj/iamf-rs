@@ -1,0 +1,17 @@
+[package]
+name = "iamfdec"
+description = "CLI for inspecting and (eventually) decoding standalone .iamf files"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+iamf-obu = { path = "../../crates/iamf-obu" }
+iamf-dec = { path = "../../crates/iamf-dec" }
+iamf-codecs = { path = "../../crates/iamf-codecs" }
+
+[lints]
+workspace = true

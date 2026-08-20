@@ -1,0 +1,13 @@
+[package]
+name = "iamf-obu"
+description = "Bitstream model and parser for IAMF (Immersive Audio Model and Formats) OBUs and descriptors"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true
