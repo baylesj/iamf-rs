@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use iamf_codecs::DefaultFactory;
 use iamf_dec::layout::SoundSystem;
 use iamf_dec::presentation::{Descriptors, PresentationDecoder};
-use iamf_obu::{AudioFrame, ObuIter};
+use iamf_obu::ObuIter;
 
 fn vectors_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/vectors")
@@ -66,9 +66,7 @@ fn render_case(vector: &str, layout_index: usize, sound_system: u8, tolerance: i
     let target = SoundSystem::from_u8(sound_system).unwrap();
     let mut decoder = PresentationDecoder::new(&descriptors, 0, target, &DefaultFactory).unwrap();
     for obu in ObuIter::new(&data).map(Result::unwrap) {
-        if let Some(frame) = AudioFrame::from_obu(&obu).unwrap() {
-            decoder.decode_frame(&frame).unwrap();
-        }
+        decoder.process_obu(&obu).unwrap();
     }
     let mix = decoder.finish().unwrap();
 
@@ -119,4 +117,46 @@ fn surround_714_to_712() {
 #[test]
 fn surround_512_to_stereo() {
     render_case("test_000069", 0, 0, 1);
+}
+
+#[test]
+fn scalable_stereo_layer_bit_exact() {
+    render_case("test_000036", 0, 0, 0);
+}
+
+#[test]
+fn scalable_demixed_51() {
+    render_case("test_000036", 1, 1, 1);
+}
+
+#[test]
+fn multi_element_scalable_to_stereo() {
+    render_case("test_000086", 0, 0, 1);
+}
+
+#[test]
+fn multi_element_scalable_to_312() {
+    render_case("test_000086", 1, 11, 1);
+}
+
+#[test]
+fn multi_element_scalable_demixed_512() {
+    render_case("test_000086", 2, 2, 1);
+}
+
+#[test]
+fn animated_linear_mix_gain() {
+    render_case("test_000065", 0, 0, 1);
+}
+
+#[test]
+fn animated_bezier_mix_gain() {
+    // Bezier time-parameterization differs numerically from the
+    // iamf-tools reference renderer (max observed 23 LSB, about -63 dBFS).
+    render_case("test_000066", 0, 0, 32);
+}
+
+#[test]
+fn animated_step_linear_bezier_16k() {
+    render_case("test_000088", 0, 0, 1);
 }

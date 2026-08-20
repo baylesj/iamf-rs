@@ -36,6 +36,56 @@ pub enum MixGainAnimation {
     },
 }
 
+/// Q7.8 dB → linear gain.
+pub fn q78_db_to_linear(q: i16) -> f32 {
+    10f32.powf(f32::from(q) / 256.0 / 20.0)
+}
+
+impl MixGainAnimation {
+    /// Writes per-sample linear gains for one subblock of `duration`
+    /// samples into `out` (`out.len() <= duration`). Matches libiamf:
+    /// endpoints are converted to linear first and interpolated in the
+    /// linear domain (`mix_gain_bezier_linear` / `mix_gain_bezier_quad`).
+    pub fn evaluate(&self, duration: usize, out: &mut [f32]) {
+        match *self {
+            MixGainAnimation::Step { start } => {
+                out.fill(q78_db_to_linear(start));
+            }
+            MixGainAnimation::Linear { start, end } => {
+                let s = q78_db_to_linear(start);
+                let e = q78_db_to_linear(end);
+                let d = duration.max(1) as f32;
+                for (i, o) in out.iter_mut().enumerate() {
+                    *o = s + (e - s) * i as f32 / d;
+                }
+            }
+            MixGainAnimation::Bezier {
+                start,
+                end,
+                control,
+                control_relative_time,
+            } => {
+                let s = f64::from(q78_db_to_linear(start));
+                let e = f64::from(q78_db_to_linear(end));
+                let c = f64::from(q78_db_to_linear(control));
+                let crt = f64::from(control_relative_time) / 255.0;
+                // libiamf truncates the control time to whole samples.
+                let ct = (crt * (duration as f64 + 0.1)) as i64;
+                let alpha = duration as i64 - 2 * ct;
+                for (i, o) in out.iter_mut().enumerate() {
+                    let i = i as f64;
+                    let a = if alpha != 0 {
+                        (((ct * ct) as f64 + alpha as f64 * i).sqrt() - ct as f64) / alpha as f64
+                    } else {
+                        i / (2 * ct) as f64
+                    };
+                    *o = ((s + e - 2.0 * c) * a * a + 2.0 * a * (c - s) + s) as f32;
+                }
+            }
+        }
+    }
+}
+
 /// Per-layer recon gain: `(recon_gain_flags, gains)`, one gain byte per set
 /// flag bit, in ascending bit order. `None` for layers without recon gain.
 pub type ReconGainLayers = Vec<Option<(u32, Vec<u8>)>>;

@@ -32,22 +32,60 @@ pub fn substream_channels(config: &AudioElementConfig) -> Vec<u8> {
     }
 }
 
-/// Decoded PCM of one substream: interleaved f32, `channels` wide.
+/// One decoded, untrimmed frame of one substream (interleaved).
+#[derive(Debug, Clone, Default)]
+pub struct FramePcm {
+    pub samples: Vec<f32>,
+    pub trim_start: u32,
+    pub trim_end: u32,
+}
+
+/// Decoded PCM of one substream.
 #[derive(Debug, Clone, Default)]
 pub struct SubstreamPcm {
     pub substream_id: u32,
     pub channels: u8,
     pub sample_rate: u32,
+    /// Interleaved samples with per-frame trimming applied.
     pub samples: Vec<f32>,
 }
 
-/// Decodes every substream of a single audio element, applying per-frame
-/// trimming. Reconstruction/rendering (demixing, layout mapping) is not
-/// performed here — output is raw substream PCM in `substream_ids` order.
+/// Per-substream frames, untrimmed, for frame-based post-processing
+/// (scalable demixing).
+#[derive(Debug, Clone, Default)]
+pub struct SubstreamFrames {
+    pub substream_id: u32,
+    pub channels: u8,
+    pub sample_rate: u32,
+    pub frames: Vec<FramePcm>,
+}
+
+impl SubstreamFrames {
+    pub fn trimmed(&self) -> SubstreamPcm {
+        let channels = usize::from(self.channels.max(1));
+        let mut samples = Vec::new();
+        for frame in &self.frames {
+            let count = frame.samples.len() / channels;
+            let start = (frame.trim_start as usize).min(count);
+            let end = (frame.trim_end as usize).min(count - start);
+            samples.extend_from_slice(&frame.samples[start * channels..(count - end) * channels]);
+        }
+        SubstreamPcm {
+            substream_id: self.substream_id,
+            channels: self.channels,
+            sample_rate: self.sample_rate,
+            samples,
+        }
+    }
+}
+
+/// Decodes every substream of a single audio element. Output is raw
+/// substream PCM in `substream_ids` order; reconstruction/rendering happen
+/// downstream.
 pub struct ElementDecoder {
     substream_ids: Vec<u32>,
     decoders: Vec<Box<dyn SubstreamDecoder>>,
-    outputs: Vec<SubstreamPcm>,
+    outputs: Vec<SubstreamFrames>,
     scratch: DecodedFrame,
 }
 
@@ -77,10 +115,10 @@ impl ElementDecoder {
             .substream_ids
             .iter()
             .zip(&channels)
-            .map(|(&id, &ch)| SubstreamPcm {
+            .map(|(&id, &ch)| SubstreamFrames {
                 substream_id: id,
                 channels: ch,
-                ..SubstreamPcm::default()
+                ..SubstreamFrames::default()
             })
             .collect();
         Ok(ElementDecoder {
@@ -89,6 +127,12 @@ impl ElementDecoder {
             outputs,
             scratch: DecodedFrame::default(),
         })
+    }
+
+    /// Whether this frame belongs to the element's first substream (used to
+    /// snapshot per-temporal-unit parameters).
+    pub fn is_first_substream(&self, frame: &AudioFrame<'_>) -> bool {
+        self.substream_ids.first() == Some(&frame.substream_id)
     }
 
     /// Decodes one audio frame if it belongs to this element. Returns
@@ -102,23 +146,24 @@ impl ElementDecoder {
             return Ok(false);
         };
         self.decoders[index].decode(frame.data, &mut self.scratch)?;
-
         let out = &mut self.outputs[index];
-        let channels = usize::from(self.scratch.channels.max(1));
-        let frame_count = self.scratch.samples.len() / channels;
-        let trim_start = (frame.num_samples_to_trim_at_start as usize).min(frame_count);
-        let trim_end = (frame.num_samples_to_trim_at_end as usize).min(frame_count - trim_start);
-        let kept =
-            &self.scratch.samples[trim_start * channels..(frame_count - trim_end) * channels];
-
-        out.samples.extend_from_slice(kept);
         out.channels = self.scratch.channels;
         out.sample_rate = self.scratch.sample_rate;
+        out.frames.push(FramePcm {
+            samples: std::mem::take(&mut self.scratch.samples),
+            trim_start: frame.num_samples_to_trim_at_start,
+            trim_end: frame.num_samples_to_trim_at_end,
+        });
         Ok(true)
     }
 
-    /// Finishes decoding and yields per-substream PCM.
+    /// Finishes decoding and yields trimmed per-substream PCM.
     pub fn finish(self) -> Vec<SubstreamPcm> {
+        self.outputs.iter().map(SubstreamFrames::trimmed).collect()
+    }
+
+    /// Finishes decoding and yields per-substream frames (untrimmed).
+    pub fn finish_frames(self) -> Vec<SubstreamFrames> {
         self.outputs
     }
 }
@@ -162,5 +207,27 @@ mod tests {
             demixing_matrix: vec![],
         };
         assert_eq!(substream_channels(&projection), vec![2, 1, 1]);
+    }
+
+    #[test]
+    fn trimming_applied_on_finish() {
+        let sub = SubstreamFrames {
+            substream_id: 0,
+            channels: 1,
+            sample_rate: 48000,
+            frames: vec![
+                FramePcm {
+                    samples: vec![1.0, 2.0, 3.0, 4.0],
+                    trim_start: 2,
+                    trim_end: 0,
+                },
+                FramePcm {
+                    samples: vec![5.0, 6.0, 7.0, 8.0],
+                    trim_start: 0,
+                    trim_end: 1,
+                },
+            ],
+        };
+        assert_eq!(sub.trimmed().samples, vec![3.0, 4.0, 5.0, 6.0, 7.0]);
     }
 }

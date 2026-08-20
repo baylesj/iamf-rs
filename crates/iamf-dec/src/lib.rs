@@ -7,10 +7,13 @@
 
 #![forbid(unsafe_code)]
 
+pub mod channels;
+pub mod demixer;
 pub mod element;
 pub mod layout;
 pub mod matrices;
 pub mod params;
+pub mod post;
 pub mod presentation;
 pub mod reconstruct;
 pub mod render;

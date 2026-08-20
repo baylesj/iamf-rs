@@ -91,6 +91,24 @@ pub struct LoudspeakerInfo {
     pub matrix: MatrixLayout,
 }
 
+/// The sound system a loudspeaker_layout corresponds to (used for layer
+/// selection: a layer matching the playback sound system needs no
+/// rendering conversion).
+pub fn loudspeaker_sound_system(loudspeaker_layout: u8) -> Option<SoundSystem> {
+    Some(match loudspeaker_layout {
+        0 => SoundSystem::Mono,
+        1 => SoundSystem::A,
+        2 => SoundSystem::B,
+        3 => SoundSystem::C,
+        4 => SoundSystem::D,
+        5 => SoundSystem::I,
+        6 => SoundSystem::Ext712,
+        7 => SoundSystem::J,
+        8 => SoundSystem::Ext312,
+        _ => return None,
+    })
+}
+
 /// Loudspeaker layouts 0..=8 (binaural and expanded are not yet supported
 /// as inputs).
 pub fn loudspeaker_info(loudspeaker_layout: u8) -> Option<&'static LoudspeakerInfo> {

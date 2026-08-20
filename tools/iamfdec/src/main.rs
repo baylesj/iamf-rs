@@ -10,24 +10,56 @@ use iamf_codecs::DefaultFactory;
 use iamf_dec::layout::SoundSystem;
 use iamf_dec::presentation::{Descriptors, PresentationDecoder};
 use iamf_obu::descriptors::{self, AudioElementConfig, Descriptor, Layout};
-use iamf_obu::{AudioFrame, ObuIter};
+use iamf_obu::ObuIter;
+
+struct Options {
+    sound_system: u8,
+    limiter: bool,
+    /// Target loudness in dB for normalization, when set.
+    loudness: Option<f32>,
+}
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let (path, wav_out, sound_system) = match args.as_slice() {
-        [path] => (path.clone(), None, 0),
-        [path, flag, out] if flag == "-o" => (path.clone(), Some(out.clone()), 0),
-        [path, flag, out, s_flag, s] if flag == "-o" && s_flag == "-s" => {
-            let Ok(s) = s.parse::<u8>() else {
-                eprintln!("error: -s expects a sound system number (0..=13)");
+    let mut args = std::env::args().skip(1).collect::<Vec<_>>();
+    let mut opts = Options {
+        sound_system: 0,
+        limiter: false,
+        loudness: None,
+    };
+    let mut wav_out = None;
+    let mut path = None;
+    while !args.is_empty() {
+        match args.remove(0).as_str() {
+            "-o" if !args.is_empty() => wav_out = Some(args.remove(0)),
+            "-s" if !args.is_empty() => match args.remove(0).parse() {
+                Ok(s) => opts.sound_system = s,
+                Err(_) => {
+                    eprintln!("error: -s expects a sound system number (0..=13)");
+                    return ExitCode::FAILURE;
+                }
+            },
+            "--limiter" => opts.limiter = true,
+            "--loudness" if !args.is_empty() => match args.remove(0).parse() {
+                Ok(db) => opts.loudness = Some(db),
+                Err(_) => {
+                    eprintln!("error: --loudness expects a dB value (e.g. -24)");
+                    return ExitCode::FAILURE;
+                }
+            },
+            arg if path.is_none() => path = Some(arg.to_string()),
+            _ => {
+                eprintln!(
+                    "usage: iamfdec <file.iamf> [-o out.wav] [-s sound_system] [--limiter] [--loudness dB]"
+                );
                 return ExitCode::FAILURE;
-            };
-            (path.clone(), Some(out.clone()), s)
+            }
         }
-        _ => {
-            eprintln!("usage: iamfdec <file.iamf> [-o out.wav [-s sound_system]]");
-            return ExitCode::FAILURE;
-        }
+    }
+    let Some(path) = path else {
+        eprintln!(
+            "usage: iamfdec <file.iamf> [-o out.wav] [-s sound_system] [--limiter] [--loudness dB]"
+        );
+        return ExitCode::FAILURE;
     };
     let data = match std::fs::read(&path) {
         Ok(data) => data,
@@ -37,7 +69,7 @@ fn main() -> ExitCode {
         }
     };
     if let Some(out) = wav_out {
-        return decode_to_wav(&data, &out, sound_system);
+        return decode_to_wav(&data, &out, &opts);
     }
 
     let mut counts = (0usize, 0usize); // (descriptor OBUs, audio frame OBUs)
@@ -74,7 +106,8 @@ fn main() -> ExitCode {
 
 /// Decodes the first mix presentation and renders it to the target sound
 /// system, writing 16-bit WAV.
-fn decode_to_wav(data: &[u8], out_path: &str, sound_system: u8) -> ExitCode {
+fn decode_to_wav(data: &[u8], out_path: &str, opts: &Options) -> ExitCode {
+    let sound_system = opts.sound_system;
     let Some(target) = SoundSystem::from_u8(sound_system) else {
         eprintln!("error: unknown sound system {sound_system}");
         return ExitCode::FAILURE;
@@ -103,30 +136,53 @@ fn decode_to_wav(data: &[u8], out_path: &str, sound_system: u8) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
-        let frame = match AudioFrame::from_obu(&obu) {
-            Ok(Some(frame)) => frame,
-            Ok(None) => continue,
+        match decoder.process_obu(&obu) {
+            Ok(consumed) => frames += usize::from(consumed && obu.header.obu_type.is_audio_frame()),
             Err(err) => {
-                eprintln!("error: audio frame: {err}");
-                return ExitCode::FAILURE;
-            }
-        };
-        match decoder.decode_frame(&frame) {
-            Ok(consumed) => frames += usize::from(consumed),
-            Err(err) => {
-                eprintln!("error: substream {}: {err}", frame.substream_id);
+                eprintln!("error: {:?}: {err}", obu.header.obu_type);
                 return ExitCode::FAILURE;
             }
         }
     }
 
-    let mix = match decoder.finish() {
+    let mut mix = match decoder.finish() {
         Ok(mix) => mix,
         Err(err) => {
             eprintln!("error: {err}");
             return ExitCode::FAILURE;
         }
     };
+    if let Some(target_db) = opts.loudness {
+        // Content loudness: the mix presentation's integrated loudness for
+        // the rendered layout (Q7.8 dB), 0 dB when not declared.
+        let content_db = descriptors
+            .mix_presentations
+            .first()
+            .and_then(|mp| mp.sub_mixes.first())
+            .and_then(|sm| {
+                sm.layouts
+                    .iter()
+                    .find_map(|(layout, loudness)| match layout {
+                        iamf_obu::descriptors::Layout::LoudspeakersSsConvention {
+                            sound_system: s,
+                        } if *s == sound_system => {
+                            Some(f32::from(loudness.integrated_loudness) / 256.0)
+                        }
+                        _ => None,
+                    })
+            })
+            .unwrap_or(0.0);
+        iamf_dec::post::normalize_loudness(&mut mix.interleaved, target_db, content_db);
+    }
+    if opts.limiter {
+        let mut limiter = iamf_dec::post::PeakLimiter::new(
+            iamf_dec::post::LIMITER_THRESHOLD_DB,
+            mix.sample_rate,
+            mix.channels,
+            iamf_dec::post::LIMITER_LOOKAHEAD,
+        );
+        mix.interleaved = limiter.process(&mix.interleaved);
+    }
     let frame_count = mix.interleaved.len() / mix.channels.max(1);
     if let Err(err) = write_wav_s16(
         out_path,

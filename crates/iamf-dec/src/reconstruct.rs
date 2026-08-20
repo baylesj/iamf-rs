@@ -1,14 +1,22 @@
 //! Element reconstruction: decoded substream PCM → planar element channels
 //! ready for rendering.
 //!
-//! Channel-based elements come out in rendering (channel_layout) order;
-//! scene-based elements come out as ACN-ordered ambisonics channels.
+//! Channel-based elements go through [`ChannelReconstructor`], which
+//! handles both single-layer passthrough and scalable multi-layer demixing
+//! frame by frame. Scene-based elements come out as ACN-ordered ambisonics
+//! channels via [`reconstruct_ambisonics`].
 
-use iamf_obu::descriptors::{AudioElement, AudioElementConfig};
+use iamf_obu::descriptors::{AudioElement, AudioElementConfig, ChannelAudioLayer};
 
+use crate::channels::{
+    default_recon_flags, new_channels, output_gain_channel, recon_channel_gains,
+    rendering_channels, Channel,
+};
+use crate::demixer::Demixer;
 use crate::element::SubstreamPcm;
-use crate::layout::loudspeaker_info;
+use crate::layout::{loudspeaker_info, loudspeaker_sound_system, SoundSystem};
 use crate::matrices::{HoaOrder, MatrixLayout};
+use crate::params::ReconGainLayers;
 use crate::DecodeError;
 
 /// Planar element audio, one `Vec<f32>` per channel.
@@ -31,57 +39,188 @@ impl Reconstructed {
     }
 }
 
-/// Splits each substream's interleaved PCM into per-channel planes, in
-/// substream order (a coupled substream contributes two planes).
-fn deinterleave(substreams: &[SubstreamPcm]) -> Vec<Vec<f32>> {
-    let mut planes = Vec::new();
-    for sub in substreams {
-        let ch = usize::from(sub.channels.max(1));
-        for c in 0..ch {
-            planes.push(sub.samples.iter().skip(c).step_by(ch).copied().collect());
-        }
-    }
-    planes
+/// Q7.8 dB → linear.
+fn q78_db_to_linear(q: i16) -> f32 {
+    10f32.powf(f32::from(q) / 256.0 / 20.0)
 }
 
-pub fn reconstruct(
+/// Frame-based reconstruction of a channel-based element up to the layer
+/// selected for the playback layout (libiamf `iamf_stream_set_output_layout`
+/// + `iamf_stream_scale_demixer_configure`).
+pub struct ChannelReconstructor {
+    demixer: Demixer,
+    /// Index of the selected layer.
+    layer: usize,
+    /// Loudspeaker layout of the selected layer.
+    layout: u8,
+    /// Total decoded channels for layers 0..=layer, in decode order.
+    input_channels: usize,
+    pub matrix: MatrixLayout,
+}
+
+impl ChannelReconstructor {
+    pub fn new(
+        layers: &[ChannelAudioLayer],
+        target: SoundSystem,
+        frame_size: usize,
+    ) -> Result<Self, DecodeError> {
+        if layers.is_empty() {
+            return Err(DecodeError::InvalidDescriptors("no channel layers".into()));
+        }
+        for layer in layers {
+            if layer.expanded_loudspeaker_layout.is_some() || layer.loudspeaker_layout > 8 {
+                return Err(DecodeError::Unimplemented(
+                    "expanded/binaural loudspeaker layouts",
+                ));
+            }
+        }
+
+        // Layer selection: exact sound-system match, else the first layer
+        // with more channels than the playback layout, else the highest.
+        let mut selected = layers.len() - 1;
+        let mut matched = false;
+        for (i, layer) in layers.iter().enumerate() {
+            if loudspeaker_sound_system(layer.loudspeaker_layout) == Some(target) {
+                selected = i;
+                matched = true;
+                break;
+            }
+        }
+        if !matched && layers.len() > 1 {
+            let playback_channels = target.channels();
+            for (i, layer) in layers.iter().enumerate() {
+                let channels = rendering_channels(layer.loudspeaker_layout)
+                    .map(<[Channel]>::len)
+                    .unwrap_or(0);
+                if channels > playback_channels {
+                    selected = i;
+                    break;
+                }
+            }
+        }
+
+        // Decode-order channels and output gains, accumulated over layers
+        // 0..=selected.
+        let mut channels_in: Vec<Channel> = Vec::new();
+        let mut output_gains = Vec::new();
+        let mut last: Option<u8> = None;
+        for layer in &layers[..=selected] {
+            channels_in.extend(new_channels(last, layer.loudspeaker_layout));
+            if let Some((flags, gain_q78)) = layer.output_gain {
+                let gain = q78_db_to_linear(gain_q78);
+                for bit in 0..6u8 {
+                    if flags & (1 << bit) != 0 {
+                        if let Some(ch) = output_gain_channel(layer.loudspeaker_layout, bit) {
+                            output_gains.push((ch, gain));
+                        }
+                    }
+                }
+            }
+            last = Some(layer.loudspeaker_layout);
+        }
+
+        let layout = layers[selected].loudspeaker_layout;
+        let channels_out = rendering_channels(layout)
+            .ok_or(DecodeError::InvalidDescriptors("bad layout".into()))?
+            .to_vec();
+        let matrix = loudspeaker_info(layout)
+            .ok_or(DecodeError::InvalidDescriptors("bad layout".into()))?
+            .matrix;
+        let input_channels = channels_in.len();
+        let mut demixer = Demixer::new(frame_size, channels_in, channels_out, output_gains);
+
+        // Default recon gains: 1.0 for the channels reconstructed between
+        // the first layer and the selected layer.
+        if selected > 0 {
+            let flags = default_recon_flags(layers[0].loudspeaker_layout, layout);
+            let gains = vec![1.0f32; flags.count_ones() as usize];
+            let pairs = recon_channel_gains(layout, flags, &gains);
+            demixer.set_recon_gains(flags, pairs);
+        }
+
+        Ok(ChannelReconstructor {
+            demixer,
+            layer: selected,
+            layout,
+            input_channels,
+            matrix,
+        })
+    }
+
+    pub fn input_channels(&self) -> usize {
+        self.input_channels
+    }
+
+    /// Updates the demixing mode from a demixing parameter block (dynamic
+    /// path: rotates state and steps the w index).
+    pub fn set_demixing_mode(&mut self, mode: u8) -> Result<(), DecodeError> {
+        self.demixer.set_demixing_info(mode, -1)
+    }
+
+    /// Sets the default demixing info from the element's parameter
+    /// definition (static path).
+    pub fn set_default_demixing(&mut self, mode: u8, w_idx: u8) -> Result<(), DecodeError> {
+        self.demixer.set_demixing_info(mode, i32::from(w_idx))
+    }
+
+    /// Updates recon gains from a recon-gain parameter block: uses the
+    /// selected layer's entry, gains are byte/255.
+    pub fn set_recon_gains(&mut self, layers: &ReconGainLayers) {
+        if let Some(Some((flags, gains))) = layers.get(self.layer) {
+            let linear: Vec<f32> = gains.iter().map(|&g| f32::from(g) / 255.0).collect();
+            let pairs = recon_channel_gains(self.layout, *flags, &linear);
+            self.demixer.set_recon_gains(*flags, pairs);
+        }
+    }
+
+    /// Demixes one frame of planes in decode order (only the first
+    /// `input_channels` planes are used, so callers can pass all decoded
+    /// channels even when a lower layer was selected).
+    pub fn process_frame(&mut self, planes: &[Vec<f32>]) -> Result<Vec<Vec<f32>>, DecodeError> {
+        if planes.len() < self.input_channels {
+            return Err(DecodeError::InvalidDescriptors(format!(
+                "expected {} decoded channels, got {}",
+                self.input_channels,
+                planes.len()
+            )));
+        }
+        self.demixer.demix(&planes[..self.input_channels])
+    }
+}
+
+/// Splits each substream's interleaved PCM into per-channel planes, in
+/// substream order (a coupled substream contributes two planes).
+pub fn deinterleave(samples: &[f32], channels: usize) -> Vec<Vec<f32>> {
+    (0..channels)
+        .map(|c| samples.iter().skip(c).step_by(channels).copied().collect())
+        .collect()
+}
+
+pub fn hoa_order(channels: u8) -> Result<HoaOrder, DecodeError> {
+    Ok(match channels {
+        1 => HoaOrder::Zoa,
+        4 => HoaOrder::Foa,
+        9 => HoaOrder::Soa,
+        16 => HoaOrder::Toa,
+        25 => HoaOrder::H4a,
+        _ => {
+            return Err(DecodeError::InvalidDescriptors(format!(
+                "{channels} channels is not a full ambisonics order"
+            )))
+        }
+    })
+}
+
+/// Reconstructs a scene-based element from trimmed substream PCM.
+pub fn reconstruct_ambisonics(
     element: &AudioElement,
     substreams: &[SubstreamPcm],
 ) -> Result<Reconstructed, DecodeError> {
-    let decoded = deinterleave(substreams);
+    let mut decoded = Vec::new();
+    for sub in substreams {
+        decoded.extend(deinterleave(&sub.samples, usize::from(sub.channels.max(1))));
+    }
     match &element.config {
-        AudioElementConfig::ChannelBased { layers } => {
-            let [layer] = layers.as_slice() else {
-                return Err(DecodeError::Unimplemented(
-                    "scalable channel audio (multi-layer demixing)",
-                ));
-            };
-            if layer.output_gain.is_some() {
-                return Err(DecodeError::Unimplemented("layer output_gain"));
-            }
-            let info = loudspeaker_info(layer.loudspeaker_layout).ok_or(
-                DecodeError::InvalidDescriptors(format!(
-                    "unsupported loudspeaker_layout {}",
-                    layer.loudspeaker_layout
-                )),
-            )?;
-            if decoded.len() != info.channels {
-                return Err(DecodeError::InvalidDescriptors(format!(
-                    "layout {} expects {} channels, substreams carry {}",
-                    layer.loudspeaker_layout,
-                    info.channels,
-                    decoded.len()
-                )));
-            }
-            let mut planar = vec![Vec::new(); info.channels];
-            for (i, plane) in decoded.into_iter().enumerate() {
-                planar[info.decoding_map[i]] = plane;
-            }
-            Ok(Reconstructed::Channels {
-                matrix: info.matrix,
-                planar,
-            })
-        }
         AudioElementConfig::AmbisonicsMono {
             output_channel_count,
             channel_mapping,
@@ -137,22 +276,10 @@ pub fn reconstruct(
                 .collect();
             Ok(Reconstructed::Hoa { order, planar })
         }
+        AudioElementConfig::ChannelBased { .. } => Err(DecodeError::InvalidDescriptors(
+            "channel-based element in ambisonics reconstruction".into(),
+        )),
     }
-}
-
-fn hoa_order(channels: u8) -> Result<HoaOrder, DecodeError> {
-    Ok(match channels {
-        1 => HoaOrder::Zoa,
-        4 => HoaOrder::Foa,
-        9 => HoaOrder::Soa,
-        16 => HoaOrder::Toa,
-        25 => HoaOrder::H4a,
-        _ => {
-            return Err(DecodeError::InvalidDescriptors(format!(
-                "{channels} channels is not a full ambisonics order"
-            )))
-        }
-    })
 }
 
 #[cfg(test)]
@@ -160,87 +287,73 @@ mod tests {
     use super::*;
     use iamf_obu::descriptors::ChannelAudioLayer;
 
-    fn sub(id: u32, channels: u8, samples: Vec<f32>) -> SubstreamPcm {
-        SubstreamPcm {
-            substream_id: id,
-            channels,
-            sample_rate: 48000,
-            samples,
+    fn layer(layout: u8, substreams: u8, coupled: u8) -> ChannelAudioLayer {
+        ChannelAudioLayer {
+            loudspeaker_layout: layout,
+            substream_count: substreams,
+            coupled_substream_count: coupled,
+            recon_gain_is_present: false,
+            output_gain: None,
+            expanded_loudspeaker_layout: None,
         }
     }
 
     #[test]
-    fn stereo_passthrough_order() {
-        let element = AudioElement {
-            audio_element_id: 1,
-            codec_config_id: 0,
-            substream_ids: vec![0],
-            params: vec![],
-            config: AudioElementConfig::ChannelBased {
-                layers: vec![ChannelAudioLayer {
-                    loudspeaker_layout: 1,
-                    substream_count: 1,
-                    coupled_substream_count: 1,
-                    recon_gain_is_present: false,
-                    output_gain: None,
-                    expanded_loudspeaker_layout: None,
-                }],
-            },
-        };
-        // Interleaved L/R.
-        let subs = [sub(0, 2, vec![1.0, -1.0, 2.0, -2.0])];
-        let rec = reconstruct(&element, &subs).unwrap();
-        assert_eq!(rec.planar()[0], vec![1.0, 2.0]); // L
-        assert_eq!(rec.planar()[1], vec![-1.0, -2.0]); // R
+    fn single_layer_stereo_passthrough() {
+        let layers = [layer(1, 1, 1)];
+        let mut rec = ChannelReconstructor::new(&layers, SoundSystem::A, 2).unwrap();
+        assert_eq!(rec.input_channels(), 2);
+        let out = rec
+            .process_frame(&[vec![1.0, 2.0], vec![-1.0, -2.0]])
+            .unwrap();
+        assert_eq!(out[0], vec![1.0, 2.0]);
+        assert_eq!(out[1], vec![-1.0, -2.0]);
     }
 
     #[test]
-    fn surround_decoding_map() {
-        // 5.1: decode order L/R, Ls/Rs, C, LFE -> rendering order
-        // L, R, C, LFE, Ls, Rs.
-        let element = AudioElement {
-            audio_element_id: 1,
-            codec_config_id: 0,
-            substream_ids: vec![0, 1, 2, 3],
-            params: vec![],
-            config: AudioElementConfig::ChannelBased {
-                layers: vec![ChannelAudioLayer {
-                    loudspeaker_layout: 2,
-                    substream_count: 4,
-                    coupled_substream_count: 2,
-                    recon_gain_is_present: false,
-                    output_gain: None,
-                    expanded_loudspeaker_layout: None,
-                }],
-            },
-        };
-        let subs = [
-            sub(0, 2, vec![1.0, 2.0]), // L, R
-            sub(1, 2, vec![5.0, 6.0]), // Ls, Rs
-            sub(2, 1, vec![3.0]),      // C
-            sub(3, 1, vec![4.0]),      // LFE
-        ];
-        let rec = reconstruct(&element, &subs).unwrap();
-        let flat: Vec<f32> = rec.planar().iter().map(|p| p[0]).collect();
+    fn single_layer_51_reorders_to_rendering() {
+        // Decode order: L/R, Ls/Rs, C, LFE -> rendering L,R,C,LFE,Ls,Rs.
+        let layers = [layer(2, 4, 2)];
+        let mut rec = ChannelReconstructor::new(&layers, SoundSystem::B, 1).unwrap();
+        let planes: Vec<Vec<f32>> = [1.0, 2.0, 5.0, 6.0, 3.0, 4.0]
+            .iter()
+            .map(|&v| vec![v])
+            .collect();
+        let out = rec.process_frame(&planes).unwrap();
+        let flat: Vec<f32> = out.iter().map(|p| p[0]).collect();
         assert_eq!(flat, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     }
 
     #[test]
-    fn ambisonics_mono_mapping() {
-        let element = AudioElement {
-            audio_element_id: 1,
-            codec_config_id: 0,
-            substream_ids: vec![0, 1],
-            params: vec![],
-            config: AudioElementConfig::AmbisonicsMono {
-                output_channel_count: 4,
-                substream_count: 2,
-                channel_mapping: vec![1, 0, 255, 255],
-            },
-        };
-        let subs = [sub(0, 1, vec![1.0]), sub(1, 1, vec![2.0])];
-        let rec = reconstruct(&element, &subs).unwrap();
-        let flat: Vec<f32> = rec.planar().iter().map(|p| p[0]).collect();
-        assert_eq!(flat, vec![2.0, 1.0, 0.0, 0.0]);
+    fn scalable_selects_matching_layer() {
+        // Stereo + 5.1 rendered to stereo: only the stereo layer is used.
+        let layers = [layer(1, 1, 1), layer(2, 3, 1)];
+        let mut rec = ChannelReconstructor::new(&layers, SoundSystem::A, 1).unwrap();
+        assert_eq!(rec.input_channels(), 2);
+        assert_eq!(rec.matrix, MatrixLayout::Stereo);
+        let out = rec.process_frame(&[vec![0.5], vec![0.25]]).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0][0], 0.5);
+    }
+
+    #[test]
+    fn scalable_demixes_higher_layer() {
+        // Stereo + 5.1 rendered to 5.1: Ls/Rs are demixed.
+        let layers = [layer(1, 1, 1), layer(2, 3, 1)];
+        let mut rec = ChannelReconstructor::new(&layers, SoundSystem::B, 1).unwrap();
+        assert_eq!(rec.input_channels(), 6);
+        // channels_in: L2, R2, L5, R5, C, LFE.
+        let ls = 0.4f32;
+        let l5 = 0.1f32;
+        let c = 0.2f32;
+        let l3 = l5 + 0.707 * ls;
+        let l2 = l3 + 0.707 * c;
+        let planes: Vec<Vec<f32>> = [l2, 0.0, l5, 0.0, c, 0.0]
+            .iter()
+            .map(|&v| vec![v])
+            .collect();
+        let out = rec.process_frame(&planes).unwrap();
+        // Default recon gain smoothing on first frame: 0.25*1 + 0.75*1 = 1.
+        assert!((out[4][0] - ls).abs() < 1e-5, "Ls = {}", out[4][0]);
     }
 }
