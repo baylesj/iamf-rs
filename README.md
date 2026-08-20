@@ -8,66 +8,68 @@ Audio Model and Formats / Eclipsa Audio), structured after the pipeline of the
 OBU parser → codec decoders → element reconstructor → renderer → mixer → post-processor
 ```
 
+## Status (August 2026)
+
+The decoder is functionally complete for IAMF v1.1 simple/base profile
+streams: Opus and LPCM substreams, scalable channel reconstruction
+(demixing, recon gains, output gain), ambisonics, rendering to all 14
+loudspeaker sound systems, animated mix gains, and an optional loudness /
+peak-limiter post stage. Output is checked against the libiamf test-vector
+suite: same-layout renders are bit-exact, everything else lands within a
+few LSBs of the reference renderer.
+
+There are two ways in: a batch pipeline (`PresentationDecoder`) and a
+streaming decoder (`StreamDecoder`) with a C ABI (`iamf-capi`) that mirrors
+the iamf-tools API Chromium calls, so it can sit under Chrome's
+`IamfAudioDecoder` behind a thin adapter. The streaming path is tested
+byte-identical to the batch path, including partial-OBU feeding and
+reset/seek.
+
+Known gaps: binaural output, expanded loudspeaker layouts, AAC-LC/FLAC
+substreams, multi-sub-mix presentations, and resampling. Performance is
+comfortable with no SIMD work yet — `cargo bench` shows roughly 60×
+realtime for Opus stereo (codec-dominated) and 300–800× for LPCM surround
+pipelines on an Apple M-series laptop.
+
 ## Crates
 
 | Crate | Purpose |
 | --- | --- |
 | `iamf-obu` | OBU framing and descriptor parsing of untrusted input. `#![forbid(unsafe_code)]`, fuzzed, no dependencies. |
-| `iamf-dec` | Pipeline stages: reconstruction, rendering, mixing, loudness/limiting. Codec layer is pluggable via the `SubstreamDecoder` / `CodecFactory` traits. |
-| `iamf-codecs` | Feature-gated `SubstreamDecoder` implementations (LPCM today; Opus, FLAC, AAC-LC planned via existing pure-Rust codec crates). |
-| `iamf-capi` | C ABI (`libiamf_rs` cdylib/staticlib + `include/iamf_rs.h`) over the streaming decoder, shaped after the iamf-tools iterative decoder API that Chromium's `IamfAudioDecoder` consumes. |
+| `iamf-dec` | Pipeline stages: reconstruction, rendering, mixing, loudness/limiting, plus the batch and streaming decoders. Codec layer is pluggable via the `SubstreamDecoder` / `CodecFactory` traits. |
+| `iamf-codecs` | Feature-gated `SubstreamDecoder` implementations: LPCM, Opus (pure-Rust [opus-decoder](https://crates.io/crates/opus-decoder)); FLAC and AAC-LC planned. |
+| `iamf-capi` | C ABI (`libiamf_rs` cdylib/staticlib + `include/iamf_rs.h`) over the streaming decoder. |
 | `tools/iamfdec` | CLI: inspect and decode/render standalone `.iamf` files to WAV. |
 | `fuzz` | cargo-fuzz targets for the parser. |
 
 ## Milestones
 
 1. **OBU framing** — header/trimming/extension parsing, fuzz target. *(done)*
-2. **Descriptors** — codec config, audio element, mix presentation; validated
-   against libiamf test vectors (`tools/fetch_vectors.sh`). *(done — parameter
-   block data OBUs land with milestone 3)*
-3. **Opus path** — decode simple-profile streams substream-by-substream:
-   Opus via the pure-Rust [opus-decoder](https://crates.io/crates/opus-decoder)
-   crate (RFC 8251 conformant, no unsafe), LPCM natively; per-frame trimming;
-   parameter block parsing (mix gain, demixing, recon gain);
-   `iamfdec -o out.wav`. *(done — LPCM output verified bit-exact against
-   libiamf's rendered reference)*
-4. **Reconstruction & rendering** — *(done)* substream→channel
-   reconstruction including scalable multi-layer demixing (demix chain,
-   demixing modes, w-index state, recon-gain smoothing, layer output_gain,
-   playback-layout layer selection), ambisonics mono and projection,
-   rendering via gain matrices extracted from libiamf v1.1.0
-   (`tools/extract_matrices.py`), per-frame demixing/recon-gain parameter
-   blocks, animated element/output mix gains (step/linear/bezier),
-   multi-element mixing, and optional loudness normalization + look-ahead
-   peak limiter (`--loudness dB`, `--limiter`). Validated against reference
-   rendered WAVs: same-layout paths bit-exact, cross-layout and demixed
-   paths within ±1..3 LSB (references come from iamf-tools, whose float
-   arithmetic differs at the last bit; its bezier evaluation differs more,
-   max seen 23 LSB). Not yet supported: expanded/binaural input layouts,
-   multiple sub mixes.
-5. **Integration surface** — *(done)* streaming decoder
-   (`iamf_dec::stream::StreamDecoder`) mirroring the iamf-tools iterative
-   API Chromium consumes: create from a descriptor blob, push arbitrary
-   byte chunks (partial OBUs buffered), pull temporal units as interleaved
-   s16le/s32le PCM, reset, end-of-stream; byte-identical to the batch
-   pipeline under all chunkings (equivalence-tested). `iamf-capi` exposes
-   it over a C ABI with a hand-written header, verified from a real C
-   program against the cdylib. IAMF-in-ISO-BMFF demuxing remains out of
-   scope (Chromium's demuxer delivers descriptor blob + temporal units).
-6. **Later** — binaural rendering, AAC-LC/FLAC paths, higher profiles.
+2. **Descriptors** — codec config, audio element, mix presentation. *(done)*
+3. **Opus path** — substream decode, trimming, parameter blocks. *(done)*
+4. **Reconstruction & rendering** — scalable demixing, ambisonics, gain
+   matrices from libiamf v1.1.0 (`tools/extract_matrices.py`), animated
+   gains, loudness/limiter. *(done)*
+5. **Integration surface** — streaming decoder + C ABI shaped after the
+   iamf-tools API Chromium consumes. *(done; ISO-BMFF demuxing is out of
+   scope — Chromium's demuxer delivers descriptors + temporal units)*
+6. **Later** — binaural rendering, AAC-LC/FLAC, expanded layouts, higher
+   profiles.
 
 ## Development
 
 ```sh
-cargo test                      # unit tests
-cargo clippy --all-targets      # lints (unsafe code is forbidden workspace-wide)
+cargo test                      # unit + conformance tests
+cargo bench -p iamfdec          # criterion decode benchmarks
+cargo clippy --all-targets      # lints (unsafe code is forbidden outside iamf-capi)
 cargo +nightly fuzz run parse_obu
 cargo run -p iamfdec -- file.iamf
 ```
 
 Conformance vectors go in `tests/vectors/` (git-ignored); populate with
 `tools/fetch_vectors.sh` (curated set), `tools/fetch_vectors.sh --all`, or
-specific names. `cargo test` picks them up automatically when present.
+specific names. `cargo test` and `cargo bench` pick them up automatically
+when present.
 
 ## License
 

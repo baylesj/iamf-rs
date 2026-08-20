@@ -13,5 +13,12 @@ iamf-obu = { path = "../../crates/iamf-obu" }
 iamf-dec = { path = "../../crates/iamf-dec" }
 iamf-codecs = { path = "../../crates/iamf-codecs", features = ["pcm", "opus"] }
 
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "decode"
+harness = false
+
 [lints]
 workspace = true
