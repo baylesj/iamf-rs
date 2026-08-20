@@ -42,22 +42,17 @@ pub fn q78_db_to_linear(q: i16) -> f32 {
 }
 
 impl MixGainAnimation {
-    /// Writes per-sample linear gains for one subblock of `duration`
-    /// samples into `out` (`out.len() <= duration`). Matches libiamf:
-    /// endpoints are converted to linear first and interpolated in the
-    /// linear domain (`mix_gain_bezier_linear` / `mix_gain_bezier_quad`).
-    pub fn evaluate(&self, duration: usize, out: &mut [f32]) {
+    /// Linear gain at sample `i` of a subblock of `duration` samples.
+    /// Matches libiamf: endpoints are converted to linear first and
+    /// interpolated in the linear domain (`mix_gain_bezier_linear` /
+    /// `mix_gain_bezier_quad`).
+    pub fn evaluate_at(&self, duration: usize, i: usize) -> f32 {
         match *self {
-            MixGainAnimation::Step { start } => {
-                out.fill(q78_db_to_linear(start));
-            }
+            MixGainAnimation::Step { start } => q78_db_to_linear(start),
             MixGainAnimation::Linear { start, end } => {
                 let s = q78_db_to_linear(start);
                 let e = q78_db_to_linear(end);
-                let d = duration.max(1) as f32;
-                for (i, o) in out.iter_mut().enumerate() {
-                    *o = s + (e - s) * i as f32 / d;
-                }
+                s + (e - s) * i as f32 / duration.max(1) as f32
             }
             MixGainAnimation::Bezier {
                 start,
@@ -72,16 +67,22 @@ impl MixGainAnimation {
                 // libiamf truncates the control time to whole samples.
                 let ct = (crt * (duration as f64 + 0.1)) as i64;
                 let alpha = duration as i64 - 2 * ct;
-                for (i, o) in out.iter_mut().enumerate() {
-                    let i = i as f64;
-                    let a = if alpha != 0 {
-                        (((ct * ct) as f64 + alpha as f64 * i).sqrt() - ct as f64) / alpha as f64
-                    } else {
-                        i / (2 * ct) as f64
-                    };
-                    *o = ((s + e - 2.0 * c) * a * a + 2.0 * a * (c - s) + s) as f32;
-                }
+                let i = i as f64;
+                let a = if alpha != 0 {
+                    (((ct * ct) as f64 + alpha as f64 * i).sqrt() - ct as f64) / alpha as f64
+                } else {
+                    i / (2 * ct) as f64
+                };
+                ((s + e - 2.0 * c) * a * a + 2.0 * a * (c - s) + s) as f32
             }
+        }
+    }
+
+    /// Writes per-sample linear gains for one subblock of `duration`
+    /// samples into `out` (`out.len() <= duration`).
+    pub fn evaluate(&self, duration: usize, out: &mut [f32]) {
+        for (i, o) in out.iter_mut().enumerate() {
+            *o = self.evaluate_at(duration, i);
         }
     }
 }

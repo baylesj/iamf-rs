@@ -15,7 +15,8 @@ OBU parser → codec decoders → element reconstructor → renderer → mixer �
 | `iamf-obu` | OBU framing and descriptor parsing of untrusted input. `#![forbid(unsafe_code)]`, fuzzed, no dependencies. |
 | `iamf-dec` | Pipeline stages: reconstruction, rendering, mixing, loudness/limiting. Codec layer is pluggable via the `SubstreamDecoder` / `CodecFactory` traits. |
 | `iamf-codecs` | Feature-gated `SubstreamDecoder` implementations (LPCM today; Opus, FLAC, AAC-LC planned via existing pure-Rust codec crates). |
-| `tools/iamfdec` | CLI: inspect (eventually decode to WAV) standalone `.iamf` files. |
+| `iamf-capi` | C ABI (`libiamf_rs` cdylib/staticlib + `include/iamf_rs.h`) over the streaming decoder, shaped after the iamf-tools iterative decoder API that Chromium's `IamfAudioDecoder` consumes. |
+| `tools/iamfdec` | CLI: inspect and decode/render standalone `.iamf` files to WAV. |
 | `fuzz` | cargo-fuzz targets for the parser. |
 
 ## Milestones
@@ -44,8 +45,15 @@ OBU parser → codec decoders → element reconstructor → renderer → mixer �
    arithmetic differs at the last bit; its bezier evaluation differs more,
    max seen 23 LSB). Not yet supported: expanded/binaural input layouts,
    multiple sub mixes.
-5. **Containers & integration** — IAMF-in-ISO-BMFF, C ABI for embedding the
-   parser under a C/C++ integration (Chromium-style incremental oxidation).
+5. **Integration surface** — *(done)* streaming decoder
+   (`iamf_dec::stream::StreamDecoder`) mirroring the iamf-tools iterative
+   API Chromium consumes: create from a descriptor blob, push arbitrary
+   byte chunks (partial OBUs buffered), pull temporal units as interleaved
+   s16le/s32le PCM, reset, end-of-stream; byte-identical to the batch
+   pipeline under all chunkings (equivalence-tested). `iamf-capi` exposes
+   it over a C ABI with a hand-written header, verified from a real C
+   program against the cdylib. IAMF-in-ISO-BMFF demuxing remains out of
+   scope (Chromium's demuxer delivers descriptor blob + temporal units).
 6. **Later** — binaural rendering, AAC-LC/FLAC paths, higher profiles.
 
 ## Development

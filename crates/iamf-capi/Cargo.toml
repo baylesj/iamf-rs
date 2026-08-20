@@ -1,0 +1,19 @@
+[package]
+name = "iamf-capi"
+description = "C ABI for the iamf-rs streaming decoder, shaped after the iamf-tools decoder API Chromium consumes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "iamf_rs"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+iamf-dec = { path = "../iamf-dec" }
+iamf-codecs = { path = "../iamf-codecs", features = ["pcm", "opus"] }
+
+# FFI requires unsafe; this crate intentionally does not inherit the
+# workspace-wide forbid(unsafe_code).

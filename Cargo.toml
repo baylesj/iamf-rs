@@ -4,6 +4,7 @@ members = [
     "crates/iamf-obu",
     "crates/iamf-dec",
     "crates/iamf-codecs",
+    "crates/iamf-capi",
     "tools/iamfdec",
 ]
 exclude = ["fuzz"]

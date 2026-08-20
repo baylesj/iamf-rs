@@ -17,6 +17,7 @@ pub mod post;
 pub mod presentation;
 pub mod reconstruct;
 pub mod render;
+pub mod stream;
 
 use iamf_obu::descriptors::CodecConfig;
 

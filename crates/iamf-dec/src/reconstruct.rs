@@ -220,7 +220,17 @@ pub fn reconstruct_ambisonics(
     for sub in substreams {
         decoded.extend(deinterleave(&sub.samples, usize::from(sub.channels.max(1))));
     }
-    match &element.config {
+    ambisonics_from_planes(&element.config, decoded)
+}
+
+/// Converts decoded substream planes (decode order) of a scene-based
+/// element into ACN-ordered ambisonics channels. Stateless, so it works
+/// per frame or on whole buffers.
+pub fn ambisonics_from_planes(
+    config: &AudioElementConfig,
+    decoded: Vec<Vec<f32>>,
+) -> Result<Reconstructed, DecodeError> {
+    match config {
         AudioElementConfig::AmbisonicsMono {
             output_channel_count,
             channel_mapping,
