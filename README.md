@@ -29,7 +29,13 @@ Known gaps: binaural output, expanded loudspeaker layouts, AAC-LC/FLAC
 substreams, multi-sub-mix presentations, and resampling. Performance is
 comfortable with no SIMD work yet — `cargo bench` shows roughly 60×
 realtime for Opus stereo (codec-dominated) and 300–800× for LPCM surround
-pipelines on an Apple M-series laptop.
+pipelines on an Apple M-series laptop. Head-to-head against libiamf v1.1's
+C decoder (`tools/bench_compare.py`), the DSP-heavy paths are at parity or
+faster (1.5× on 7.1.4 passthrough) while Opus streams run ~2× slower — the
+pure-Rust Opus decoder vs libopus's hand-tuned assembly — and outputs
+match libiamf bit-exactly or within 1 LSB, limiter included (except one
+vector where libiamf and iamf-tools disagree with each other; we match
+iamf-tools — see issue #3).
 
 ## Crates
 
