@@ -38,7 +38,9 @@ enum iamfrs_sample_type {
 /* output_layout uses the IAMF sound-system numbering shared by mix
  * presentation layouts and iamf_tools OutputLayout:
  * 0=stereo(A) 1=5.1(B) 2=5.1.2(C) 3=5.1.4(D) 4=E 5=F 6=G 7=H(22.2)
- * 8=7.1(I) 9=7.1.4(J) 10=7.1.2 11=3.1.2 12=mono 13=9.1.6 */
+ * 8=7.1(I) 9=7.1.4(J) 10=7.1.2 11=3.1.2 12=mono 13=9.1.6
+ * 14=binaural (currently a headphone-suitable stereo render without HRTF
+ * processing, matching libiamf built without its binauralizer). */
 int iamfrs_decoder_create_from_descriptors(const uint8_t *descriptors,
                                            size_t size, int output_layout,
                                            int sample_type,

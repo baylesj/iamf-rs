@@ -3,8 +3,14 @@
 
 use crate::matrices::MatrixLayout;
 
-/// Output sound system (mix presentation layout field, 4 bits).
-/// 0..=9 are ITU-R BS.2051 systems A..J; 10..=13 are IAMF extensions.
+/// Output target: sound systems 0..=13 (mix presentation layout numbering,
+/// also iamf-tools `OutputLayout`) plus binaural (14, iamf-tools
+/// `kIAMF_Binaural`).
+///
+/// Binaural currently renders through the same gain matrices libiamf uses
+/// when built without its external binauralizer libraries — i.e. a stereo
+/// feed suitable for headphones, without HRTF processing. A true HRTF
+/// binauralizer is future work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SoundSystem {
     A,
@@ -21,6 +27,7 @@ pub enum SoundSystem {
     Ext312,
     Mono,
     Ext916,
+    Binaural,
 }
 
 impl SoundSystem {
@@ -40,6 +47,7 @@ impl SoundSystem {
             11 => SoundSystem::Ext312,
             12 => SoundSystem::Mono,
             13 => SoundSystem::Ext916,
+            14 => SoundSystem::Binaural,
             _ => return None,
         })
     }
@@ -47,7 +55,7 @@ impl SoundSystem {
     pub fn channels(&self) -> usize {
         match self {
             SoundSystem::Mono => 1,
-            SoundSystem::A => 2,
+            SoundSystem::A | SoundSystem::Binaural => 2,
             SoundSystem::B => 6,
             SoundSystem::C | SoundSystem::I => 8,
             SoundSystem::D | SoundSystem::Ext712 => 10,
@@ -77,6 +85,7 @@ impl SoundSystem {
             SoundSystem::Ext312 => MatrixLayout::Iamf312,
             SoundSystem::Mono => MatrixLayout::Mono,
             SoundSystem::Ext916 => MatrixLayout::Iamf916,
+            SoundSystem::Binaural => MatrixLayout::Binaural,
         }
     }
 }

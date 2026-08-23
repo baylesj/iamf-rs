@@ -45,7 +45,7 @@ pub struct IamfrsDecoder {
 /// Creates a decoder from a descriptor blob (the descriptor OBUs of an IA
 /// sequence). `output_layout` is the IAMF sound system numbering used by
 /// mix presentation layouts and iamf-tools `OutputLayout` (0 = stereo ...
-/// 13 = 9.1.6). `sample_type`: 1 = s16le, 2 = s32le.
+/// 13 = 9.1.6, 14 = binaural). `sample_type`: 1 = s16le, 2 = s32le.
 ///
 /// # Safety
 /// `descriptors` must point to `size` readable bytes; `out` must be a

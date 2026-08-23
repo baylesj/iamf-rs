@@ -25,17 +25,18 @@ the iamf-tools API Chromium calls, so it can sit under Chrome's
 byte-identical to the batch path, including partial-OBU feeding and
 reset/seek.
 
-Known gaps: binaural output, expanded loudspeaker layouts, AAC-LC/FLAC
-substreams, multi-sub-mix presentations, and resampling. Performance is
-comfortable with no SIMD work yet — `cargo bench` shows roughly 60×
-realtime for Opus stereo (codec-dominated) and 300–800× for LPCM surround
-pipelines on an Apple M-series laptop. Head-to-head against libiamf v1.1's
-C decoder (`tools/bench_compare.py`), the DSP-heavy paths are at parity or
-faster (1.5× on 7.1.4 passthrough) while Opus streams run ~2× slower — the
-pure-Rust Opus decoder vs libopus's hand-tuned assembly — and outputs
-match libiamf bit-exactly or within 1 LSB, limiter included (except one
-vector where libiamf and iamf-tools disagree with each other; we match
-iamf-tools — see issue #3).
+Known gaps: HRTF binaural (output layout 14 works but renders the same
+stereo fallback libiamf uses without its binauralizer), expanded
+loudspeaker layouts, AAC-LC/FLAC substreams, multi-sub-mix presentations,
+and resampling. Performance: on an Apple M-series laptop, head-to-head
+against both C++ implementations on the same vectors, iamf-rs is faster
+than libiamf v1.1 on every measured path and 4–7× faster than iamf-tools'
+decoder (the implementation Chromium ships), with outputs matching
+iamf-tools' binary bit-exactly or within 1 LSB. Opus decode via the
+default pure-Rust crate runs ~2× slower than libiamf; the `opus-ffi`
+feature (libopus bindings) makes it ~1.6× faster instead. One vector
+exposes a genuine disagreement *between* libiamf and iamf-tools; we match
+iamf-tools (issue #3).
 
 ## Crates
 
@@ -43,7 +44,7 @@ iamf-tools — see issue #3).
 | --- | --- |
 | `iamf-obu` | OBU framing and descriptor parsing of untrusted input. `#![forbid(unsafe_code)]`, fuzzed, no dependencies. |
 | `iamf-dec` | Pipeline stages: reconstruction, rendering, mixing, loudness/limiting, plus the batch and streaming decoders. Codec layer is pluggable via the `SubstreamDecoder` / `CodecFactory` traits. |
-| `iamf-codecs` | Feature-gated `SubstreamDecoder` implementations: LPCM, Opus (pure-Rust [opus-decoder](https://crates.io/crates/opus-decoder)); FLAC and AAC-LC planned. |
+| `iamf-codecs` | Feature-gated `SubstreamDecoder` implementations: LPCM, Opus (pure-Rust [opus-decoder](https://crates.io/crates/opus-decoder) by default, or libopus via the `opus-ffi` feature); FLAC and AAC-LC planned. |
 | `iamf-capi` | C ABI (`libiamf_rs` cdylib/staticlib + `include/iamf_rs.h`) over the streaming decoder. |
 | `tools/iamfdec` | CLI: inspect and decode/render standalone `.iamf` files to WAV. |
 | `fuzz` | cargo-fuzz targets for the parser. |

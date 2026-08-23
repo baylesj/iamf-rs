@@ -13,6 +13,10 @@ iamf-obu = { path = "../../crates/iamf-obu" }
 iamf-dec = { path = "../../crates/iamf-dec" }
 iamf-codecs = { path = "../../crates/iamf-codecs", features = ["pcm", "opus"] }
 
+[features]
+# Use libopus (FFI) instead of the pure-Rust Opus decoder.
+opus-ffi = ["iamf-codecs/opus-ffi"]
+
 [dev-dependencies]
 criterion = "0.5"
 

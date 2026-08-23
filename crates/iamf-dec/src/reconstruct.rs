@@ -77,10 +77,17 @@ impl ChannelReconstructor {
 
         // Layer selection: exact sound-system match, else the first layer
         // with more channels than the playback layout, else the highest.
+        // Binaural selects like stereo (libiamf's
+        // `_get_sound_system_layout_instance`).
+        let selection_target = if target == SoundSystem::Binaural {
+            SoundSystem::A
+        } else {
+            target
+        };
         let mut selected = layers.len() - 1;
         let mut matched = false;
         for (i, layer) in layers.iter().enumerate() {
-            if loudspeaker_sound_system(layer.loudspeaker_layout) == Some(target) {
+            if loudspeaker_sound_system(layer.loudspeaker_layout) == Some(selection_target) {
                 selected = i;
                 matched = true;
                 break;

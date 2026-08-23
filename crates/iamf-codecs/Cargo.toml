@@ -11,12 +11,17 @@ repository.workspace = true
 default = ["pcm"]
 pcm = []
 opus = ["dep:opus-decoder"]
+# libopus-backed Opus decoding (FFI via the `opus` bindings crate), for
+# integrators that already ship libopus (e.g. Chromium). When both `opus`
+# and `opus-ffi` are enabled, DefaultFactory prefers the FFI decoder.
+opus-ffi = ["dep:opus"]
 # TODO(milestone 6): flac = ["dep:claxon"], aac = ["dep:symphonia-codec-aac"]
 
 [dependencies]
 iamf-dec = { path = "../iamf-dec" }
 iamf-obu = { path = "../iamf-obu" }
 opus-decoder = { version = "0.1", optional = true }
+opus = { version = "0.3", optional = true }
 
 [lints]
 workspace = true

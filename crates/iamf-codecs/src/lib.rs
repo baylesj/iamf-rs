@@ -6,6 +6,8 @@
 
 #[cfg(feature = "opus")]
 pub mod opus;
+#[cfg(feature = "opus-ffi")]
+pub mod opus_ffi;
 #[cfg(feature = "pcm")]
 pub mod pcm;
 
@@ -20,6 +22,10 @@ impl CodecFactory for DefaultFactory {
     fn supports(&self, config: &CodecConfig) -> bool {
         #[cfg(feature = "pcm")]
         if pcm::PcmFactory.supports(config) {
+            return true;
+        }
+        #[cfg(feature = "opus-ffi")]
+        if opus_ffi::OpusFfiFactory.supports(config) {
             return true;
         }
         #[cfg(feature = "opus")]
@@ -38,6 +44,10 @@ impl CodecFactory for DefaultFactory {
         #[cfg(feature = "pcm")]
         if pcm::PcmFactory.supports(config) {
             return pcm::PcmFactory.create(config, channels);
+        }
+        #[cfg(feature = "opus-ffi")]
+        if opus_ffi::OpusFfiFactory.supports(config) {
+            return opus_ffi::OpusFfiFactory.create(config, channels);
         }
         #[cfg(feature = "opus")]
         if opus::OpusFactory.supports(config) {

@@ -160,3 +160,27 @@ fn animated_bezier_mix_gain() {
 fn animated_step_linear_bezier_16k() {
     render_case("test_000088", 0, 0, 1);
 }
+
+/// Binaural (output layout 14) currently uses the same gain matrices as
+/// the stereo render — libiamf-without-binauralizer behavior — so the two
+/// must match exactly.
+#[test]
+fn binaural_matches_stereo_fallback() {
+    let dir = vectors_dir();
+    for vector in ["test_000070", "test_000038", "test_000086"] {
+        let Ok(data) = std::fs::read(dir.join(format!("{vector}.iamf"))) else {
+            continue;
+        };
+        let render = |sound_system: u8| {
+            let descriptors = Descriptors::collect(&data).unwrap();
+            let target = SoundSystem::from_u8(sound_system).unwrap();
+            let mut decoder =
+                PresentationDecoder::new(&descriptors, 0, target, &DefaultFactory).unwrap();
+            for obu in ObuIter::new(&data).map(Result::unwrap) {
+                decoder.process_obu(&obu).unwrap();
+            }
+            decoder.finish().unwrap().interleaved
+        };
+        assert_eq!(render(14), render(0), "{vector}: binaural != stereo");
+    }
+}
