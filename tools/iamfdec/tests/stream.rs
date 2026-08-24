@@ -39,7 +39,7 @@ fn stream_decode(data: &[u8], sound_system: u8, chunks: &[usize]) -> Vec<u8> {
     let settings = StreamSettings {
         layout: SoundSystem::from_u8(sound_system).unwrap(),
         sample_type: OutputSampleType::Int16LittleEndian,
-        mix_presentation_index: 0,
+        mix_selection: iamf_dec::stream::MixSelection::ByIndex(0),
     };
     let mut decoder = StreamDecoder::new_from_descriptors(data, settings, &DefaultFactory).unwrap();
     let mut out = Vec::new();

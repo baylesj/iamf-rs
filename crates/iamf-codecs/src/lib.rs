@@ -4,12 +4,18 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "aac")]
+pub mod aac;
+#[cfg(feature = "flac")]
+pub mod flac;
 #[cfg(feature = "opus")]
 pub mod opus;
 #[cfg(feature = "opus-ffi")]
 pub mod opus_ffi;
 #[cfg(feature = "pcm")]
 pub mod pcm;
+#[cfg(any(feature = "flac", feature = "aac"))]
+mod symphonia_common;
 
 use iamf_dec::{CodecFactory, DecodeError, SubstreamDecoder};
 use iamf_obu::descriptors::CodecConfig;
@@ -32,6 +38,14 @@ impl CodecFactory for DefaultFactory {
         if opus::OpusFactory.supports(config) {
             return true;
         }
+        #[cfg(feature = "flac")]
+        if flac::FlacFactory.supports(config) {
+            return true;
+        }
+        #[cfg(feature = "aac")]
+        if aac::AacFactory.supports(config) {
+            return true;
+        }
         let _ = config;
         false
     }
@@ -52,6 +66,14 @@ impl CodecFactory for DefaultFactory {
         #[cfg(feature = "opus")]
         if opus::OpusFactory.supports(config) {
             return opus::OpusFactory.create(config, channels);
+        }
+        #[cfg(feature = "flac")]
+        if flac::FlacFactory.supports(config) {
+            return flac::FlacFactory.create(config, channels);
+        }
+        #[cfg(feature = "aac")]
+        if aac::AacFactory.supports(config) {
+            return aac::AacFactory.create(config, channels);
         }
         let _ = (config, channels);
         Err(DecodeError::UnsupportedCodec)

@@ -41,9 +41,13 @@ enum iamfrs_sample_type {
  * 8=7.1(I) 9=7.1.4(J) 10=7.1.2 11=3.1.2 12=mono 13=9.1.6
  * 14=binaural (currently a headphone-suitable stereo render without HRTF
  * processing, matching libiamf built without its binauralizer). */
+/* mix_presentation_id selects the mix presentation to decode; pass -1 to
+ * select automatically (a mix declaring the requested layout, else the
+ * first). */
 int iamfrs_decoder_create_from_descriptors(const uint8_t *descriptors,
                                            size_t size, int output_layout,
                                            int sample_type,
+                                           int64_t mix_presentation_id,
                                            iamfrs_decoder **out);
 
 /* Push bitstream bytes; partial OBUs are buffered internally. */

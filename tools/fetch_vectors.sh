@@ -19,7 +19,7 @@ DEFAULT_VECTORS=(
   test_000002 test_000005 test_000007 test_000024 test_000025 test_000026
   test_000032 test_000033 test_000036 test_000038 test_000039 test_000065
   test_000066 test_000069 test_000070 test_000082 test_000086 test_000088
-  test_000090 test_000092
+  test_000073 test_000090 test_000092
 )
 
 if [[ "${1:-}" == "--all" ]]; then

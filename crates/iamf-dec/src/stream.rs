@@ -37,8 +37,21 @@ impl OutputSampleType {
 pub struct StreamSettings {
     pub layout: SoundSystem,
     pub sample_type: OutputSampleType,
-    /// Index of the mix presentation to decode.
-    pub mix_presentation_index: usize,
+    /// Which mix presentation to decode.
+    pub mix_selection: MixSelection,
+}
+
+/// Mix presentation selection (iamf-tools `RequestedMix` shape).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MixSelection {
+    /// Prefer a mix presentation that declares a layout matching the
+    /// requested output layout; fall back to the first.
+    #[default]
+    Auto,
+    /// Select by mix_presentation_id.
+    ById(u32),
+    /// Select by position in the descriptors.
+    ByIndex(usize),
 }
 
 impl Default for StreamSettings {
@@ -46,7 +59,51 @@ impl Default for StreamSettings {
         StreamSettings {
             layout: SoundSystem::A,
             sample_type: OutputSampleType::Int16LittleEndian,
-            mix_presentation_index: 0,
+            mix_selection: MixSelection::Auto,
+        }
+    }
+}
+
+/// Resolves a mix selection against parsed descriptors.
+pub(crate) fn select_mix_index(
+    mixes: &[iamf_obu::descriptors::MixPresentation],
+    selection: MixSelection,
+    target: SoundSystem,
+) -> Result<usize, DecodeError> {
+    match selection {
+        MixSelection::ByIndex(index) => {
+            if index < mixes.len() {
+                Ok(index)
+            } else {
+                Err(DecodeError::InvalidDescriptors(
+                    "no such mix presentation".into(),
+                ))
+            }
+        }
+        MixSelection::ById(id) => mixes
+            .iter()
+            .position(|m| m.mix_presentation_id == id)
+            .ok_or(DecodeError::InvalidDescriptors(
+                "no mix presentation with that id".into(),
+            )),
+        MixSelection::Auto => {
+            // Binaural playback matches mixes authored for stereo.
+            let wanted = match target {
+                SoundSystem::Binaural => SoundSystem::A,
+                other => other,
+            };
+            let declares_target = |m: &iamf_obu::descriptors::MixPresentation| {
+                m.sub_mixes.iter().any(|sm| {
+                    sm.layouts.iter().any(|(layout, _)| match layout {
+                        iamf_obu::descriptors::Layout::LoudspeakersSsConvention {
+                            sound_system,
+                        } => SoundSystem::from_u8(*sound_system) == Some(wanted),
+                        iamf_obu::descriptors::Layout::Binaural => target == SoundSystem::Binaural,
+                        _ => false,
+                    })
+                })
+            };
+            Ok(mixes.iter().position(declares_target).unwrap_or(0))
         }
     }
 }
@@ -176,12 +233,17 @@ impl StreamDecoder {
         factory: &dyn CodecFactory,
     ) -> Result<Self, DecodeError> {
         let parsed = crate::presentation::Descriptors::collect(descriptors)?;
-        let mix = parsed
-            .mix_presentations
-            .get(settings.mix_presentation_index)
-            .ok_or(DecodeError::InvalidDescriptors(
-                "no such mix presentation".into(),
-            ))?;
+        if parsed.mix_presentations.is_empty() {
+            return Err(DecodeError::InvalidDescriptors(
+                "no mix presentations".into(),
+            ));
+        }
+        let mix_index = select_mix_index(
+            &parsed.mix_presentations,
+            settings.mix_selection,
+            settings.layout,
+        )?;
+        let mix = &parsed.mix_presentations[mix_index];
         let [sub_mix] = mix.sub_mixes.as_slice() else {
             return Err(DecodeError::Unimplemented("multiple sub mixes"));
         };
@@ -655,5 +717,75 @@ impl StreamDecoder {
                 dec.reset();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iamf_obu::descriptors::{Layout, MixPresentation, SubMix};
+
+    fn mix(id: u32, sound_system: u8) -> MixPresentation {
+        use iamf_obu::descriptors::{MixGainParam, ParamDefinition};
+        let gain = MixGainParam {
+            base: ParamDefinition {
+                parameter_id: 0,
+                parameter_rate: 48000,
+                mode: true,
+                duration: 0,
+                constant_subblock_duration: 0,
+                subblock_durations: vec![],
+            },
+            default_mix_gain: 0,
+        };
+        MixPresentation {
+            mix_presentation_id: id,
+            annotation_languages: vec![],
+            localized_annotations: vec![],
+            sub_mixes: vec![SubMix {
+                elements: vec![],
+                output_mix_gain: gain,
+                layouts: vec![(
+                    Layout::LoudspeakersSsConvention { sound_system },
+                    iamf_obu::descriptors::LoudnessInfo {
+                        info_type: 0,
+                        integrated_loudness: 0,
+                        digital_peak: 0,
+                        true_peak: None,
+                        anchored_loudness: vec![],
+                    },
+                )],
+            }],
+            tags: vec![],
+        }
+    }
+
+    #[test]
+    fn mix_selection_modes() {
+        let mixes = [mix(10, 0), mix(20, 9)];
+        // Auto prefers the mix declaring the requested layout.
+        assert_eq!(
+            select_mix_index(&mixes, MixSelection::Auto, SoundSystem::J).unwrap(),
+            1
+        );
+        // Auto falls back to the first when nothing matches.
+        assert_eq!(
+            select_mix_index(&mixes, MixSelection::Auto, SoundSystem::H).unwrap(),
+            0
+        );
+        // Binaural playback matches stereo-authored mixes.
+        assert_eq!(
+            select_mix_index(&mixes, MixSelection::Auto, SoundSystem::Binaural).unwrap(),
+            0
+        );
+        assert_eq!(
+            select_mix_index(&mixes, MixSelection::ById(20), SoundSystem::A).unwrap(),
+            1
+        );
+        assert!(select_mix_index(&mixes, MixSelection::ById(99), SoundSystem::A).is_err());
+        assert_eq!(
+            select_mix_index(&mixes, MixSelection::ByIndex(1), SoundSystem::A).unwrap(),
+            1
+        );
     }
 }

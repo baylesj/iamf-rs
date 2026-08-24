@@ -8,39 +8,37 @@ Audio Model and Formats / Eclipsa Audio), structured after the pipeline of the
 OBU parser → codec decoders → element reconstructor → renderer → mixer → post-processor
 ```
 
+## Features
+
+- IAMF v1.1 simple & base profile decoding: OBUs, descriptors, parameter blocks
+- Codecs: Opus (pure-Rust, or libopus via `opus-ffi`), LPCM, FLAC, AAC-LC
+- Scalable channel audio: demixing, recon gains, output gain, layer selection
+- Ambisonics, mono and projection modes, orders 1–4
+- Rendering to all 14 loudspeaker sound systems (libiamf v1.1 gain matrices)
+- Binaural rendering for headphones — native port of [google/obr](https://github.com/google/obr) (layout 14), any supported sample rate
+- Animated mix gains (step/linear/bezier) and per-frame demixing/recon-gain parameters
+- Optional loudness normalization and peak limiter post stage
+- Batch and streaming decoders (partial-OBU input, reset/seek), byte-identical outputs
+- Mix presentation selection: automatic by layout, by id, or by index
+- C ABI (`iamf-capi`) shaped after the iamf-tools API Chromium consumes
+- `#![forbid(unsafe_code)]` outside the FFI boundary; fuzzed parser
+
+Not yet supported: expanded loudspeaker layouts (base-enhanced profile),
+multi-sub-mix presentations, output-rate resampling.
+
 ## Status (August 2026)
 
-The decoder is functionally complete for IAMF v1.1 simple/base profile
-streams: Opus and LPCM substreams, scalable channel reconstruction
-(demixing, recon gains, output gain), ambisonics, rendering to all 14
-loudspeaker sound systems, animated mix gains, and an optional loudness /
-peak-limiter post stage. Output is checked against the libiamf test-vector
-suite: same-layout renders are bit-exact, everything else lands within a
-few LSBs of the reference renderer.
+Conformance: outputs are checked against the libiamf test-vector suite and
+against libiamf's and iamf-tools' own binaries — same-layout renders and
+lossless paths are bit-exact, everything else lands within a few LSB, and
+binaural matches obr within 2 LSB. Where the reference implementations
+disagree with each other, we match iamf-tools (what Chromium ships) and
+file it (issues #3, #4).
 
-There are two ways in: a batch pipeline (`PresentationDecoder`) and a
-streaming decoder (`StreamDecoder`) with a C ABI (`iamf-capi`) that mirrors
-the iamf-tools API Chromium calls, so it can sit under Chrome's
-`IamfAudioDecoder` behind a thin adapter. The streaming path is tested
-byte-identical to the batch path, including partial-OBU feeding and
-reset/seek.
-
-Binaural output (layout 14) is a native port of Google's
-[Open Binaural Renderer](https://github.com/google/obr): elements with
-`headphones_rendering_mode == 1` go through SH-domain HRIR convolution
-(obr's embedded filters, extracted like the gain matrices), matching
-iamf-tools' binaural output within 2 LSB; mode-0 elements use the stereo
-fallback, bit-exact with iamf-tools. Known gaps: expanded loudspeaker
-layouts, AAC-LC/FLAC substreams, multi-sub-mix presentations, and
-resampling (binaural HRIRs are 48 kHz-only for now). Performance: on an Apple M-series laptop, head-to-head
-against both C++ implementations on the same vectors, iamf-rs is faster
-than libiamf v1.1 on every measured path and 4–7× faster than iamf-tools'
-decoder (the implementation Chromium ships), with outputs matching
-iamf-tools' binary bit-exactly or within 1 LSB. Opus decode via the
-default pure-Rust crate runs ~2× slower than libiamf; the `opus-ffi`
-feature (libopus bindings) makes it ~1.6× faster instead. One vector
-exposes a genuine disagreement *between* libiamf and iamf-tools; we match
-iamf-tools (issue #3).
+Performance (Apple M-series, `cargo bench` / `tools/bench_compare.py`):
+faster than libiamf v1.1 on every measured path, 4–7× faster than
+iamf-tools' decoder, ~60× realtime for Opus stereo with the pure-Rust
+codec (1.6× faster than libiamf with `opus-ffi`).
 
 ## Crates
 

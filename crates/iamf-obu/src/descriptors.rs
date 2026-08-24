@@ -95,10 +95,12 @@ pub enum DecoderConfig {
         output_gain: i16,
         mapping_family: u8,
     },
-    /// §3.6.3: fields from the FLAC STREAMINFO metadata block.
+    /// §3.6.3: fields from the FLAC STREAMINFO metadata block, plus the
+    /// raw 34-byte block body for codec initialization.
     Flac {
         sample_rate: u32,
         bits_per_sample: u8,
+        streaminfo: Vec<u8>,
     },
     /// §3.6.4.
     Lpcm {
@@ -106,8 +108,11 @@ pub enum DecoderConfig {
         sample_size: u8,
         sample_rate: u32,
     },
-    /// §3.6.2: AudioSpecificConfig et al., kept raw until the AAC milestone.
-    AacLc(Vec<u8>),
+    /// §3.6.2: the AudioSpecificConfig extracted from the
+    /// DecoderConfigDescriptor, for codec initialization.
+    AacLc {
+        audio_specific_config: Vec<u8>,
+    },
     Unknown(Vec<u8>),
 }
 
@@ -147,7 +152,7 @@ impl CodecConfig {
                     sample_rate: r.read_u32_be()?,
                 }
             }
-            CodecId::AacLc => DecoderConfig::AacLc(r.rest().to_vec()),
+            CodecId::AacLc => Self::parse_aac_decoder_config(r)?,
             CodecId::Unknown(_) => DecoderConfig::Unknown(r.rest().to_vec()),
         };
         Ok(CodecConfig {
@@ -167,12 +172,15 @@ impl CodecConfig {
             let block_type = header >> 24 & 0x7f;
             let length = (header & 0xff_ffff) as usize;
             if block_type == 0 {
-                // min/max block size (2+2), min/max frame size (3+3).
-                r.skip(10)?;
-                let packed = r.read_u32_be()?;
+                let streaminfo = r.read_bytes(length)?.to_vec();
+                if streaminfo.len() < 18 {
+                    return Err(invalid(r));
+                }
+                let packed = u32::from_be_bytes(streaminfo[10..14].try_into().unwrap());
                 return Ok(DecoderConfig::Flac {
                     sample_rate: packed >> 12 & 0xf_ffff,
                     bits_per_sample: ((packed >> 4 & 0x1f) + 1) as u8,
+                    streaminfo,
                 });
             }
             r.skip(length)?;
@@ -180,6 +188,38 @@ impl CodecConfig {
                 return Err(invalid(r));
             }
         }
+    }
+
+    /// Reads an ISO/IEC 14496-1 expandable length field.
+    fn read_expandable(r: &mut ByteReader<'_>) -> Result<usize> {
+        let mut size = 0usize;
+        for _ in 0..4 {
+            let byte = r.read_u8()?;
+            size = size << 7 | usize::from(byte & 0x7f);
+            if byte & 0x80 == 0 {
+                break;
+            }
+        }
+        Ok(size)
+    }
+
+    /// §3.6.2: decoder_config is a DecoderConfigDescriptor (tag 0x04):
+    /// 13 fixed bytes, then a DecSpecificInfo (tag 0x05) carrying the
+    /// AudioSpecificConfig, which codecs need for initialization.
+    fn parse_aac_decoder_config(r: &mut ByteReader<'_>) -> Result<DecoderConfig> {
+        if r.read_u8()? != 0x04 {
+            return Err(invalid(r));
+        }
+        Self::read_expandable(r)?;
+        r.skip(13)?;
+        if r.read_u8()? != 0x05 {
+            return Err(invalid(r));
+        }
+        let asc_len = Self::read_expandable(r)?;
+        let audio_specific_config = r.read_bytes(asc_len)?.to_vec();
+        Ok(DecoderConfig::AacLc {
+            audio_specific_config,
+        })
     }
 }
 
@@ -690,13 +730,17 @@ mod tests {
         payload.extend([0u8; 20]); // rest of STREAMINFO, unread
 
         let cc = CodecConfig::parse(&mut ByteReader::new(&payload)).unwrap();
-        assert_eq!(
-            cc.decoder_config,
-            DecoderConfig::Flac {
-                sample_rate: 48000,
-                bits_per_sample: 16
-            }
-        );
+        let DecoderConfig::Flac {
+            sample_rate,
+            bits_per_sample,
+            streaminfo,
+        } = &cc.decoder_config
+        else {
+            panic!("expected flac");
+        };
+        assert_eq!(*sample_rate, 48000);
+        assert_eq!(*bits_per_sample, 16);
+        assert_eq!(streaminfo.len(), 34);
     }
 
     /// Stereo channel-based element: 1 layer, no params.

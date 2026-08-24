@@ -13,6 +13,7 @@
 mod convolver;
 mod filters;
 mod limiter;
+mod resampler;
 mod sh;
 mod speakers;
 
@@ -59,9 +60,11 @@ impl BinauralRenderer {
         frame_size: usize,
         sample_rate: u32,
     ) -> Result<Self, DecodeError> {
-        if sample_rate != FILTER_SAMPLE_RATE {
+        if sample_rate != FILTER_SAMPLE_RATE
+            && !resampler::rates_supported(FILTER_SAMPLE_RATE, sample_rate)
+        {
             return Err(DecodeError::Unimplemented(
-                "binaural rendering requires 48 kHz streams (HRIR resampling not implemented)",
+                "unsupported sample rate for binaural rendering",
             ));
         }
         if frame_size == 0 {
@@ -88,7 +91,13 @@ impl BinauralRenderer {
         let hoa_channels = (order + 1) * (order + 1);
 
         let fft = FftManager::new(frame_size);
-        let (left, right) = filters::sh_hrirs(order, FilterProfile::Ambient)?;
+        let (mut left, mut right) = filters::sh_hrirs(order, FilterProfile::Ambient)?;
+        if sample_rate != FILTER_SAMPLE_RATE {
+            // obr resamples the SH-HRIRs to the stream rate at load.
+            for plane in left.iter_mut().chain(right.iter_mut()) {
+                *plane = resampler::resample(plane, FILTER_SAMPLE_RATE, sample_rate);
+            }
+        }
         debug_assert_eq!(left.len(), hoa_channels);
         let filters_left = left
             .iter()

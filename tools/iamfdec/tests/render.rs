@@ -161,6 +161,23 @@ fn animated_step_linear_bezier_16k() {
     render_case("test_000088", 0, 0, 1);
 }
 
+#[test]
+fn flac_scalable_stereo_layer_bit_exact() {
+    render_case("test_000073", 0, 0, 0);
+}
+
+#[test]
+fn flac_scalable_demixed_51() {
+    render_case("test_000073", 1, 1, 1);
+}
+
+/// AAC is lossy and the reference is rendered from the original PCM, so
+/// only coding-noise-level closeness is asserted.
+#[test]
+fn aac_stereo_decodes() {
+    render_case("test_000090", 0, 0, 512);
+}
+
 /// Binaural (output layout 14) currently uses the same gain matrices as
 /// the stereo render — libiamf-without-binauralizer behavior — so the two
 /// must match exactly.

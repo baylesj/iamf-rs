@@ -46,6 +46,8 @@ pub struct IamfrsDecoder {
 /// sequence). `output_layout` is the IAMF sound system numbering used by
 /// mix presentation layouts and iamf-tools `OutputLayout` (0 = stereo ...
 /// 13 = 9.1.6, 14 = binaural). `sample_type`: 1 = s16le, 2 = s32le.
+/// `mix_presentation_id`: the mix presentation to decode, or -1 to select
+/// automatically (a mix declaring the requested layout, else the first).
 ///
 /// # Safety
 /// `descriptors` must point to `size` readable bytes; `out` must be a
@@ -56,6 +58,7 @@ pub unsafe extern "C" fn iamfrs_decoder_create_from_descriptors(
     size: usize,
     output_layout: c_int,
     sample_type: c_int,
+    mix_presentation_id: i64,
     out: *mut *mut IamfrsDecoder,
 ) -> c_int {
     if descriptors.is_null() || out.is_null() {
@@ -73,10 +76,18 @@ pub unsafe extern "C" fn iamfrs_decoder_create_from_descriptors(
         _ => return IAMFRS_ERR_INVALID_ARG,
     };
     let data = unsafe { std::slice::from_raw_parts(descriptors, size) };
+    let mix_selection = if mix_presentation_id < 0 {
+        iamf_dec::stream::MixSelection::Auto
+    } else {
+        match u32::try_from(mix_presentation_id) {
+            Ok(id) => iamf_dec::stream::MixSelection::ById(id),
+            Err(_) => return IAMFRS_ERR_INVALID_ARG,
+        }
+    };
     let settings = StreamSettings {
         layout,
         sample_type,
-        mix_presentation_index: 0,
+        mix_selection,
     };
     match StreamDecoder::new_from_descriptors(data, settings, &DefaultFactory) {
         Ok(inner) => {
@@ -279,6 +290,7 @@ mod tests {
                     data.len(),
                     0,
                     1,
+                    -1,
                     &mut decoder
                 ),
                 IAMFRS_OK
