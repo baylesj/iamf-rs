@@ -7,6 +7,8 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "binaural")]
+pub mod binaural;
 pub mod channels;
 pub mod demixer;
 pub mod element;

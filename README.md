@@ -25,10 +25,14 @@ the iamf-tools API Chromium calls, so it can sit under Chrome's
 byte-identical to the batch path, including partial-OBU feeding and
 reset/seek.
 
-Known gaps: HRTF binaural (output layout 14 works but renders the same
-stereo fallback libiamf uses without its binauralizer), expanded
-loudspeaker layouts, AAC-LC/FLAC substreams, multi-sub-mix presentations,
-and resampling. Performance: on an Apple M-series laptop, head-to-head
+Binaural output (layout 14) is a native port of Google's
+[Open Binaural Renderer](https://github.com/google/obr): elements with
+`headphones_rendering_mode == 1` go through SH-domain HRIR convolution
+(obr's embedded filters, extracted like the gain matrices), matching
+iamf-tools' binaural output within 2 LSB; mode-0 elements use the stereo
+fallback, bit-exact with iamf-tools. Known gaps: expanded loudspeaker
+layouts, AAC-LC/FLAC substreams, multi-sub-mix presentations, and
+resampling (binaural HRIRs are 48 kHz-only for now). Performance: on an Apple M-series laptop, head-to-head
 against both C++ implementations on the same vectors, iamf-rs is faster
 than libiamf v1.1 on every measured path and 4–7× faster than iamf-tools'
 decoder (the implementation Chromium ships), with outputs matching
@@ -60,7 +64,11 @@ iamf-tools (issue #3).
 5. **Integration surface** — streaming decoder + C ABI shaped after the
    iamf-tools API Chromium consumes. *(done; ISO-BMFF demuxing is out of
    scope — Chromium's demuxer delivers descriptors + temporal units)*
-6. **Later** — binaural rendering, AAC-LC/FLAC, expanded layouts, higher
+6. **Binaural** — *(done)* native obr-style renderer: speaker/object→HOA
+   SH encoding, partitioned FFT convolution with obr's SH-HRIR filters,
+   obr peak limiter; validated ≤2 LSB against iamf-tools' `decoder_main
+   --output_layout Binaural`. 48 kHz streams only.
+7. **Later** — AAC-LC/FLAC, expanded layouts, HRIR resampling, higher
    profiles.
 
 ## Development
@@ -80,7 +88,10 @@ when present.
 
 ## License
 
-MIT or Apache-2.0, at your option. This is an independent implementation
-written from the IAMF specification; it does not incorporate code from
-libiamf (BSD-3-Clause-Clear + AOM Patent License 1.0), which is used only as
-a behavioral reference for conformance testing.
+MIT or Apache-2.0, at your option, for the code, which is an independent
+implementation written from the IAMF specification with libiamf used as a
+behavioral reference. Two sets of extracted data tables carry their
+upstream terms: the rendering gain matrices (from libiamf v1.1.0) and the
+SH-HRIR binaural filter assets in `crates/iamf-dec/assets/binaural/`
+(from google/obr), both BSD-3-Clause-Clear with their respective AOM/OBR
+patent licenses — see `assets/binaural/NOTICE`.

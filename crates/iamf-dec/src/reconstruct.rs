@@ -64,6 +64,18 @@ impl ChannelReconstructor {
         target: SoundSystem,
         frame_size: usize,
     ) -> Result<Self, DecodeError> {
+        Self::with_layer_selection(layers, target, frame_size, false)
+    }
+
+    /// `force_highest` selects the top layer regardless of the target —
+    /// libiamf's behavior for binaural output with
+    /// `headphones_rendering_mode == 1`.
+    pub fn with_layer_selection(
+        layers: &[ChannelAudioLayer],
+        target: SoundSystem,
+        frame_size: usize,
+        force_highest: bool,
+    ) -> Result<Self, DecodeError> {
         if layers.is_empty() {
             return Err(DecodeError::InvalidDescriptors("no channel layers".into()));
         }
@@ -85,8 +97,11 @@ impl ChannelReconstructor {
             target
         };
         let mut selected = layers.len() - 1;
-        let mut matched = false;
+        let mut matched = force_highest;
         for (i, layer) in layers.iter().enumerate() {
+            if matched {
+                break;
+            }
             if loudspeaker_sound_system(layer.loudspeaker_layout) == Some(selection_target) {
                 selected = i;
                 matched = true;
@@ -156,6 +171,11 @@ impl ChannelReconstructor {
 
     pub fn input_channels(&self) -> usize {
         self.input_channels
+    }
+
+    /// Loudspeaker layout of the selected layer.
+    pub fn layout(&self) -> u8 {
+        self.layout
     }
 
     /// Updates the demixing mode from a demixing parameter block (dynamic

@@ -102,6 +102,8 @@ struct FrameParams {
 struct ElementSlot {
     element: AudioElement,
     decoder: ElementDecoder,
+    /// §3.8.2: 0 = stereo fallback for headphones, 1 = HRTF binaural.
+    headphones_rendering_mode: u8,
     /// Linear default element mix gain.
     gain: f32,
     /// Parameter rate of the element mix gain parameter.
@@ -202,6 +204,7 @@ impl PresentationDecoder {
             slots.push(ElementSlot {
                 element: element.clone(),
                 decoder,
+                headphones_rendering_mode: sub_element.headphones_rendering_mode,
                 gain: q78_db_to_linear(sub_element.element_mix_gain.default_mix_gain),
                 gain_rate: sub_element.element_mix_gain.base.parameter_rate,
                 gain_blocks: Vec::new(),
@@ -315,7 +318,7 @@ impl PresentationDecoder {
             let gain = slot.gain;
             let gain_rate = slot.gain_rate;
             let gain_blocks = slot.gain_blocks.clone();
-            let (reconstructed, rate, trim_map) = reconstruct_slot(slot, target)?;
+            let (slot_output, rate, trim_map) = reconstruct_slot(slot, target)?;
             if rate != 0 {
                 sample_rate = rate;
             }
@@ -324,7 +327,10 @@ impl PresentationDecoder {
             }
             let track = (!gain_blocks.is_empty())
                 .then(|| evaluate_gain_track(&gain_blocks, gain, gain_rate, rate, &trim_map));
-            let rendered = render(&reconstructed, target_matrix)?;
+            let rendered = match slot_output {
+                SlotOutput::Planar(reconstructed) => render(&reconstructed, target_matrix)?,
+                SlotOutput::Stereo(stereo) => stereo,
+            };
             if mixed.is_empty() {
                 mixed = vec![Vec::new(); rendered.len()];
             }
@@ -426,6 +432,63 @@ fn evaluate_gain_track(
 /// its sample rate.
 type TrimMap = Vec<(usize, usize, usize)>;
 
+/// Reconstructed element audio: planar (to be matrix-rendered) or already
+/// binauralized stereo.
+enum SlotOutput {
+    Planar(Reconstructed),
+    Stereo(Vec<Vec<f32>>),
+}
+
+/// Runs planes through the obr-style binaural renderer in fixed-size
+/// blocks (untrimmed timeline; trims are applied afterwards).
+#[cfg(feature = "binaural")]
+fn binauralize(
+    planes: &[Vec<f32>],
+    input: crate::binaural::BinauralInput,
+    frame_size: usize,
+    sample_rate: u32,
+) -> Result<Vec<Vec<f32>>, DecodeError> {
+    let mut renderer = crate::binaural::BinauralRenderer::new(input, frame_size, sample_rate)?;
+    let total = planes.first().map(Vec::len).unwrap_or(0);
+    let mut out = vec![Vec::with_capacity(total), Vec::with_capacity(total)];
+    let mut pos = 0usize;
+    while pos < total {
+        let n = frame_size.min(total - pos);
+        let chunk: Vec<Vec<f32>> = planes
+            .iter()
+            .map(|p| {
+                let mut c = p[pos..pos + n].to_vec();
+                c.resize(frame_size, 0.0);
+                c
+            })
+            .collect();
+        let stereo = renderer.process(&chunk)?;
+        for (o, s) in out.iter_mut().zip(stereo.iter()) {
+            o.extend_from_slice(&s[..n]);
+        }
+        pos += n;
+    }
+    Ok(out)
+}
+
+/// Cuts trim spans out of planes, per temporal unit.
+fn apply_trim_map(planes: Vec<Vec<f32>>, trim_map: &TrimMap) -> Vec<Vec<f32>> {
+    planes
+        .into_iter()
+        .map(|plane| {
+            let mut out = Vec::with_capacity(plane.len());
+            let mut off = 0usize;
+            for &(len, start, end) in trim_map {
+                let upper = (off + len - end).min(plane.len());
+                let lower = (off + start).min(upper);
+                out.extend_from_slice(&plane[lower..upper]);
+                off += len;
+            }
+            out
+        })
+        .collect()
+}
+
 fn trim_map_of(frames: &[crate::element::FramePcm], channels: usize) -> TrimMap {
     frames
         .iter()
@@ -441,9 +504,12 @@ fn trim_map_of(frames: &[crate::element::FramePcm], channels: usize) -> TrimMap 
 fn reconstruct_slot(
     slot: ElementSlot,
     target: SoundSystem,
-) -> Result<(Reconstructed, u32, TrimMap), DecodeError> {
+) -> Result<(SlotOutput, u32, TrimMap), DecodeError> {
     use iamf_obu::descriptors::AudioElementConfig;
 
+    let hrtf = cfg!(feature = "binaural")
+        && target == SoundSystem::Binaural
+        && slot.headphones_rendering_mode == 1;
     let ElementSlot {
         element,
         decoder,
@@ -461,7 +527,8 @@ fn reconstruct_slot(
                 .map(|f| f.samples.len() / usize::from(substreams[0].channels.max(1)))
                 .unwrap_or(0);
 
-            let mut rec = ChannelReconstructor::new(layers, target, frame_size)?;
+            let mut rec =
+                ChannelReconstructor::with_layer_selection(layers, target, frame_size, hrtf)?;
             for param in &element.params {
                 if let ElementParam::Demixing {
                     default_demixing_mode,
@@ -493,12 +560,17 @@ fn reconstruct_slot(
                 }
                 let out = rec.process_frame(&planes)?;
 
-                // Trimming applies after reconstruction (frame-level trims
-                // are identical across the unit's substreams).
+                // For the HRTF path the untrimmed timeline is kept and
+                // trimmed after convolution; otherwise trim per unit
+                // (frame-level trims are identical across substreams).
                 let trim = &substreams[0].frames[k];
                 let count = out.first().map(Vec::len).unwrap_or(0);
-                let start = (trim.trim_start as usize).min(count);
-                let end = (trim.trim_end as usize).min(count - start);
+                let (start, end) = if hrtf {
+                    (0, 0)
+                } else {
+                    let start = (trim.trim_start as usize).min(count);
+                    (start, (trim.trim_end as usize).min(count - start))
+                };
                 if planar.is_empty() {
                     planar = vec![Vec::new(); out.len()];
                 }
@@ -510,11 +582,24 @@ fn reconstruct_slot(
                 .first()
                 .map(|s| trim_map_of(&s.frames, usize::from(s.channels.max(1))))
                 .unwrap_or_default();
+            #[cfg(feature = "binaural")]
+            if hrtf {
+                let stereo = binauralize(
+                    &planar,
+                    crate::binaural::BinauralInput::Speakers {
+                        loudspeaker_layout: rec.layout(),
+                    },
+                    frame_size,
+                    sample_rate,
+                )?;
+                let stereo = apply_trim_map(stereo, &trim_map);
+                return Ok((SlotOutput::Stereo(stereo), sample_rate, trim_map));
+            }
             Ok((
-                Reconstructed::Channels {
+                SlotOutput::Planar(Reconstructed::Channels {
                     matrix: rec.matrix,
                     planar,
-                },
+                }),
                 sample_rate,
                 trim_map,
             ))
@@ -527,9 +612,38 @@ fn reconstruct_slot(
                 .first()
                 .map(|s| trim_map_of(&s.frames, usize::from(s.channels.max(1))))
                 .unwrap_or_default();
+            #[cfg(feature = "binaural")]
+            if hrtf {
+                // Untrimmed planes through the binaural renderer, then trim.
+                let mut untrimmed: Vec<crate::element::SubstreamPcm> = Vec::new();
+                for f in &frames {
+                    let mut samples = Vec::new();
+                    for frame in &f.frames {
+                        samples.extend_from_slice(&frame.samples);
+                    }
+                    untrimmed.push(crate::element::SubstreamPcm {
+                        substream_id: f.substream_id,
+                        channels: f.channels,
+                        sample_rate: f.sample_rate,
+                        samples,
+                    });
+                }
+                let reconstructed = reconstruct_ambisonics(&element, &untrimmed)?;
+                let planes = reconstructed.planar();
+                let order = (planes.len() as f32).sqrt() as usize - 1;
+                let frame_size = trim_map.first().map(|&(len, _, _)| len).unwrap_or(0);
+                let stereo = binauralize(
+                    planes,
+                    crate::binaural::BinauralInput::Hoa { order },
+                    frame_size,
+                    sample_rate,
+                )?;
+                let stereo = apply_trim_map(stereo, &trim_map);
+                return Ok((SlotOutput::Stereo(stereo), sample_rate, trim_map));
+            }
             let substreams: Vec<_> = frames.iter().map(|f| f.trimmed()).collect();
             Ok((
-                reconstruct_ambisonics(&element, &substreams)?,
+                SlotOutput::Planar(reconstruct_ambisonics(&element, &substreams)?),
                 sample_rate,
                 trim_map,
             ))

@@ -7,8 +7,15 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = ["binaural"]
+# obr-style SH-domain binaural rendering (embeds ~1.8 MB of SH-HRIR
+# filter assets extracted from google/obr).
+binaural = ["dep:realfft"]
+
 [dependencies]
 iamf-obu = { path = "../iamf-obu" }
+realfft = { version = "3", optional = true }
 
 [lints]
 workspace = true

@@ -95,6 +95,10 @@ struct SlotState {
     params: VecDeque<FrameParams>,
     current: FrameParams,
     reconstructor: Option<ChannelReconstructor>,
+    /// §3.8.2: 0 = stereo fallback for headphones, 1 = HRTF binaural.
+    headphones_rendering_mode: u8,
+    #[cfg(feature = "binaural")]
+    binaural: Option<crate::binaural::BinauralRenderer>,
     gain_default: f32,
     gain_rate: u32,
     gain_cursor: GainCursor,
@@ -113,6 +117,39 @@ enum ParamKind {
     ReconGain,
     ElementMixGain,
     OutputMixGain,
+}
+
+/// Feeds one temporal unit's planes through a slot's stateful binaural
+/// renderer (created on first use with this unit's frame length).
+#[cfg(feature = "binaural")]
+fn binauralize_unit(
+    renderer: &mut Option<crate::binaural::BinauralRenderer>,
+    input: crate::binaural::BinauralInput,
+    planes: &[Vec<f32>],
+    frame_len: usize,
+    sample_rate: u32,
+) -> Result<Vec<Vec<f32>>, DecodeError> {
+    if renderer.is_none() {
+        *renderer = Some(crate::binaural::BinauralRenderer::new(
+            input,
+            frame_len,
+            sample_rate,
+        )?);
+    }
+    let r = renderer.as_mut().expect("created above");
+    let chunk: Vec<Vec<f32>> = planes
+        .iter()
+        .map(|p| {
+            let mut c = p.clone();
+            c.resize(frame_len.max(p.len()), 0.0);
+            c
+        })
+        .collect();
+    let [l, right] = r.process(&chunk)?;
+    Ok(vec![
+        l[..frame_len.min(l.len())].to_vec(),
+        right[..frame_len.min(right.len())].to_vec(),
+    ])
 }
 
 /// Streaming IAMF decoder for one mix presentation and output layout.
@@ -219,6 +256,9 @@ impl StreamDecoder {
             slots.push(SlotState {
                 element: element.clone(),
                 codec_config: codec_config.clone(),
+                headphones_rendering_mode: sub_element.headphones_rendering_mode,
+                #[cfg(feature = "binaural")]
+                binaural: None,
                 substream_ids: element.substream_ids.clone(),
                 channels,
                 decoders,
@@ -415,10 +455,18 @@ impl StreamDecoder {
                 planes.extend(deinterleave(&frame.samples, usize::from(ch.max(1))));
             }
 
+            let hrtf = cfg!(feature = "binaural")
+                && self.target == SoundSystem::Binaural
+                && slot.headphones_rendering_mode == 1;
             let rendered = match &slot.element.config {
                 AudioElementConfig::ChannelBased { layers } => {
                     if slot.reconstructor.is_none() {
-                        let mut rec = ChannelReconstructor::new(layers, self.target, frame_len)?;
+                        let mut rec = ChannelReconstructor::with_layer_selection(
+                            layers,
+                            self.target,
+                            frame_len,
+                            hrtf,
+                        )?;
                         for param in &slot.element.params {
                             if let ElementParam::Demixing {
                                 default_demixing_mode,
@@ -441,15 +489,55 @@ impl StreamDecoder {
                     if let Some(recon) = &params.recon {
                         rec.set_recon_gains(recon);
                     }
-                    let reconstructed = crate::reconstruct::Reconstructed::Channels {
-                        matrix: rec.matrix,
-                        planar: rec.process_frame(&planes)?,
+                    let planar = rec.process_frame(&planes)?;
+                    #[cfg(feature = "binaural")]
+                    let rendered = if hrtf {
+                        let layout = rec.layout();
+                        binauralize_unit(
+                            &mut slot.binaural,
+                            crate::binaural::BinauralInput::Speakers {
+                                loudspeaker_layout: layout,
+                            },
+                            &planar,
+                            frame_len,
+                            slot.sample_rate,
+                        )?
+                    } else {
+                        let reconstructed = crate::reconstruct::Reconstructed::Channels {
+                            matrix: rec.matrix,
+                            planar,
+                        };
+                        render(&reconstructed, target_matrix)?
                     };
-                    render(&reconstructed, target_matrix)?
+                    #[cfg(not(feature = "binaural"))]
+                    let rendered = {
+                        let reconstructed = crate::reconstruct::Reconstructed::Channels {
+                            matrix: rec.matrix,
+                            planar,
+                        };
+                        render(&reconstructed, target_matrix)?
+                    };
+                    rendered
                 }
                 _ => {
                     let reconstructed = ambisonics_from_planes(&slot.element.config, planes)?;
-                    render(&reconstructed, target_matrix)?
+                    #[cfg(feature = "binaural")]
+                    let rendered = if hrtf {
+                        let hoa = reconstructed.planar();
+                        let order = (hoa.len() as f32).sqrt() as usize - 1;
+                        binauralize_unit(
+                            &mut slot.binaural,
+                            crate::binaural::BinauralInput::Hoa { order },
+                            hoa,
+                            frame_len,
+                            slot.sample_rate,
+                        )?
+                    } else {
+                        render(&reconstructed, target_matrix)?
+                    };
+                    #[cfg(not(feature = "binaural"))]
+                    let rendered = render(&reconstructed, target_matrix)?;
+                    rendered
                 }
             };
 
@@ -558,6 +646,10 @@ impl StreamDecoder {
             slot.params.clear();
             slot.current = FrameParams::default();
             slot.reconstructor = None;
+            #[cfg(feature = "binaural")]
+            {
+                slot.binaural = None;
+            }
             slot.gain_cursor = GainCursor::default();
             for dec in &mut slot.decoders {
                 dec.reset();
