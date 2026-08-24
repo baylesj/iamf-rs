@@ -20,11 +20,13 @@ OBU parser → codec decoders → element reconstructor → renderer → mixer �
 - Optional loudness normalization and peak limiter post stage
 - Batch and streaming decoders (partial-OBU input, reset/seek), byte-identical outputs
 - Mix presentation selection: automatic by layout, by id, or by index
+- Output options matching iamf-tools: channel ordering (IAMF or Android/WAVE), auto or explicit s16le/s32le, trimming control, selected-mix query
 - C ABI (`iamf-capi`) shaped after the iamf-tools API Chromium consumes
-- `#![forbid(unsafe_code)]` outside the FFI boundary; fuzzed parser
+- `#![forbid(unsafe_code)]` outside the FFI boundary; parser and full stream decoder fuzzed (CI smoke + local corpus)
 
-Not yet supported: expanded loudspeaker layouts (base-enhanced profile),
-multi-sub-mix presentations, output-rate resampling.
+Not yet supported: expanded loudspeaker layouts (base-enhanced profile) and
+output-rate resampling. Multi-sub-mix presentations are rejected as invalid,
+matching the v1.1 spec (`num_sub_mixes` must be 1) and libiamf.
 
 ## Status (August 2026)
 

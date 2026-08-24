@@ -38,8 +38,9 @@ fn batch_decode(data: &[u8], sound_system: u8) -> Vec<u8> {
 fn stream_decode(data: &[u8], sound_system: u8, chunks: &[usize]) -> Vec<u8> {
     let settings = StreamSettings {
         layout: SoundSystem::from_u8(sound_system).unwrap(),
-        sample_type: OutputSampleType::Int16LittleEndian,
+        sample_type: Some(OutputSampleType::Int16LittleEndian),
         mix_selection: iamf_dec::stream::MixSelection::ByIndex(0),
+        ..StreamSettings::default()
     };
     let mut decoder = StreamDecoder::new_from_descriptors(data, settings, &DefaultFactory).unwrap();
     let mut out = Vec::new();
@@ -135,4 +136,45 @@ fn stream_reset_allows_redecode() {
         second.extend(decoder.get_output_temporal_unit().unwrap().unwrap());
     }
     assert_eq!(first, second);
+}
+
+/// Android channel ordering permutes the interleaved output (7.1.4:
+/// rears before sides).
+#[test]
+fn android_channel_ordering() {
+    let Some(data) = vector("test_000070") else {
+        return;
+    };
+    let decode = |ordering| {
+        let settings = StreamSettings {
+            layout: SoundSystem::from_u8(9).unwrap(),
+            sample_type: Some(OutputSampleType::Int16LittleEndian),
+            channel_ordering: ordering,
+            ..StreamSettings::default()
+        };
+        let mut decoder =
+            StreamDecoder::new_from_descriptors(&data, settings, &DefaultFactory).unwrap();
+        decoder.decode(&data).unwrap();
+        let mut out = Vec::new();
+        while decoder.is_temporal_unit_available() {
+            out.extend(decoder.get_output_temporal_unit().unwrap().unwrap());
+        }
+        out
+    };
+    let iamf = decode(iamf_dec::stream::ChannelOrdering::Iamf);
+    let android = decode(iamf_dec::stream::ChannelOrdering::Android);
+    assert_eq!(iamf.len(), android.len());
+    // 12 channels x 2 bytes per frame; Android takes ch6/7 where IAMF has
+    // ch4/5 and vice versa.
+    let stride = 12 * 2;
+    for frame in 0..64 {
+        let base = frame * stride;
+        for (android_slot, iamf_slot) in [(4, 6), (5, 7), (6, 4), (7, 5), (0, 0), (11, 11)] {
+            assert_eq!(
+                android[base + android_slot * 2..base + android_slot * 2 + 2],
+                iamf[base + iamf_slot * 2..base + iamf_slot * 2 + 2],
+                "frame {frame} slot {android_slot}"
+            );
+        }
+    }
 }

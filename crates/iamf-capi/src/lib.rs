@@ -42,44 +42,66 @@ pub struct IamfrsDecoder {
     pending_unit: Option<Vec<u8>>,
 }
 
+/// Decoder configuration, mirroring iamf-tools' `IamfDecoderFactory::Settings`.
+#[repr(C)]
+pub struct IamfrsSettings {
+    /// IAMF sound system numbering shared with iamf-tools `OutputLayout`
+    /// (0 = stereo ... 13 = 9.1.6, 14 = binaural).
+    pub output_layout: i32,
+    /// 0 = auto (from the stream's bit depth), 1 = s16le, 2 = s32le.
+    pub sample_type: i32,
+    /// Mix presentation to decode, or -1 to select automatically (a mix
+    /// declaring the requested layout, else the first).
+    pub mix_presentation_id: i64,
+    /// 0 = IAMF rendering order, 1 = Android/WAVE order (iamf-tools
+    /// `ChannelOrdering`).
+    pub channel_ordering: i32,
+    /// Nonzero disables trimming of num_samples_to_trim_at_start /
+    /// num_samples_to_trim_at_end (for callers whose demuxer trims via
+    /// edts/elst).
+    pub disable_trim_start: u8,
+    pub disable_trim_end: u8,
+}
+
 /// Creates a decoder from a descriptor blob (the descriptor OBUs of an IA
-/// sequence). `output_layout` is the IAMF sound system numbering used by
-/// mix presentation layouts and iamf-tools `OutputLayout` (0 = stereo ...
-/// 13 = 9.1.6, 14 = binaural). `sample_type`: 1 = s16le, 2 = s32le.
-/// `mix_presentation_id`: the mix presentation to decode, or -1 to select
-/// automatically (a mix declaring the requested layout, else the first).
+/// sequence) and `settings`.
 ///
 /// # Safety
-/// `descriptors` must point to `size` readable bytes; `out` must be a
-/// valid, writable pointer.
+/// `descriptors` must point to `size` readable bytes; `settings` and
+/// `out` must be valid pointers.
 #[no_mangle]
 pub unsafe extern "C" fn iamfrs_decoder_create_from_descriptors(
     descriptors: *const u8,
     size: usize,
-    output_layout: c_int,
-    sample_type: c_int,
-    mix_presentation_id: i64,
+    settings: *const IamfrsSettings,
     out: *mut *mut IamfrsDecoder,
 ) -> c_int {
-    if descriptors.is_null() || out.is_null() {
+    if descriptors.is_null() || out.is_null() || settings.is_null() {
         return IAMFRS_ERR_INVALID_ARG;
     }
-    let Some(layout) = u8::try_from(output_layout)
+    let c_settings = unsafe { &*settings };
+    let Some(layout) = u8::try_from(c_settings.output_layout)
         .ok()
         .and_then(SoundSystem::from_u8)
     else {
         return IAMFRS_ERR_INVALID_ARG;
     };
-    let sample_type = match sample_type {
-        1 => OutputSampleType::Int16LittleEndian,
-        2 => OutputSampleType::Int32LittleEndian,
+    let sample_type = match c_settings.sample_type {
+        0 => None,
+        1 => Some(OutputSampleType::Int16LittleEndian),
+        2 => Some(OutputSampleType::Int32LittleEndian),
+        _ => return IAMFRS_ERR_INVALID_ARG,
+    };
+    let channel_ordering = match c_settings.channel_ordering {
+        0 => iamf_dec::stream::ChannelOrdering::Iamf,
+        1 => iamf_dec::stream::ChannelOrdering::Android,
         _ => return IAMFRS_ERR_INVALID_ARG,
     };
     let data = unsafe { std::slice::from_raw_parts(descriptors, size) };
-    let mix_selection = if mix_presentation_id < 0 {
+    let mix_selection = if c_settings.mix_presentation_id < 0 {
         iamf_dec::stream::MixSelection::Auto
     } else {
-        match u32::try_from(mix_presentation_id) {
+        match u32::try_from(c_settings.mix_presentation_id) {
             Ok(id) => iamf_dec::stream::MixSelection::ById(id),
             Err(_) => return IAMFRS_ERR_INVALID_ARG,
         }
@@ -88,6 +110,11 @@ pub unsafe extern "C" fn iamfrs_decoder_create_from_descriptors(
         layout,
         sample_type,
         mix_selection,
+        channel_ordering,
+        trimming: iamf_dec::stream::TrimmingSettings {
+            trim_beginning: c_settings.disable_trim_start == 0,
+            trim_end: c_settings.disable_trim_end == 0,
+        },
     };
     match StreamDecoder::new_from_descriptors(data, settings, &DefaultFactory) {
         Ok(inner) => {
@@ -222,6 +249,17 @@ getter!(iamfrs_decoder_get_sample_rate, u32, |d: &StreamDecoder| d
     .sample_rate());
 getter!(iamfrs_decoder_get_frame_size, u32, |d: &StreamDecoder| d
     .frame_size());
+getter!(
+    iamfrs_decoder_get_selected_mix_presentation_id,
+    u32,
+    |d: &StreamDecoder| d.selected_mix().0
+);
+getter!(iamfrs_decoder_get_sample_type, u32, |d: &StreamDecoder| {
+    match d.sample_type() {
+        OutputSampleType::Int16LittleEndian => 1,
+        OutputSampleType::Int32LittleEndian => 2,
+    }
+});
 
 /// Drops buffered audio and parameter state (seek/discontinuity).
 ///
@@ -288,14 +326,30 @@ mod tests {
                 iamfrs_decoder_create_from_descriptors(
                     data.as_ptr(),
                     data.len(),
-                    0,
-                    1,
-                    -1,
+                    &IamfrsSettings {
+                        output_layout: 0,
+                        sample_type: 0, // auto: 16-bit LPCM resolves to s16le
+                        mix_presentation_id: -1,
+                        channel_ordering: 0,
+                        disable_trim_start: 0,
+                        disable_trim_end: 0,
+                    },
                     &mut decoder
                 ),
                 IAMFRS_OK
             );
             let (mut channels, mut rate, mut frame_size) = (0u32, 0u32, 0u32);
+            let (mut mix_id, mut resolved_type) = (0u32, 0u32);
+            assert_eq!(
+                iamfrs_decoder_get_selected_mix_presentation_id(decoder, &mut mix_id),
+                IAMFRS_OK
+            );
+            assert_eq!(mix_id, 42);
+            assert_eq!(
+                iamfrs_decoder_get_sample_type(decoder, &mut resolved_type),
+                IAMFRS_OK
+            );
+            assert_eq!(resolved_type, 1);
             assert_eq!(
                 iamfrs_decoder_get_num_output_channels(decoder, &mut channels),
                 IAMFRS_OK

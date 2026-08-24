@@ -35,19 +35,35 @@ enum iamfrs_sample_type {
   IAMFRS_SAMPLE_INT32_LE = 2,
 };
 
-/* output_layout uses the IAMF sound-system numbering shared by mix
- * presentation layouts and iamf_tools OutputLayout:
- * 0=stereo(A) 1=5.1(B) 2=5.1.2(C) 3=5.1.4(D) 4=E 5=F 6=G 7=H(22.2)
- * 8=7.1(I) 9=7.1.4(J) 10=7.1.2 11=3.1.2 12=mono 13=9.1.6
- * 14=binaural (currently a headphone-suitable stereo render without HRTF
- * processing, matching libiamf built without its binauralizer). */
-/* mix_presentation_id selects the mix presentation to decode; pass -1 to
- * select automatically (a mix declaring the requested layout, else the
- * first). */
+enum iamfrs_channel_ordering {
+  IAMFRS_ORDERING_IAMF = 0,    /* IAMF rendering order */
+  IAMFRS_ORDERING_ANDROID = 1, /* Android AudioFormat / WAVE order */
+};
+
+/* Decoder configuration, mirroring iamf_tools IamfDecoderFactory::Settings. */
+typedef struct IamfrsSettings {
+  /* IAMF sound-system numbering shared with iamf_tools OutputLayout:
+   * 0=stereo(A) 1=5.1(B) 2=5.1.2(C) 3=5.1.4(D) 4=E 5=F 6=G 7=H(22.2)
+   * 8=7.1(I) 9=7.1.4(J) 10=7.1.2 11=3.1.2 12=mono 13=9.1.6
+   * 14=binaural (HRTF for elements with headphones_rendering_mode == 1,
+   * stereo fallback otherwise, matching iamf-tools/obr). */
+  int32_t output_layout;
+  /* 0 = auto (from the stream's bit depth), 1 = s16le, 2 = s32le. */
+  int32_t sample_type;
+  /* Mix presentation to decode, or -1 for automatic selection (a mix
+   * declaring the requested layout, else the first). */
+  int64_t mix_presentation_id;
+  /* enum iamfrs_channel_ordering. */
+  int32_t channel_ordering;
+  /* Nonzero disables trimming at stream start / end (for callers whose
+   * demuxer trims via edts/elst). */
+  uint8_t disable_trim_start;
+  uint8_t disable_trim_end;
+} iamfrs_settings;
+
 int iamfrs_decoder_create_from_descriptors(const uint8_t *descriptors,
-                                           size_t size, int output_layout,
-                                           int sample_type,
-                                           int64_t mix_presentation_id,
+                                           size_t size,
+                                           const iamfrs_settings *settings,
                                            iamfrs_decoder **out);
 
 /* Push bitstream bytes; partial OBUs are buffered internally. */
@@ -70,6 +86,14 @@ int iamfrs_decoder_get_sample_rate(const iamfrs_decoder *decoder,
                                    uint32_t *out);
 int iamfrs_decoder_get_frame_size(const iamfrs_decoder *decoder,
                                   uint32_t *out);
+
+/* The mix presentation actually selected (iamf_tools GetOutputMix). */
+int iamfrs_decoder_get_selected_mix_presentation_id(
+    const iamfrs_decoder *decoder, uint32_t *out);
+
+/* The resolved output sample type: 1 = s16le, 2 = s32le. */
+int iamfrs_decoder_get_sample_type(const iamfrs_decoder *decoder,
+                                   uint32_t *out);
 
 /* Drops buffered audio and parameter state (seek/discontinuity). */
 int iamfrs_decoder_reset(iamfrs_decoder *decoder);

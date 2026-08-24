@@ -16,6 +16,43 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache test vectors
+        uses: actions/cache@v4
+        with:
+          path: tests/vectors
+          key: iamf-vectors-${{ hashFiles('tools/fetch_vectors.sh') }}
+      - name: Fetch conformance vectors
+        run: ./tools/fetch_vectors.sh
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace --all-features
+      - name: Check feature combinations
+        run: |
+          cargo check -p iamf-dec --no-default-features
+          cargo check -p iamf-codecs --no-default-features
+          cargo check -p iamf-codecs --features pcm,opus
+
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - run: cargo install cargo-fuzz --locked
+      - name: Cache test vectors
+        uses: actions/cache@v4
+        with:
+          path: tests/vectors
+          key: iamf-vectors-${{ hashFiles('tools/fetch_vectors.sh') }}
+      - name: Fetch corpus seeds
+        run: |
+          ./tools/fetch_vectors.sh
+          mkdir -p fuzz/corpus/decode_stream
+          cp tests/vectors/*.iamf fuzz/corpus/decode_stream/
+      - name: Fuzz smoke (parser + stream decoder)
+        run: |
+          cargo fuzz run parse_obu -- -max_total_time=60
+          cargo fuzz run decode_stream -- -max_total_time=120 -max_len=200000

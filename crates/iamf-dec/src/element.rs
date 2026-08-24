@@ -99,7 +99,7 @@ impl ElementDecoder {
             return Err(DecodeError::UnsupportedCodec);
         }
         let channels = substream_channels(&element.config);
-        if channels.len() != element.substream_ids.len() {
+        if channels.is_empty() || channels.len() != element.substream_ids.len() {
             return Err(DecodeError::InvalidDescriptors(format!(
                 "element {} declares {} substream ids but its config implies {}",
                 element.audio_element_id,

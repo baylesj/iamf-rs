@@ -10,10 +10,19 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 iamf-obu = { path = "../crates/iamf-obu" }
+iamf-dec = { path = "../crates/iamf-dec" }
+iamf-codecs = { path = "../crates/iamf-codecs", features = ["pcm", "opus", "flac", "aac"] }
 
 [[bin]]
 name = "parse_obu"
 path = "fuzz_targets/parse_obu.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode_stream"
+path = "fuzz_targets/decode_stream.rs"
 test = false
 doc = false
 bench = false

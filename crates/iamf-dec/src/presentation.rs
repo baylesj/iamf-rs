@@ -152,7 +152,10 @@ impl PresentationDecoder {
                 "no such mix presentation".into(),
             ))?;
         let [sub_mix] = mix.sub_mixes.as_slice() else {
-            return Err(DecodeError::Unimplemented("multiple sub mixes"));
+            // IAMF v1.1 requires num_sub_mixes == 1 in every profile.
+            return Err(DecodeError::InvalidDescriptors(
+                "IAMF v1.1 requires exactly one sub mix per mix presentation".into(),
+            ));
         };
 
         let mut slots = Vec::new();

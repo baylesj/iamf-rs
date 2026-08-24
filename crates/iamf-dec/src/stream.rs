@@ -33,12 +33,43 @@ impl OutputSampleType {
     }
 }
 
+/// Output channel ordering (iamf-tools `ChannelOrdering`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ChannelOrdering {
+    /// IAMF rendering order, as the sound systems define it.
+    #[default]
+    Iamf,
+    /// Android AudioFormat / WAVE order (matches iamf-tools
+    /// `kOrderingForAndroid`).
+    Android,
+}
+
+/// Frame trimming control (iamf-tools `TrimmingSettings`): disable when an
+/// outer layer (e.g. an MP4 demuxer honoring edts/elst) trims instead.
+#[derive(Debug, Clone, Copy)]
+pub struct TrimmingSettings {
+    pub trim_beginning: bool,
+    pub trim_end: bool,
+}
+
+impl Default for TrimmingSettings {
+    fn default() -> Self {
+        TrimmingSettings {
+            trim_beginning: true,
+            trim_end: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct StreamSettings {
     pub layout: SoundSystem,
-    pub sample_type: OutputSampleType,
+    /// `None` selects s16le or s32le from the stream's bit depth.
+    pub sample_type: Option<OutputSampleType>,
     /// Which mix presentation to decode.
     pub mix_selection: MixSelection,
+    pub channel_ordering: ChannelOrdering,
+    pub trimming: TrimmingSettings,
 }
 
 /// Mix presentation selection (iamf-tools `RequestedMix` shape).
@@ -58,9 +89,42 @@ impl Default for StreamSettings {
     fn default() -> Self {
         StreamSettings {
             layout: SoundSystem::A,
-            sample_type: OutputSampleType::Int16LittleEndian,
+            sample_type: Some(OutputSampleType::Int16LittleEndian),
             mix_selection: MixSelection::Auto,
+            channel_ordering: ChannelOrdering::default(),
+            trimming: TrimmingSettings::default(),
         }
+    }
+}
+
+/// Output channel permutation for a target layout and ordering
+/// (iamf-tools `ChannelReorderer`): entry i is the rendered-channel index
+/// written to interleaved slot i.
+fn output_permutation(target: SoundSystem, ordering: ChannelOrdering) -> Vec<usize> {
+    let identity = |n: usize| (0..n).collect::<Vec<_>>();
+    let channels = target.channels();
+    if ordering == ChannelOrdering::Iamf {
+        return identity(channels);
+    }
+    match target {
+        // [L, R, C, LFE, Lss, Rss, Lrs, Rrs, ...]: Android wants rears
+        // before sides.
+        SoundSystem::I | SoundSystem::J | SoundSystem::Ext712 => {
+            let mut p = identity(channels);
+            p.swap(4, 6);
+            p.swap(5, 7);
+            p
+        }
+        // [C, L, R, LH, RH, LS, RS, LB, RB, CH, LFE1, LFE2]
+        SoundSystem::F => vec![1, 2, 0, 10, 7, 8, 5, 6, 9, 3, 4, 11],
+        // [L, R, C, LFE, Lss, Rss, Lrs, Rrs, Ltf, Rtf, Ltb, Rtb, Lsc, Rsc]
+        SoundSystem::G => vec![0, 1, 2, 3, 6, 7, 12, 13, 4, 5, 8, 9, 10, 11],
+        // BS.2051 H (9+10+3), see iamf-tools ReorderSoundSystemHForAndroid.
+        SoundSystem::H => vec![
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 15, 12, 14, 13, 16, 20, 17, 18, 19, 22, 21, 23, 9,
+        ],
+        // Everything else matches Android order already.
+        _ => identity(channels),
     }
 }
 
@@ -215,6 +279,11 @@ pub struct StreamDecoder {
     param_index: HashMap<u32, (usize, ParamKind, ParamDefinition)>,
     target: SoundSystem,
     sample_type: OutputSampleType,
+    /// Output channel permutation: slot i of the interleaved output takes
+    /// rendered channel `permutation[i]`.
+    permutation: Vec<usize>,
+    trimming: TrimmingSettings,
+    selected_mix_id: u32,
     output_gain_default: f32,
     output_gain_rate: u32,
     output_cursor: GainCursor,
@@ -245,7 +314,11 @@ impl StreamDecoder {
         )?;
         let mix = &parsed.mix_presentations[mix_index];
         let [sub_mix] = mix.sub_mixes.as_slice() else {
-            return Err(DecodeError::Unimplemented("multiple sub mixes"));
+            // IAMF v1.1 requires num_sub_mixes == 1 in every profile
+            // (libiamf rejects such streams outright as well).
+            return Err(DecodeError::InvalidDescriptors(
+                "IAMF v1.1 requires exactly one sub mix per mix presentation".into(),
+            ));
         };
 
         let mut slots = Vec::new();
@@ -277,7 +350,7 @@ impl StreamDecoder {
             }
             frame_size = codec_config.num_samples_per_frame;
             let channels = substream_channels(&element.config);
-            if channels.len() != element.substream_ids.len() {
+            if channels.is_empty() || channels.len() != element.substream_ids.len() {
                 return Err(DecodeError::InvalidDescriptors(
                     "substream count mismatch".into(),
                 ));
@@ -345,11 +418,33 @@ impl StreamDecoder {
             ),
         );
 
+        // Auto sample type: s32le when any codec carries more than 16
+        // bits, else s16le.
+        let sample_type = settings.sample_type.unwrap_or_else(|| {
+            let deep = parsed.codec_configs.iter().any(|c| {
+                use iamf_obu::descriptors::DecoderConfig;
+                match &c.decoder_config {
+                    DecoderConfig::Lpcm { sample_size, .. } => *sample_size > 16,
+                    DecoderConfig::Flac {
+                        bits_per_sample, ..
+                    } => *bits_per_sample > 16,
+                    _ => false,
+                }
+            });
+            if deep {
+                OutputSampleType::Int32LittleEndian
+            } else {
+                OutputSampleType::Int16LittleEndian
+            }
+        });
         Ok(StreamDecoder {
             slots,
             param_index,
             target: settings.layout,
-            sample_type: settings.sample_type,
+            sample_type,
+            permutation: output_permutation(settings.layout, settings.channel_ordering),
+            trimming: settings.trimming,
+            selected_mix_id: mix.mix_presentation_id,
             output_gain_default: crate::params::q78_db_to_linear(
                 sub_mix.output_mix_gain.default_mix_gain,
             ),
@@ -621,8 +716,16 @@ impl StreamDecoder {
         let out_gains: Vec<f32> = (0..unit_len)
             .map(|_| self.output_cursor.next(self.output_gain_default))
             .collect();
-        let start = (trim.0 as usize).min(unit_len);
-        let end = (trim.1 as usize).min(unit_len - start);
+        let start = if self.trimming.trim_beginning {
+            (trim.0 as usize).min(unit_len)
+        } else {
+            0
+        };
+        let end = if self.trimming.trim_end {
+            (trim.1 as usize).min(unit_len - start)
+        } else {
+            0
+        };
         let kept = unit_len - start - end;
         let mut bytes =
             Vec::with_capacity(kept * out_channels * self.sample_type.bytes_per_sample());
@@ -632,8 +735,13 @@ impl StreamDecoder {
             .take(unit_len - end)
             .skip(start)
         {
-            for plane in &mixed {
-                let sample = plane.get(t).copied().unwrap_or(0.0) * gain;
+            for &source in &self.permutation {
+                let sample = mixed
+                    .get(source)
+                    .and_then(|p| p.get(t))
+                    .copied()
+                    .unwrap_or(0.0)
+                    * gain;
                 match self.sample_type {
                     OutputSampleType::Int16LittleEndian => {
                         let scaled = (sample * 32768.0).clamp(-32768.0, 32767.0);
@@ -682,6 +790,12 @@ impl StreamDecoder {
 
     pub fn sample_type(&self) -> OutputSampleType {
         self.sample_type
+    }
+
+    /// The mix presentation actually selected, and the output layout it is
+    /// rendered to (iamf-tools `GetOutputMix` / `SelectedMix`).
+    pub fn selected_mix(&self) -> (u32, SoundSystem) {
+        (self.selected_mix_id, self.target)
     }
 
     /// Marks end of stream. Our pipeline holds no look-ahead, so any
