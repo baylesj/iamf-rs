@@ -28,6 +28,26 @@ Not yet supported: expanded loudspeaker layouts (base-enhanced profile) and
 output-rate resampling. Multi-sub-mix presentations are rejected as invalid,
 matching the v1.1 spec (`num_sub_mixes` must be 1) and libiamf.
 
+## Demo
+
+Put on headphones and run the terminal player:
+
+```sh
+tools/fetch_vectors.sh --demo   # real 7.1.4/ambisonics content (iamf-tools web demo)
+cargo run --release -p iamfplay -- tests/demo/7_1_4_Flac.iamf
+```
+
+Press `b` to flip between plain stereo and HRTF binaural mid-stream — the
+switch is a sample-aligned crossfade, so listen for the mix moving out of
+your head. Space pauses, `←`/`→` seek, `q` quits. The meters show the
+12-channel bed being folded into the 2 channels you hear. Also accepts
+IAMF-in-MP4, and `--demo` instead of a file plays a generated third-order
+ambisonics scene (a bee orbiting your head) authored on the fly.
+
+Building `iamfplay` needs libopus (`brew install opus` /
+`apt install libopus-dev libasound2-dev`); pass `--no-default-features`
+to use the pure-Rust Opus decoder instead (slow, see issue #5).
+
 ## Status (August 2026)
 
 Conformance: outputs are checked against the libiamf test-vector suite and

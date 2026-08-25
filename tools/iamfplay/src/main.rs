@@ -18,7 +18,7 @@ use iamf_dec::layout::SoundSystem;
 use iamf_dec::stream::{MixSelection, StreamDecoder, StreamSettings};
 use iamf_obu::descriptors::{self, Descriptor};
 use iamf_obu::{ByteReader, Obu, ObuType};
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -440,6 +440,11 @@ fn run(name: &str, descriptors_bytes: Vec<u8>, media: Vec<u8>) -> Result<(), Str
             Ok(true) => match event::read() {
                 Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => break Ok(()),
+                    // Raw mode swallows the SIGINT-generating keystroke, so
+                    // honor Ctrl+C explicitly.
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        break Ok(())
+                    }
                     KeyCode::Char('b') => {
                         let mode = control.mode.load(Ordering::Relaxed) ^ 1;
                         control.mode.store(mode, Ordering::Relaxed);
