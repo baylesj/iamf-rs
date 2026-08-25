@@ -724,7 +724,7 @@ mod tests {
         // Metadata block header: last=1, type=0 (STREAMINFO), length=34.
         payload.extend(0x8000_0022u32.to_be_bytes());
         payload.extend([0u8; 10]); // block/frame sizes
-                                   // sample_rate=48000 (20 bits), channels-1=1 (3 bits), bps-1=15 (5).
+        // sample_rate=48000 (20 bits), channels-1=1 (3 bits), bps-1=15 (5).
         let packed: u32 = (48000 << 12) | (1 << 9) | (15 << 4);
         payload.extend(packed.to_be_bytes());
         payload.extend([0u8; 20]); // rest of STREAMINFO, unread
@@ -842,7 +842,7 @@ mod tests {
         payload.extend(b"Main\0"); // localized element annotation
         payload.push(0x00); // headphones_rendering_mode=0, reserved
         payload.push(0x00); // rendering_config_extension_size = 0
-                            // element_mix_gain: id, rate, mode=1 (no timing), default gain.
+        // element_mix_gain: id, rate, mode=1 (no timing), default gain.
         payload.push(0x00);
         payload.extend([0x80, 0xf7, 0x02]);
         payload.push(0x80);

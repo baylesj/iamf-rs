@@ -1,4 +1,4 @@
-use crate::{leb128, Error, Result};
+use crate::{Error, Result, leb128};
 
 /// A bounds-checked cursor over untrusted input.
 #[derive(Debug, Clone)]

@@ -9,11 +9,7 @@ const TRANSITION_BANDWIDTH_RATIO: usize = 13;
 const MAX_FILTER_LENGTH: usize = 16384;
 
 fn gcd(a: usize, b: usize) -> usize {
-    if b == 0 {
-        a
-    } else {
-        gcd(b, a % b)
-    }
+    if b == 0 { a } else { gcd(b, a % b) }
 }
 
 pub fn rates_supported(source: u32, destination: u32) -> bool {

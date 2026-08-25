@@ -8,12 +8,12 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use iamf_codecs::DefaultFactory;
 use iamf_dec::layout::SoundSystem;
 use iamf_dec::presentation::{Descriptors, PresentationDecoder};
 use iamf_dec::stream::{StreamDecoder, StreamSettings};
-use iamf_obu::{descriptors, ObuIter};
+use iamf_obu::{ObuIter, descriptors};
 
 struct Case {
     /// Vector base name.

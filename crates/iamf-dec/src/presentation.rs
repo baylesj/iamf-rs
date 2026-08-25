@@ -16,7 +16,7 @@ use crate::element::ElementDecoder;
 use crate::layout::SoundSystem;
 use crate::params::{ParamContext, ParameterBlock, ReconGainLayers, SubblockData};
 use crate::reconstruct::{
-    deinterleave, reconstruct_ambisonics, ChannelReconstructor, Reconstructed,
+    ChannelReconstructor, Reconstructed, deinterleave, reconstruct_ambisonics,
 };
 use crate::render::render;
 use crate::{CodecFactory, DecodeError};

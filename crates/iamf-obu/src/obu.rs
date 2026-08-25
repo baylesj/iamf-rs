@@ -31,7 +31,7 @@ impl ObuType {
                 return Err(Error::ReservedObuType {
                     obu_type: raw,
                     offset,
-                })
+                });
             }
             31 => ObuType::SequenceHeader,
             _ => unreachable!("obu_type is a 5-bit field"),

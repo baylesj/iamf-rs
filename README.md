@@ -1,5 +1,7 @@
 # iamf-rs
 
+[![CI](https://github.com/baylesj/iamf-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/baylesj/iamf-rs/actions/workflows/ci.yml)
+
 A pure-Rust decoder for [IAMF](https://aomediacodec.github.io/iamf/) (Immersive
 Audio Model and Formats / Eclipsa Audio), structured after the pipeline of the
 [libiamf](https://github.com/AOMediaCodec/libiamf) reference decoder:
@@ -81,7 +83,7 @@ currently much slower on real content — its transforms are naive DFTs
 | --- | --- |
 | `iamf-obu` | OBU framing and descriptor parsing of untrusted input. `#![forbid(unsafe_code)]`, fuzzed, no dependencies. |
 | `iamf-dec` | Pipeline stages: reconstruction, rendering, mixing, loudness/limiting, plus the batch and streaming decoders. Codec layer is pluggable via the `SubstreamDecoder` / `CodecFactory` traits. |
-| `iamf-codecs` | Feature-gated `SubstreamDecoder` implementations: LPCM, Opus (pure-Rust [opus-decoder](https://crates.io/crates/opus-decoder) by default, or libopus via the `opus-ffi` feature); FLAC and AAC-LC planned. |
+| `iamf-codecs` | Feature-gated `SubstreamDecoder` implementations: LPCM, Opus (pure-Rust [opus-decoder](https://crates.io/crates/opus-decoder), or libopus via the `opus-ffi` feature), FLAC and AAC-LC (symphonia). |
 | `iamf-capi` | C ABI (`libiamf_rs` cdylib/staticlib + `include/iamf_rs.h`) over the streaming decoder. |
 | `tools/iamfdec` | CLI: inspect and decode/render standalone `.iamf` files to WAV. |
 | `tools/iamfplay` | Terminal player: live playback (`.iamf` or IAMF-in-MP4) with instant stereo ⇄ binaural toggle, channel meters, and a generated 3OA demo scene (`--demo`). Headphones recommended. |

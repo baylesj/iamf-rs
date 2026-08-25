@@ -1,7 +1,7 @@
 //! Substream-by-substream decoding of one audio element.
 
-use iamf_obu::descriptors::{AudioElement, AudioElementConfig, CodecConfig};
 use iamf_obu::AudioFrame;
+use iamf_obu::descriptors::{AudioElement, AudioElementConfig, CodecConfig};
 
 use crate::{CodecFactory, DecodeError, DecodedFrame, SubstreamDecoder};
 

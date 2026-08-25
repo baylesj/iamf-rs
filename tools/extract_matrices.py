@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 """Extracts rendering gain matrices from libiamf v1.1 m2m_rdr.c / h2m_rdr.c
-into a generated Rust module for iamf-dec."""
+into a generated Rust module for iamf-dec.
+
+Usage: extract_matrices.py <libiamf-checkout>/code/src/iamf_dec
+(pin the checkout to the v1.1.0 tag; see NOTICE). Run `cargo fmt`
+afterwards; the committed file is formatted."""
+import pathlib
 import re
 import sys
 
-SRC = "/private/tmp/claude-501/-Users-jordan-GitHub/e3912787-1e7a-44f4-a74c-bed568439dd3/scratchpad/libiamf-v1.1/code/src/iamf_dec"
-OUT = "/Users/jordan/GitHub/iamf-rs/crates/iamf-dec/src/matrices.rs"
+if len(sys.argv) != 2:
+    sys.exit(__doc__)
+SRC = sys.argv[1]
+OUT = pathlib.Path(__file__).resolve().parent.parent / "crates/iamf-dec/src/matrices.rs"
 
 TOKEN_MAP = {
     "IAMF_MONO": "Mono", "IAMF_STEREO": "Stereo", "IAMF_312": "Iamf312",

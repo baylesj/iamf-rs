@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.1 — 2026-08-25
+
+- `tools/iamfplay`: terminal demo player — live playback of `.iamf` and
+  IAMF-in-MP4 (built-in minimal ISO-BMFF demuxer), instant sample-aligned
+  stereo ⇄ binaural toggle, channel-bed meters, mix cycling, and a
+  generated third-order-ambisonics demo scene (`--demo`).
+- `tools/fetch_vectors.sh --demo` fetches real produced content from the
+  iamf-tools web demo.
+- New public API: `iamf_dec::binaural::sh_coeffs`; new C API getter
+  `iamfrs_decoder_get_selected_layout`.
+- Corrected README performance claims: the pure-Rust `opus-decoder`
+  fallback is far below realtime on production content (its transforms
+  are naive DFTs, issue #5); the published numbers use `opus-ffi`.
+- Rust edition 2024 (MSRV stays 1.85); FFI unsafety is now explicit via
+  `unsafe extern` and `#[unsafe(no_mangle)]`.
+- Docs: demo section, SECURITY.md, CONTRIBUTING.md, CI badge;
+  `extract_matrices.py` takes the libiamf path as an argument.
+
 ## 0.1.0 — 2026-08-24
 
 Initial release: a pure-Rust IAMF (Eclipsa Audio) v1.1 decoder.

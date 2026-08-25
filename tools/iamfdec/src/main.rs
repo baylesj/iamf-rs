@@ -9,8 +9,8 @@ use std::process::ExitCode;
 use iamf_codecs::DefaultFactory;
 use iamf_dec::layout::SoundSystem;
 use iamf_dec::presentation::{Descriptors, PresentationDecoder};
-use iamf_obu::descriptors::{self, AudioElementConfig, Descriptor, Layout};
 use iamf_obu::ObuIter;
+use iamf_obu::descriptors::{self, AudioElementConfig, Descriptor, Layout};
 
 struct Options {
     sound_system: u8,

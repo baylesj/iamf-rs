@@ -8,8 +8,8 @@ mod demo;
 mod mp4;
 
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU64, Ordering};
 use std::time::Instant;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -18,11 +18,11 @@ use iamf_dec::layout::SoundSystem;
 use iamf_dec::stream::{MixSelection, StreamDecoder, StreamSettings};
 use iamf_obu::descriptors::{self, Descriptor};
 use iamf_obu::{ByteReader, Obu, ObuType};
+use ratatui::crossterm::ExecutableCommand;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use ratatui::crossterm::ExecutableCommand;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -443,7 +443,7 @@ fn run(name: &str, descriptors_bytes: Vec<u8>, media: Vec<u8>) -> Result<(), Str
                     // Raw mode swallows the SIGINT-generating keystroke, so
                     // honor Ctrl+C explicitly.
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        break Ok(())
+                        break Ok(());
                     }
                     KeyCode::Char('b') => {
                         let mode = control.mode.load(Ordering::Relaxed) ^ 1;

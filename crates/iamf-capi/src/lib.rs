@@ -14,9 +14,9 @@
 use std::ffi::c_int;
 
 use iamf_codecs::DefaultFactory;
+use iamf_dec::DecodeError;
 use iamf_dec::layout::SoundSystem;
 use iamf_dec::stream::{OutputSampleType, StreamDecoder, StreamSettings};
-use iamf_dec::DecodeError;
 
 pub const IAMFRS_OK: c_int = 0;
 pub const IAMFRS_ERR_INVALID_ARG: c_int = -1;
@@ -69,7 +69,7 @@ pub struct IamfrsSettings {
 /// # Safety
 /// `descriptors` must point to `size` readable bytes; `settings` and
 /// `out` must be valid pointers.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn iamfrs_decoder_create_from_descriptors(
     descriptors: *const u8,
     size: usize,
@@ -134,7 +134,7 @@ pub unsafe extern "C" fn iamfrs_decoder_create_from_descriptors(
 /// # Safety
 /// `decoder` must be a live handle from create; `data` must point to
 /// `size` readable bytes.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn iamfrs_decoder_decode(
     decoder: *mut IamfrsDecoder,
     data: *const u8,
@@ -161,7 +161,7 @@ pub unsafe extern "C" fn iamfrs_decoder_decode(
 ///
 /// # Safety
 /// `decoder` must be a live handle from create.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn iamfrs_decoder_is_temporal_unit_available(
     decoder: *const IamfrsDecoder,
 ) -> c_int {
@@ -180,7 +180,7 @@ pub unsafe extern "C" fn iamfrs_decoder_is_temporal_unit_available(
 /// `decoder` must be a live handle; `buffer` must point to `capacity`
 /// writable bytes (may be null when `capacity` is 0, to query the size);
 /// `bytes_written` must be valid and writable.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn iamfrs_decoder_get_output_temporal_unit(
     decoder: *mut IamfrsDecoder,
     buffer: *mut u8,
@@ -223,7 +223,7 @@ macro_rules! getter {
         /// # Safety
         /// `decoder` must be a live handle; the out pointer must be valid
         /// and writable.
-        #[no_mangle]
+        #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $name(decoder: *const IamfrsDecoder, out: *mut $ty) -> c_int {
             let Some(handle) = (unsafe { decoder.as_ref() }) else {
                 return IAMFRS_ERR_INVALID_ARG;
@@ -270,7 +270,7 @@ getter!(iamfrs_decoder_get_sample_type, u32, |d: &StreamDecoder| {
 ///
 /// # Safety
 /// `decoder` must be a live handle from create.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn iamfrs_decoder_reset(decoder: *mut IamfrsDecoder) -> c_int {
     let Some(handle) = (unsafe { decoder.as_mut() }) else {
         return IAMFRS_ERR_INVALID_ARG;
@@ -284,7 +284,7 @@ pub unsafe extern "C" fn iamfrs_decoder_reset(decoder: *mut IamfrsDecoder) -> c_
 ///
 /// # Safety
 /// `decoder` must be a live handle from create.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn iamfrs_decoder_signal_end_of_decoding(
     decoder: *mut IamfrsDecoder,
 ) -> c_int {
@@ -300,7 +300,7 @@ pub unsafe extern "C" fn iamfrs_decoder_signal_end_of_decoding(
 /// # Safety
 /// `decoder` must be null or a live handle from create, and must not be
 /// used afterwards.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn iamfrs_decoder_destroy(decoder: *mut IamfrsDecoder) {
     if !decoder.is_null() {
         drop(unsafe { Box::from_raw(decoder) });

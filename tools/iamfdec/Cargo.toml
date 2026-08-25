@@ -1,6 +1,6 @@
 [package]
 name = "iamfdec"
-description = "CLI for inspecting and (eventually) decoding standalone .iamf files"
+description = "CLI for inspecting and decoding/rendering standalone .iamf files to WAV"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

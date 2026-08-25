@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use iamf_obu::{descriptors, ObuIter};
+use iamf_obu::{ObuIter, descriptors};
 
 fn vectors_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/vectors")

@@ -10,10 +10,10 @@ use iamf_obu::descriptors::{
 };
 use iamf_obu::{AudioFrame, ByteReader, Error, Obu, ObuType};
 
-use crate::element::{substream_channels, FramePcm};
+use crate::element::{FramePcm, substream_channels};
 use crate::layout::SoundSystem;
 use crate::params::{ParamContext, ParameterBlock, ReconGainLayers, SubblockData};
-use crate::reconstruct::{ambisonics_from_planes, deinterleave, ChannelReconstructor};
+use crate::reconstruct::{ChannelReconstructor, ambisonics_from_planes, deinterleave};
 use crate::render::render;
 use crate::{CodecFactory, DecodeError, DecodedFrame, SubstreamDecoder};
 

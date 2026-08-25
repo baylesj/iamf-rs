@@ -4,7 +4,7 @@
 
 use iamf_dec::{CodecFactory, DecodeError, SubstreamDecoder};
 use iamf_obu::descriptors::{CodecConfig, CodecId, DecoderConfig};
-use symphonia_core::codecs::{CodecParameters, Decoder, DecoderOptions, CODEC_TYPE_AAC};
+use symphonia_core::codecs::{CODEC_TYPE_AAC, CodecParameters, Decoder, DecoderOptions};
 
 use crate::symphonia_common::SymphoniaSubstreamDecoder;
 

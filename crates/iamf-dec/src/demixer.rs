@@ -5,8 +5,8 @@
 //! transmitted (down-mixed) channels: output-gain-up, recursive demix
 //! (S1→2, S2→3, S3→5, S5→7, TF2→T2, T2→T4), then recon-gain smoothing.
 
-use crate::channels::{Channel, CHANNEL_COUNT};
 use crate::DecodeError;
+use crate::channels::{CHANNEL_COUNT, Channel};
 
 /// Per-mode down-mix parameters (dmixp_mode 0..=6; 3 and 7 are reserved).
 /// (alpha, beta, gamma, delta, w_idx_offset)

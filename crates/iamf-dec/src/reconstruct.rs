@@ -8,16 +8,16 @@
 
 use iamf_obu::descriptors::{AudioElement, AudioElementConfig, ChannelAudioLayer};
 
+use crate::DecodeError;
 use crate::channels::{
-    default_recon_flags, new_channels, output_gain_channel, recon_channel_gains,
-    rendering_channels, Channel,
+    Channel, default_recon_flags, new_channels, output_gain_channel, recon_channel_gains,
+    rendering_channels,
 };
 use crate::demixer::Demixer;
 use crate::element::SubstreamPcm;
-use crate::layout::{loudspeaker_info, loudspeaker_sound_system, SoundSystem};
+use crate::layout::{SoundSystem, loudspeaker_info, loudspeaker_sound_system};
 use crate::matrices::{HoaOrder, MatrixLayout};
 use crate::params::ReconGainLayers;
-use crate::DecodeError;
 
 /// Planar element audio, one `Vec<f32>` per channel.
 pub enum Reconstructed {
@@ -233,7 +233,7 @@ pub fn hoa_order(channels: u8) -> Result<HoaOrder, DecodeError> {
         _ => {
             return Err(DecodeError::InvalidDescriptors(format!(
                 "{channels} channels is not a full ambisonics order"
-            )))
+            )));
         }
     })
 }

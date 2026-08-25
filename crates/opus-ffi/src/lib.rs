@@ -12,7 +12,7 @@ struct OpusDecoderState {
     _private: [u8; 0],
 }
 
-extern "C" {
+unsafe extern "C" {
     fn opus_decoder_create(fs: i32, channels: c_int, error: *mut c_int) -> *mut OpusDecoderState;
     fn opus_decoder_destroy(st: *mut OpusDecoderState);
     fn opus_decode_float(

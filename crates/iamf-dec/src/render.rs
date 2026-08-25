@@ -1,9 +1,9 @@
 //! Rendering: planar element channels → target sound system channels,
 //! using the gain matrices ported from libiamf v1.1.0.
 
-use crate::matrices::{HoaOrder, MatrixLayout, H2M_TABLE, M2M_TABLE};
-use crate::reconstruct::Reconstructed;
 use crate::DecodeError;
+use crate::matrices::{H2M_TABLE, HoaOrder, M2M_TABLE, MatrixLayout};
+use crate::reconstruct::Reconstructed;
 
 /// Renders reconstructed element audio to `output` layout channels
 /// (planar). Same-layout channel input is a passthrough via the identity

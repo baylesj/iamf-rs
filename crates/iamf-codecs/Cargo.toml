@@ -1,6 +1,6 @@
 [package]
 name = "iamf-codecs"
-description = "SubstreamDecoder implementations for the codecs IAMF carries (LPCM, Opus; FLAC and AAC-LC planned)"
+description = "SubstreamDecoder implementations for the codecs IAMF carries (LPCM, Opus, FLAC, AAC-LC)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
