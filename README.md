@@ -91,6 +91,26 @@ currently much slower on real content — its transforms are naive DFTs
 | `tools/iamfplay` | Terminal player: live playback (`.iamf` or IAMF-in-MP4) with instant stereo ⇄ binaural toggle, channel meters, and a generated 3OA demo scene (`--demo`). Headphones recommended. |
 | `fuzz` | cargo-fuzz targets for the parser. |
 
+## Cargo features
+
+Defaults include everything pure-Rust: all codecs (`pcm`, `opus`,
+`flac`, `aac`) and `binaural`. The one opt-in is `opus-ffi`, which
+decodes Opus through an external libopus (system or embedder-provided,
+e.g. Chromium's `third_party/opus`) — much faster than the pure-Rust
+path today (issue #5) and preferred by `DefaultFactory` when enabled.
+
+Embedders trim with `default-features = false` plus an explicit list.
+The Chromium-shaped build:
+
+```sh
+cargo build -p iamf-capi --no-default-features --features pcm,opus-ffi
+```
+
+resolves to only this repository's crates — no external Rust
+dependencies to vendor. Dropping `binaural` also drops the FFT stack and
+~1.8 MB of embedded HRIR filters; binaural output then falls back to
+stereo. CI checks these combinations.
+
 ## Milestones
 
 1. **OBU framing** — header/trimming/extension parsing, fuzz target. *(done)*
