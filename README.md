@@ -1,6 +1,8 @@
 # iamf-rs
 
 [![CI](https://github.com/baylesj/iamf-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/baylesj/iamf-rs/actions/workflows/ci.yml)
+[![License: BSD-3-Clause-Clear](https://img.shields.io/badge/license-BSD--3--Clause--Clear-blue.svg)](LICENSE)
+[![MSRV: 1.85](https://img.shields.io/badge/MSRV-1.85-orange.svg)](Cargo.toml)
 
 A pure-Rust decoder for [IAMF](https://aomediacodec.github.io/iamf/) (Immersive
 Audio Model and Formats / Eclipsa Audio), structured after the pipeline of the
