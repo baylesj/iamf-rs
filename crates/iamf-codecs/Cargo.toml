@@ -8,7 +8,10 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["pcm"]
+# Everything pure-Rust is on by default (symphonia-style); embedders trim
+# with default-features = false and an explicit list. `opus-ffi` stays
+# opt-in because it links an external libopus.
+default = ["pcm", "opus", "flac", "aac"]
 pcm = []
 opus = ["dep:opus-decoder"]
 # libopus-backed Opus decoding (FFI via the `opus` bindings crate), for
@@ -19,7 +22,10 @@ flac = ["dep:symphonia-bundle-flac", "dep:symphonia-core"]
 aac = ["dep:symphonia-codec-aac", "dep:symphonia-core"]
 
 [dependencies]
-iamf-dec = { path = "../iamf-dec" }
+# default-features = false so a trimmed embedder build (e.g. Chromium's
+# pcm+opus-ffi shape) doesn't pull the binaural stack back in via feature
+# unification; binaural is iamf-dec's concern, not this crate's.
+iamf-dec = { path = "../iamf-dec", default-features = false }
 iamf-obu = { path = "../iamf-obu" }
 opus-decoder = { version = "0.1", optional = true }
 iamf-opus-ffi = { path = "../opus-ffi", optional = true }

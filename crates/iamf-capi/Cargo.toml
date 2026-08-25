@@ -11,9 +11,22 @@ repository.workspace = true
 name = "iamf_rs"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# Everything pure-Rust is on by default; embedders trim with
+# default-features = false. Chromium-shaped minimal build:
+#   --no-default-features --features pcm,opus-ffi
+# (libopus from the embedder, no binaural stack, no symphonia codecs).
+default = ["pcm", "opus", "flac", "aac", "binaural"]
+pcm = ["iamf-codecs/pcm"]
+opus = ["iamf-codecs/opus"]
+opus-ffi = ["iamf-codecs/opus-ffi"]
+flac = ["iamf-codecs/flac"]
+aac = ["iamf-codecs/aac"]
+binaural = ["iamf-dec/binaural"]
+
 [dependencies]
-iamf-dec = { path = "../iamf-dec" }
-iamf-codecs = { path = "../iamf-codecs", features = ["pcm", "opus"] }
+iamf-dec = { path = "../iamf-dec", default-features = false }
+iamf-codecs = { path = "../iamf-codecs", default-features = false }
 
 # FFI requires unsafe; this crate intentionally does not inherit the
 # workspace-wide forbid(unsafe_code).

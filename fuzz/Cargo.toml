@@ -12,6 +12,7 @@ libfuzzer-sys = "0.4"
 iamf-obu = { path = "../crates/iamf-obu" }
 iamf-dec = { path = "../crates/iamf-dec" }
 iamf-codecs = { path = "../crates/iamf-codecs", features = ["pcm", "opus", "flac", "aac"] }
+iamf-capi = { path = "../crates/iamf-capi" }
 
 [[bin]]
 name = "parse_obu"
@@ -23,6 +24,13 @@ bench = false
 [[bin]]
 name = "decode_stream"
 path = "fuzz_targets/decode_stream.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "capi"
+path = "fuzz_targets/capi.rs"
 test = false
 doc = false
 bench = false

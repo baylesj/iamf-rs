@@ -39,8 +39,10 @@ jobs:
         run: |
           cargo check -p iamf-dec --no-default-features
           cargo check -p iamf-codecs --no-default-features
-          cargo check -p iamf-codecs --features pcm,opus
+          cargo check -p iamf-codecs --no-default-features --features pcm,opus
           cargo check -p iamfplay --no-default-features
+          # The Chromium-shaped minimal build.
+          cargo check -p iamf-capi --no-default-features --features pcm,opus-ffi
       - name: Compile-check reference Chromium adapter
         run: |
           c++ -std=c++17 -fsyntax-only \
@@ -90,7 +92,10 @@ jobs:
           ./tools/fetch_vectors.sh
           mkdir -p fuzz/corpus/decode_stream
           cp tests/vectors/*.iamf fuzz/corpus/decode_stream/
-      - name: Fuzz smoke (parser + stream decoder)
+      - name: Fuzz smoke (parser + stream decoder + C ABI)
         run: |
           cargo fuzz run parse_obu -- -max_total_time=60
           cargo fuzz run decode_stream -- -max_total_time=120 -max_len=200000
+          mkdir -p fuzz/corpus/capi
+          cp tests/vectors/*.iamf fuzz/corpus/capi/
+          cargo fuzz run capi -- -max_total_time=90 -max_len=200000
