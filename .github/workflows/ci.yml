@@ -23,8 +23,8 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - name: Install libopus (opus-ffi feature)
-        run: sudo apt-get update && sudo apt-get install -y libopus-dev
+      - name: Install libopus (opus-ffi) and ALSA headers (iamfplay/cpal)
+        run: sudo apt-get update && sudo apt-get install -y libopus-dev libasound2-dev
       - name: Cache test vectors
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -40,6 +40,7 @@ jobs:
           cargo check -p iamf-dec --no-default-features
           cargo check -p iamf-codecs --no-default-features
           cargo check -p iamf-codecs --features pcm,opus
+          cargo check -p iamfplay --no-default-features
       - name: Compile-check reference Chromium adapter
         run: |
           c++ -std=c++17 -fsyntax-only \

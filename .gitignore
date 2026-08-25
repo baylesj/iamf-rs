@@ -6,3 +6,4 @@ fuzz/coverage
 tests/vectors/
 Cargo.lock
 .DS_Store
+tests/demo/

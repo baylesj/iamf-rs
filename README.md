@@ -38,9 +38,12 @@ disagree with each other, we match iamf-tools (what Chromium ships) and
 file it (issues #3, #4).
 
 Performance (Apple M-series, `cargo bench` / `tools/bench_compare.py`):
-faster than libiamf v1.1 on every measured path, 4–7× faster than
-iamf-tools' decoder, ~60× realtime for Opus stereo with the pure-Rust
-codec (1.6× faster than libiamf with `opus-ffi`).
+faster than libiamf v1.1 on every measured path and 4–7× faster than
+iamf-tools' decoder, with the `opus-ffi` (libopus) codec path (1.6×
+faster than libiamf on Opus). The pure-Rust `opus-decoder` fallback is
+currently much slower on real content — its transforms are naive DFTs
+(issue #5) — so builds that care about Opus throughput should enable
+`opus-ffi`.
 
 ## Crates
 
@@ -51,6 +54,7 @@ codec (1.6× faster than libiamf with `opus-ffi`).
 | `iamf-codecs` | Feature-gated `SubstreamDecoder` implementations: LPCM, Opus (pure-Rust [opus-decoder](https://crates.io/crates/opus-decoder) by default, or libopus via the `opus-ffi` feature); FLAC and AAC-LC planned. |
 | `iamf-capi` | C ABI (`libiamf_rs` cdylib/staticlib + `include/iamf_rs.h`) over the streaming decoder. |
 | `tools/iamfdec` | CLI: inspect and decode/render standalone `.iamf` files to WAV. |
+| `tools/iamfplay` | Terminal player: live playback (`.iamf` or IAMF-in-MP4) with instant stereo ⇄ binaural toggle, channel meters, and a generated 3OA demo scene (`--demo`). Headphones recommended. |
 | `fuzz` | cargo-fuzz targets for the parser. |
 
 ## Milestones

@@ -7,6 +7,8 @@
 #   tools/fetch_vectors.sh              # curated default set
 #   tools/fetch_vectors.sh test_000123  # specific vector(s)
 #   tools/fetch_vectors.sh --all        # every vector (~333, slow)
+#   tools/fetch_vectors.sh --demo      # real program material from the
+#                                      # iamf-tools web demo (for iamfplay)
 set -euo pipefail
 
 BASE_URL="https://raw.githubusercontent.com/AOMediaCodec/libiamf/main/tests"
@@ -21,6 +23,28 @@ DEFAULT_VECTORS=(
   test_000066 test_000069 test_000070 test_000082 test_000086 test_000088
   test_000073 test_000090 test_000092
 )
+
+if [[ "${1:-}" == "--demo" ]]; then
+  # Produced demo content shipped with the iamf-tools web demo (gh_pages
+  # branch): 7.1.4 music in three codecs plus a ~100 s third-order
+  # ambisonics soundtrack. Nice input for tools/iamfplay.
+  DEMO_URL="https://raw.githubusercontent.com/AOMediaCodec/iamf-tools/gh_pages/web_demo/data"
+  DEMO_DEST="$(cd "$(dirname "$0")/.." && pwd)/tests/demo"
+  mkdir -p "$DEMO_DEST"
+  for name in 7_1_4_Opus 7_1_4_Flac 7_1_4_PCM16_48000 \
+    Animated_demo_3OA Animated_demo_3OA_and_2_0; do
+    out="$DEMO_DEST/$name.iamf"
+    [[ -s "$out" ]] && continue
+    if curl -fsSL "$DEMO_URL/$name.iamf" -o "$out"; then
+      echo "fetched $name.iamf"
+    else
+      echo "MISSING $name.iamf" >&2
+      rm -f "$out"
+    fi
+  done
+  echo "demo files in $DEMO_DEST"
+  exit 0
+fi
 
 if [[ "${1:-}" == "--all" ]]; then
   echo "Listing all vectors..."

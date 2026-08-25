@@ -1,0 +1,27 @@
+[package]
+name = "iamfplay"
+description = "Terminal IAMF player: live playback with binaural A/B toggle and channel meters"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+iamf-obu = { path = "../../crates/iamf-obu" }
+iamf-dec = { path = "../../crates/iamf-dec" }
+iamf-codecs = { path = "../../crates/iamf-codecs", features = ["pcm", "opus", "flac", "aac"] }
+cpal = "0.15"
+ratatui = "0.29"
+
+[features]
+# libopus by default: the pure-Rust opus-decoder crate's naive DFT is too
+# slow for comfortable preloading of multichannel Opus content (it remains
+# in the factory as a fallback). Build with --no-default-features on
+# systems without libopus.
+default = ["opus-ffi"]
+opus-ffi = ["iamf-codecs/opus-ffi"]
+
+[lints]
+workspace = true

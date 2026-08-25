@@ -17,6 +17,8 @@ mod resampler;
 mod sh;
 mod speakers;
 
+pub use sh::sh_coeffs;
+
 use crate::DecodeError;
 use convolver::{FftManager, PartitionedFftFilter};
 use filters::FilterProfile;

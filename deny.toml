@@ -21,6 +21,13 @@ confidence-threshold = 0.9
 
 [advisories]
 yanked = "deny"
+ignore = [
+    # `paste` is an unmaintained build-time proc macro pulled in by
+    # ratatui, used only by the unpublished tools/iamfplay demo binary —
+    # it is not part of the decoder library dependency tree. Drop this
+    # ignore when ratatui migrates off it.
+    "RUSTSEC-2024-0436",
+]
 
 [bans]
 multiple-versions = "warn"
