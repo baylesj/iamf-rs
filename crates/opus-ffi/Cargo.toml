@@ -1,0 +1,15 @@
+[package]
+name = "iamf-opus-ffi"
+description = "Minimal safe wrapper over an external libopus decoder (links the system or integrator-provided libopus; no bundled build)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+links = "opus"
+
+[build-dependencies]
+pkg-config = "0.3"
+
+# FFI requires unsafe; this crate intentionally does not inherit the
+# workspace-wide forbid(unsafe_code).

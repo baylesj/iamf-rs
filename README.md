@@ -88,10 +88,13 @@ when present.
 
 ## License
 
-MIT or Apache-2.0, at your option, for the code, which is an independent
-implementation written from the IAMF specification with libiamf used as a
-behavioral reference. Two sets of extracted data tables carry their
-upstream terms: the rendering gain matrices (from libiamf v1.1.0) and the
-SH-HRIR binaural filter assets in `crates/iamf-dec/assets/binaural/`
-(from google/obr), both BSD-3-Clause-Clear with their respective AOM/OBR
-patent licenses — see `assets/binaural/NOTICE`.
+BSD 3-Clause Clear License (see `LICENSE`), matching the reference
+implementations this project derives from. Parts of this codebase are
+ported from or derived from libiamf, google/obr, and iamf-tools — data
+tables were extracted mechanically and several DSP components are
+behavioral ports written with those sources as reference. See `NOTICE`
+for the full attribution list. The BSD 3-Clause Clear License grants no
+patent rights; the upstream projects publish separate patent licenses
+(AOM Patent License 1.0, OBR Patent License 1.0) covering the derived
+portions. This section is a good-faith summary, not legal advice — have
+counsel review before redistribution.

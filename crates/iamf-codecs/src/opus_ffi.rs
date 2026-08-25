@@ -1,6 +1,7 @@
-//! Opus substream decoder backed by libopus via the safe `opus` bindings
-//! crate. For integrators that already ship libopus (e.g. Chromium) or
-//! want its hand-tuned SIMD; the pure-Rust path lives in [`crate::opus`].
+//! Opus substream decoder backed by an external libopus (system or
+//! integrator-provided, see the `iamf-opus-ffi` crate). For integrators
+//! that already ship libopus (e.g. Chromium) or want its hand-tuned SIMD;
+//! the pure-Rust path lives in [`crate::opus`].
 
 use iamf_dec::{CodecFactory, DecodeError, DecodedFrame, SubstreamDecoder};
 use iamf_obu::descriptors::{CodecConfig, CodecId, DecoderConfig};
@@ -10,19 +11,17 @@ const SAMPLE_RATE: u32 = 48_000;
 const MAX_FRAME_SAMPLES: usize = 5760;
 
 pub struct OpusFfiSubstreamDecoder {
-    decoder: ::opus::Decoder,
+    decoder: iamf_opus_ffi::Decoder,
     channels: u8,
     buffer: Vec<f32>,
 }
 
 impl OpusFfiSubstreamDecoder {
     pub fn new(channels: u8) -> Result<Self, DecodeError> {
-        let ch = match channels {
-            1 => ::opus::Channels::Mono,
-            2 => ::opus::Channels::Stereo,
-            _ => return Err(DecodeError::UnsupportedCodec),
-        };
-        let decoder = ::opus::Decoder::new(SAMPLE_RATE, ch)
+        if !(1..=2).contains(&channels) {
+            return Err(DecodeError::UnsupportedCodec);
+        }
+        let decoder = iamf_opus_ffi::Decoder::new(SAMPLE_RATE, usize::from(channels))
             .map_err(|e| DecodeError::CorruptPacket(format!("libopus init: {e}")))?;
         Ok(Self {
             decoder,
@@ -36,7 +35,7 @@ impl SubstreamDecoder for OpusFfiSubstreamDecoder {
     fn decode(&mut self, packet: &[u8], out: &mut DecodedFrame) -> Result<(), DecodeError> {
         let samples_per_channel = self
             .decoder
-            .decode_float(packet, &mut self.buffer, false)
+            .decode_float(packet, &mut self.buffer)
             .map_err(|e| DecodeError::CorruptPacket(format!("libopus: {e}")))?;
         let len = samples_per_channel * usize::from(self.channels);
         out.samples.clear();

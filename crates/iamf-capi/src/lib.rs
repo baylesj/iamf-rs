@@ -254,6 +254,11 @@ getter!(
     u32,
     |d: &StreamDecoder| d.selected_mix().0
 );
+getter!(
+    iamfrs_decoder_get_selected_layout,
+    u32,
+    |d: &StreamDecoder| d.selected_mix().1 as u32
+);
 getter!(iamfrs_decoder_get_sample_type, u32, |d: &StreamDecoder| {
     match d.sample_type() {
         OutputSampleType::Int16LittleEndian => 1,

@@ -1,0 +1,54 @@
+iamf-rs
+Copyright (c) 2026 Jordan Bayles
+
+This project is licensed under the BSD 3-Clause Clear License (see
+LICENSE), matching the licensing of the reference implementations it
+derives from. The BSD 3-Clause Clear License expressly grants no patent
+rights; the upstream projects listed below publish separate patent
+licenses that apply to the portions derived from them.
+
+Portions of this software are ported from or derived from the following
+works:
+
+1. libiamf — https://github.com/AOMediaCodec/libiamf
+   Copyright (c) 2022–2024, Alliance for Open Media.
+   BSD 3-Clause Clear License; Alliance for Open Media Patent License 1.0
+   (https://aomedia.org/license/patent-license/).
+   Derived material includes: the rendering gain-matrix tables in
+   crates/iamf-dec/src/matrices.rs (mechanically extracted from
+   m2m_rdr.c / h2m_rdr.c of the v1.1.0 tag by
+   tools/extract_matrices.py); channel-layout and decoding-order tables;
+   and behavioral ports of the scalable-channel demixer, peak limiter,
+   and decoder pipeline structure, written with the libiamf sources as
+   reference.
+
+2. Open Binaural Renderer (obr) — https://github.com/google/obr
+   Copyright (c) 2025 Google LLC.
+   BSD 3-Clause Clear License; Open Binaural Renderer Patent License 1.0
+   (see the obr repository's PATENTS file).
+   Derived material includes: the SH-HRIR binaural filter assets in
+   crates/iamf-dec/assets/binaural/ (byte-identical extraction of the
+   embedded filter data by tools/extract_binaural_filters.py); and
+   behavioral ports of the ambisonic encoder, spherical-harmonic
+   utilities, partitioned FFT convolution, polyphase resampler
+   (with a documented correction, see issue #4), virtual loudspeaker
+   layouts, and peak limiter.
+
+3. iamf-tools — https://github.com/AOMediaCodec/iamf-tools
+   Copyright (c) 2022, Alliance for Open Media.
+   BSD 3-Clause Clear License; Alliance for Open Media Patent License 1.0.
+   The streaming decoder API and C ABI of this project mirror the shape
+   and enumeration values of the iamf-tools decoder API, and the output
+   channel-reordering permutations are ported from its ChannelReorderer.
+   A snapshot of iamf-tools public API headers is vendored under
+   examples/chromium/iamf_tools_api_snapshot/ for compile-checking the
+   reference adapter, under the above license.
+
+obr's DSP components credit Resonance Audio
+(https://github.com/resonance-audio/resonance-audio, Apache License 2.0)
+as the origin of several algorithms; that lineage applies transitively to
+the corresponding ports here.
+
+Conformance testing uses test vectors and rendered references from the
+libiamf repository (BSD 3-Clause Clear License); a small set of rendered
+reference WAVs generated with iamf-tools is committed under tests/data/.

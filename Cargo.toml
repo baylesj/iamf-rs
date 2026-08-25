@@ -5,6 +5,7 @@ members = [
     "crates/iamf-dec",
     "crates/iamf-codecs",
     "crates/iamf-capi",
+    "crates/opus-ffi",
     "tools/iamfdec",
 ]
 exclude = ["fuzz"]
@@ -13,7 +14,7 @@ exclude = ["fuzz"]
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
-license = "MIT OR Apache-2.0"
+license = "BSD-3-Clause-Clear"
 repository = "https://github.com/baylesj/iamf-rs"
 
 [workspace.lints.rust]

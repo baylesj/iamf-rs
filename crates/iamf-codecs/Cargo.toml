@@ -14,7 +14,7 @@ opus = ["dep:opus-decoder"]
 # libopus-backed Opus decoding (FFI via the `opus` bindings crate), for
 # integrators that already ship libopus (e.g. Chromium). When both `opus`
 # and `opus-ffi` are enabled, DefaultFactory prefers the FFI decoder.
-opus-ffi = ["dep:opus"]
+opus-ffi = ["dep:iamf-opus-ffi"]
 flac = ["dep:symphonia-bundle-flac", "dep:symphonia-core"]
 aac = ["dep:symphonia-codec-aac", "dep:symphonia-core"]
 
@@ -22,7 +22,7 @@ aac = ["dep:symphonia-codec-aac", "dep:symphonia-core"]
 iamf-dec = { path = "../iamf-dec" }
 iamf-obu = { path = "../iamf-obu" }
 opus-decoder = { version = "0.1", optional = true }
-opus = { version = "0.3", optional = true }
+iamf-opus-ffi = { path = "../opus-ffi", optional = true }
 symphonia-core = { version = "0.5", optional = true, default-features = false }
 symphonia-bundle-flac = { version = "0.5", optional = true }
 symphonia-codec-aac = { version = "0.5", optional = true }

@@ -91,6 +91,12 @@ int iamfrs_decoder_get_frame_size(const iamfrs_decoder *decoder,
 int iamfrs_decoder_get_selected_mix_presentation_id(
     const iamfrs_decoder *decoder, uint32_t *out);
 
+/* The layout actually rendered, in the sound-system numbering documented
+ * on iamfrs_settings.output_layout (may differ from the request, e.g.
+ * binaural falling back to stereo). */
+int iamfrs_decoder_get_selected_layout(const iamfrs_decoder *decoder,
+                                       uint32_t *out);
+
 /* The resolved output sample type: 1 = s16le, 2 = s32le. */
 int iamfrs_decoder_get_sample_type(const iamfrs_decoder *decoder,
                                    uint32_t *out);
