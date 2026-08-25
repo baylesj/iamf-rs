@@ -25,10 +25,10 @@ DEFAULT_VECTORS=(
 )
 
 if [[ "${1:-}" == "--demo" ]]; then
-  # Produced demo content shipped with the iamf-tools web demo (gh_pages
-  # branch): 7.1.4 music in three codecs plus a ~100 s third-order
-  # ambisonics soundtrack. Nice input for tools/iamfplay.
-  DEMO_URL="https://raw.githubusercontent.com/AOMediaCodec/iamf-tools/gh_pages/web_demo/data"
+  # Produced demo content shipped with the iamf-tools web demo (the
+  # gh_pages/ directory of its main branch): 7.1.4 music in three codecs
+  # plus a ~100 s third-order ambisonics soundtrack. Input for iamfplay.
+  DEMO_URL="https://raw.githubusercontent.com/AOMediaCodec/iamf-tools/main/gh_pages/web_demo/data"
   DEMO_DEST="$(cd "$(dirname "$0")/.." && pwd)/tests/demo"
   mkdir -p "$DEMO_DEST"
   for name in 7_1_4_Opus 7_1_4_Flac 7_1_4_PCM16_48000 \
