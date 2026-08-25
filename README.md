@@ -33,16 +33,26 @@ matching the v1.1 spec (`num_sub_mixes` must be 1) and libiamf.
 Put on headphones and run the terminal player:
 
 ```sh
-tools/fetch_vectors.sh --demo   # real 7.1.4/ambisonics content (iamf-tools web demo)
-cargo run --release -p iamfplay -- tests/demo/7_1_4_Flac.iamf
+cargo run --release -p iamfplay -- --demo
 ```
 
-Press `b` to flip between plain stereo and HRTF binaural mid-stream — the
-switch is a sample-aligned crossfade, so listen for the mix moving out of
-your head. Space pauses, `←`/`→` seek, `q` quits. The meters show the
-12-channel bed being folded into the 2 channels you hear. Also accepts
-IAMF-in-MP4, and `--demo` instead of a file plays a generated third-order
-ambisonics scene (a bee orbiting your head) authored on the fly.
+`--demo` plays a generated third-order ambisonics scene — a bee orbiting
+your head with pings from fixed directions. Press `b` to flip between
+plain stereo and HRTF binaural mid-stream — the switch is a
+sample-aligned crossfade, so listen for the scene moving out of your
+head. Space pauses, `←`/`→` seek, `q` quits. The meters show the
+12-channel bed being folded into the 2 channels you hear.
+
+For real produced content (from the iamf-tools web demo):
+
+```sh
+tools/fetch_vectors.sh --demo
+cargo run --release -p iamfplay -- tests/demo/Animated_demo_3OA_and_2_0.iamf
+```
+
+The player also accepts IAMF-in-MP4 files. (`7_1_4_Flac.iamf` in the
+same set is a one-speaker-at-a-time channel check — educational, but not
+much of a binaural showcase.)
 
 Building `iamfplay` needs libopus (`brew install opus` /
 `apt install libopus-dev libasound2-dev`); pass `--no-default-features`
