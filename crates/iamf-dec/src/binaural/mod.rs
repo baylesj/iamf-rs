@@ -42,6 +42,16 @@ pub enum BinauralInput {
 
 /// obr-style binaural renderer for one audio element. Stateful across
 /// frames (convolution tails, limiter envelope).
+impl core::fmt::Debug for BinauralRenderer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("BinauralRenderer")
+            .field("input_channels", &self.input_channels)
+            .field("hoa_channels", &self.hoa_channels)
+            .field("frame_size", &self.frame_size)
+            .finish_non_exhaustive()
+    }
+}
+
 pub struct BinauralRenderer {
     frame_size: usize,
     /// Speaker-to-HOA encoding matrix, `None` for direct HOA input.

@@ -88,7 +88,7 @@ fn bench_obu_walk(c: &mut Criterion) {
                 frames += usize::from(obu.header.obu_type.is_audio_frame());
             }
             frames
-        })
+        });
     });
     group.bench_function("descriptors", |b| {
         b.iter(|| {
@@ -99,7 +99,7 @@ fn bench_obu_walk(c: &mut Criterion) {
                 }
             }
             count
-        })
+        });
     });
     group.finish();
 }
@@ -123,7 +123,7 @@ fn bench_batch(c: &mut Criterion) {
                     decoder.process_obu(&obu).unwrap();
                 }
                 decoder.finish().unwrap().interleaved.len()
-            })
+            });
         });
     }
     group.finish();
@@ -153,7 +153,7 @@ fn bench_stream(c: &mut Criterion) {
                     }
                 }
                 bytes
-            })
+            });
         });
     }
     group.finish();

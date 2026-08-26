@@ -203,7 +203,7 @@ pub(crate) fn select_mix_index(
                     SoundSystem::from_u8(*sound_system) == Some(wanted)
                 }
                 iamf_obu::descriptors::Layout::Binaural => target == SoundSystem::Binaural,
-                _ => false,
+                iamf_obu::descriptors::Layout::Reserved { .. } => false,
             })
         })
     };
@@ -326,6 +326,16 @@ fn content_loudness_db(sub_mix: &SubMix, target: SoundSystem) -> Option<f32> {
         .find(|(l, _)| matches(l))
         .or_else(|| sub_mix.layouts.first())
         .map(|(_, info)| f32::from(info.integrated_loudness) / 256.0)
+}
+
+impl core::fmt::Debug for StreamDecoder {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("StreamDecoder")
+            .field("selected_mix_id", &self.selected_mix_id)
+            .field("target", &self.target)
+            .field("elements", &self.slots.len())
+            .finish_non_exhaustive()
+    }
 }
 
 /// Streaming IAMF decoder for one mix presentation and output layout.
@@ -517,8 +527,9 @@ impl StreamDecoder {
         });
         let norm_gain = match settings.loudness_target_db {
             Some(target_db) => content_loudness_db(sub_mix, settings.layout)
-                .map(|content_db| 10f32.powf((target_db - content_db) / 20.0))
-                .unwrap_or(1.0),
+                .map_or(1.0, |content_db| {
+                    10f32.powf((target_db - content_db) / 20.0)
+                }),
             None => 1.0,
         };
         Ok(StreamDecoder {
@@ -645,7 +656,7 @@ impl StreamDecoder {
         let Some(targets) = param_index.get(&id) else {
             return Ok(());
         };
-        let corrupt = |e: iamf_obu::Error| DecodeError::CorruptPacket(e.to_string());
+        let corrupt = |e: Error| DecodeError::CorruptPacket(e.to_string());
         // libiamf scales parameter durations to the sample clock by
         // (rate + 0.1) / parameter_rate; before the first decoded frame of
         // an unknown-rate codec the rates are assumed equal.
@@ -723,7 +734,7 @@ impl StreamDecoder {
         let mut trim: Option<(u32, u32)> = None;
         let mut unit_len: Option<usize> = None;
 
-        for slot in self.slots.iter_mut() {
+        for slot in &mut self.slots {
             let frames: Vec<FramePcm> = slot
                 .queues
                 .iter_mut()
@@ -765,6 +776,9 @@ impl StreamDecoder {
             let hrtf = cfg!(feature = "binaural")
                 && self.target == SoundSystem::Binaural
                 && slot.headphones_rendering_mode == 1;
+            // Not if-let-else: the ambisonics arm is a peer case, not a
+            // fallback.
+            #[allow(clippy::single_match_else)]
             let rendered = match &slot.element.config {
                 AudioElementConfig::ChannelBased { layers } => {
                     if slot.reconstructor.is_none() {
@@ -935,17 +949,14 @@ impl StreamDecoder {
             .unwrap_or_else(|| {
                 self.slots
                     .first()
-                    .map(|s| match &s.codec_config.decoder_config {
+                    .map_or(0, |s| match &s.codec_config.decoder_config {
                         iamf_obu::descriptors::DecoderConfig::Opus { .. } => 48000,
-                        iamf_obu::descriptors::DecoderConfig::Lpcm { sample_rate, .. } => {
-                            *sample_rate
-                        }
-                        iamf_obu::descriptors::DecoderConfig::Flac { sample_rate, .. } => {
+                        iamf_obu::descriptors::DecoderConfig::Lpcm { sample_rate, .. }
+                        | iamf_obu::descriptors::DecoderConfig::Flac { sample_rate, .. } => {
                             *sample_rate
                         }
                         _ => 0,
                     })
-                    .unwrap_or(0)
             })
     }
 

@@ -5,7 +5,7 @@
 /// the front-left channel as mixed for stereo/3.x/5.x/7.x layouts (they
 /// carry different content in a scalable stream).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Channel {
+pub(crate) enum Channel {
     Mono,
     L2,
     R2,
@@ -36,18 +36,19 @@ pub enum Channel {
     Lfe,
 }
 
-pub const CHANNEL_COUNT: usize = 25;
+pub(crate) const CHANNEL_COUNT: usize = 25;
 
 impl Channel {
-    pub fn index(self) -> usize {
+    pub(crate) fn index(self) -> usize {
         self as usize
     }
 }
 
+#[allow(clippy::enum_glob_use)] // the layout tables below are unreadable otherwise
 use Channel::*;
 
 /// Rendering-order channels (channel_layout) per loudspeaker_layout 0..=8.
-pub fn rendering_channels(loudspeaker_layout: u8) -> Option<&'static [Channel]> {
+pub(crate) fn rendering_channels(loudspeaker_layout: u8) -> Option<&'static [Channel]> {
     Some(match loudspeaker_layout {
         0 => &[Mono],
         1 => &[L2, R2],
@@ -64,7 +65,7 @@ pub fn rendering_channels(loudspeaker_layout: u8) -> Option<&'static [Channel]> 
 
 /// Substream-decode-order channels of a layout when it is the first layer
 /// (coupled pairs first, then C, then LFE) — `channel_layout[decoding_map]`.
-pub fn decoding_channels(loudspeaker_layout: u8) -> Option<&'static [Channel]> {
+pub(crate) fn decoding_channels(loudspeaker_layout: u8) -> Option<&'static [Channel]> {
     Some(match loudspeaker_layout {
         0 => &[Mono],
         1 => &[L2, R2],
@@ -97,11 +98,9 @@ fn surround_height(loudspeaker_layout: u8) -> (u8, u8) {
 
 /// Channels a layer adds on top of the previous layer, in substream decode
 /// order (libiamf `iamf_channel_layout_get_new_channels`).
-pub fn new_channels(last: Option<u8>, cur: u8) -> Vec<Channel> {
+pub(crate) fn new_channels(last: Option<u8>, cur: u8) -> Vec<Channel> {
     let Some(last) = last else {
-        return decoding_channels(cur)
-            .map(|c| c.to_vec())
-            .unwrap_or_default();
+        return decoding_channels(cur).map_or_else(Vec::new, <[Channel]>::to_vec);
     };
     let (s1, t1) = surround_height(last);
     let (s2, t2) = surround_height(cur);
@@ -136,7 +135,7 @@ pub fn new_channels(last: Option<u8>, cur: u8) -> Vec<Channel> {
 /// output_gain_flags bit positions (§3.7.4): bit 5 = L, ..., bit 0 = Rtf.
 /// Maps a flag bit to the concrete channel of `layout` it scales
 /// (libiamf `iamf_output_gain_channel_map`).
-pub fn output_gain_channel(loudspeaker_layout: u8, bit: u8) -> Option<Channel> {
+pub(crate) fn output_gain_channel(loudspeaker_layout: u8, bit: u8) -> Option<Channel> {
     let (surround, _) = surround_height(loudspeaker_layout);
     match bit {
         5 => match loudspeaker_layout {
@@ -165,7 +164,7 @@ const RECON_CHANNEL_COUNT: usize = 12;
 /// Concrete channel of `layout` for each recon-gain flag bit
 /// (libiamf `channel_layout_map`). `None` where the layout has no such
 /// channel.
-pub fn recon_channel(loudspeaker_layout: u8, bit: u8) -> Option<Channel> {
+pub(crate) fn recon_channel(loudspeaker_layout: u8, bit: u8) -> Option<Channel> {
     const MAP: [[Option<Channel>; RECON_CHANNEL_COUNT]; 9] = [
         // Mono
         [
@@ -310,7 +309,11 @@ pub fn recon_channel(loudspeaker_layout: u8, bit: u8) -> Option<Channel> {
 /// flag bit in ascending order, paired with `gains` in the same order, and
 /// dropped (gain consumed) when the target layout lacks the channel
 /// (libiamf `iamf_recon_channels_order_update`).
-pub fn recon_channel_gains(target_layout: u8, flags: u32, gains: &[f32]) -> Vec<(Channel, f32)> {
+pub(crate) fn recon_channel_gains(
+    target_layout: u8,
+    flags: u32,
+    gains: &[f32],
+) -> Vec<(Channel, f32)> {
     (0..RECON_CHANNEL_COUNT as u8)
         .filter(|bit| flags & (1 << bit) != 0)
         .zip(gains.iter().copied())
@@ -320,7 +323,7 @@ pub fn recon_channel_gains(target_layout: u8, flags: u32, gains: &[f32]) -> Vec<
 
 /// Default recon-gain flags for reconstructing `target` from `first` layer
 /// (libiamf `iamf_recon_channels_get_flags`).
-pub fn default_recon_flags(first_layout: u8, target_layout: u8) -> u32 {
+pub(crate) fn default_recon_flags(first_layout: u8, target_layout: u8) -> u32 {
     if first_layout == target_layout {
         return 0;
     }
@@ -353,7 +356,7 @@ mod tests {
     /// `Channel::index()`; it must track the variant count.
     #[test]
     fn channel_count_matches_last_variant() {
-        assert_eq!(Channel::Lfe.index() + 1, CHANNEL_COUNT);
+        assert_eq!(Lfe.index() + 1, CHANNEL_COUNT);
     }
 
     #[test]

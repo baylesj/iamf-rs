@@ -4,7 +4,7 @@
 use crate::DecodeError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FilterProfile {
+pub(super) enum FilterProfile {
     /// obr / iamf-tools default.
     Ambient,
     /// Anechoic short HRIRs (unused by the default pipeline, kept for
@@ -88,11 +88,11 @@ fn parse_wav(data: &[u8]) -> Result<Vec<Vec<f32>>, DecodeError> {
 }
 
 /// Per-channel filter planes.
-pub type FilterPlanes = Vec<Vec<f32>>;
+pub(super) type FilterPlanes = Vec<Vec<f32>>;
 
 /// Loads the (left, right) SH-HRIR planes for an ambisonic order. Channel
 /// count is (order+1)²; filters are 48 kHz.
-pub fn sh_hrirs(
+pub(super) fn sh_hrirs(
     order: usize,
     profile: FilterProfile,
 ) -> Result<(FilterPlanes, FilterPlanes), DecodeError> {

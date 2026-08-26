@@ -6,7 +6,7 @@ use symphonia_core::audio::SampleBuffer;
 use symphonia_core::codecs::Decoder;
 use symphonia_core::formats::Packet;
 
-pub struct SymphoniaSubstreamDecoder<D: Decoder> {
+pub(crate) struct SymphoniaSubstreamDecoder<D: Decoder> {
     decoder: D,
     channels: u8,
     sample_rate: u32,
@@ -14,7 +14,7 @@ pub struct SymphoniaSubstreamDecoder<D: Decoder> {
 }
 
 impl<D: Decoder> SymphoniaSubstreamDecoder<D> {
-    pub fn new(decoder: D, channels: u8, sample_rate: u32) -> Self {
+    pub(crate) fn new(decoder: D, channels: u8, sample_rate: u32) -> Self {
         Self {
             decoder,
             channels,

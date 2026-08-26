@@ -9,7 +9,7 @@ use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 /// obr `FftManager::kMinFftSize`.
 const MIN_FFT_SIZE: usize = 32;
 
-pub struct FftManager {
+pub(super) struct FftManager {
     fft_size: usize,
     forward: Arc<dyn RealToComplex<f32>>,
     inverse: Arc<dyn ComplexToReal<f32>>,
@@ -18,7 +18,7 @@ pub struct FftManager {
 }
 
 impl FftManager {
-    pub fn new(frame_size: usize) -> Self {
+    pub(super) fn new(frame_size: usize) -> Self {
         let fft_size = (2 * frame_size.next_power_of_two()).max(MIN_FFT_SIZE);
         let mut planner = RealFftPlanner::<f32>::new();
         FftManager {
@@ -29,16 +29,16 @@ impl FftManager {
         }
     }
 
-    pub fn fft_size(&self) -> usize {
+    pub(super) fn fft_size(&self) -> usize {
         self.fft_size
     }
 
-    pub fn spectrum_scratch(&self) -> Vec<Complex<f32>> {
+    pub(super) fn spectrum_scratch(&self) -> Vec<Complex<f32>> {
         vec![Complex::default(); self.fft_size / 2 + 1]
     }
 
     /// FFT of `time` zero-padded to `fft_size`.
-    pub fn forward(&mut self, time: &[f32], spectrum: &mut [Complex<f32>]) {
+    pub(super) fn forward(&mut self, time: &[f32], spectrum: &mut [Complex<f32>]) {
         let n = time.len().min(self.fft_size);
         self.input_scratch[..n].copy_from_slice(&time[..n]);
         self.input_scratch[n..].fill(0.0);
@@ -57,7 +57,7 @@ impl FftManager {
 
 /// One mono FIR of arbitrary length, convolved in uniform partitions of
 /// `frame_size` samples with overlap-add across blocks.
-pub struct PartitionedFftFilter {
+pub(super) struct PartitionedFftFilter {
     kernel_spectra: Vec<Vec<Complex<f32>>>,
     /// Ring buffer of input block spectra.
     input_spectra: Vec<Vec<Complex<f32>>>,
@@ -69,7 +69,7 @@ pub struct PartitionedFftFilter {
 }
 
 impl PartitionedFftFilter {
-    pub fn new(kernel: &[f32], frame_size: usize, fft: &mut FftManager) -> Self {
+    pub(super) fn new(kernel: &[f32], frame_size: usize, fft: &mut FftManager) -> Self {
         let partitions = kernel.len().div_ceil(frame_size).max(1);
         let kernel_spectra = (0..partitions)
             .map(|p| {
@@ -92,11 +92,11 @@ impl PartitionedFftFilter {
 
     /// Feeds one block spectrum and computes this block's filtered time
     /// output (kept internally until [`Self::output_into`]).
-    pub fn filter(&mut self, input_spectrum: &[Complex<f32>], fft: &FftManager) {
+    pub(super) fn filter(&mut self, input_spectrum: &[Complex<f32>], fft: &FftManager) {
         let partitions = self.kernel_spectra.len();
         self.input_spectra[self.front].copy_from_slice(input_spectrum);
 
-        for c in self.accumulator.iter_mut() {
+        for c in &mut self.accumulator {
             *c = Complex::default();
         }
         for i in 0..partitions {
@@ -124,7 +124,7 @@ impl PartitionedFftFilter {
 
     /// Adds this block's filtered output (overlap-add of current and
     /// previous IFFT halves) into `out` (`frame_size` samples).
-    pub fn output_into(&self, out: &mut [f32]) {
+    pub(super) fn output_into(&self, out: &mut [f32]) {
         let frame = out.len();
         for (i, o) in out.iter_mut().enumerate() {
             *o += self.current[i] + self.previous[i + frame];

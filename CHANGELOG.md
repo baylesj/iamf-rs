@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+Modernization and cleanup pass (no decoding behavior changes; the
+conformance suite is byte-identical).
+
+- Semver hygiene: `#[non_exhaustive]` on the public enums and settings
+  structs; `channels`/`demixer`/`matrices` are crate-private (with
+  `MatrixLayout`/`HoaOrder` re-exported); settings are built via
+  `Default` + field assignment.
+- Hot-path allocation pass: the demixer borrows prerequisite planes and
+  moves outputs (was ~14 plane copies per 7.1.4 frame), the streaming
+  decoder parses OBUs without per-payload copies, parameter handling
+  clones nothing, mix-gain evaluation caches linear endpoints (no
+  per-sample `powf`), the limiter runs in place, and the binaural FFT
+  reuses scratch.
+- Fixed: NaN from zero-duration bezier subblocks; ambisonics order
+  underflow on empty input; `channels == 0` panic in the FLAC adapter;
+  `iamfplay`'s quantizer rounding divergence; `iamfplay` no longer
+  deep-copies the decoded PCM per stream rebuild.
+- Dedup: shared quantizers, trim ranges, param-index builder, Opus
+  adapter plumbing; dead items removed (`Bs2051M`, unused frame-size
+  plumbing, `is_first_substream`).
+- Lints: workspace-wide `clippy::pedantic` subset, `unreachable_pub`,
+  `missing_debug_implementations`, `rust_2018_idioms`; the FFI crates
+  re-declare `undocumented_unsafe_blocks` (every unsafe block now has a
+  SAFETY comment); `missing_docs` enforced in `iamf-obu` and
+  `iamf-capi`.
+- Tooling: CI gains MSRV (1.85), docs-with-warnings-denied, and fuzz
+  fmt/clippy jobs; `Cargo.lock` is committed; crates.io metadata
+  (keywords, categories, readme, docs.rs config) added; a test pins the
+  C header constants to the Rust definitions.
+- CLI polish: `iamfdec` rejects unknown flags and parses args linearly;
+  `iamfplay` prints `Display` errors.
+
 ## 0.2.0 — 2026-08-25
 
 Spec-conformance and Chromium-integration hardening. The C ABI settings

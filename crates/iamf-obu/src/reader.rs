@@ -8,6 +8,7 @@ pub struct ByteReader<'a> {
 }
 
 impl<'a> ByteReader<'a> {
+    /// Wraps `data` with the cursor at offset 0.
     pub fn new(data: &'a [u8]) -> Self {
         Self { data, pos: 0 }
     }
@@ -17,14 +18,17 @@ impl<'a> ByteReader<'a> {
         self.pos
     }
 
+    /// Bytes left between the cursor and the end of the input.
     pub fn remaining(&self) -> usize {
         self.data.len() - self.pos
     }
 
+    /// Whether the cursor has reached the end of the input.
     pub fn is_empty(&self) -> bool {
         self.remaining() == 0
     }
 
+    /// Reads one byte.
     pub fn read_u8(&mut self) -> Result<u8> {
         let byte = *self
             .data
@@ -34,26 +38,32 @@ impl<'a> ByteReader<'a> {
         Ok(byte)
     }
 
+    /// Reads an IAMF leb128 (§3.1: at most 8 bytes, value fits in u32).
     pub fn read_leb128(&mut self) -> Result<u32> {
         let (value, consumed) = leb128::decode(&self.data[self.pos..], self.pos)?;
         self.pos += consumed;
         Ok(value)
     }
 
+    /// Reads a big-endian u16.
     pub fn read_u16_be(&mut self) -> Result<u16> {
         let bytes = self.read_bytes(2)?;
         Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
     }
 
+    /// Reads a big-endian i16.
     pub fn read_i16_be(&mut self) -> Result<i16> {
-        Ok(self.read_u16_be()? as i16)
+        let bytes = self.read_bytes(2)?;
+        Ok(i16::from_be_bytes([bytes[0], bytes[1]]))
     }
 
+    /// Reads a big-endian u32.
     pub fn read_u32_be(&mut self) -> Result<u32> {
         let bytes = self.read_bytes(4)?;
         Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 
+    /// Reads a four-character code.
     pub fn read_fourcc(&mut self) -> Result<[u8; 4]> {
         let bytes = self.read_bytes(4)?;
         Ok([bytes[0], bytes[1], bytes[2], bytes[3]])
@@ -89,6 +99,7 @@ impl<'a> ByteReader<'a> {
         bytes
     }
 
+    /// Reads exactly `len` bytes, borrowing from the input.
     pub fn read_bytes(&mut self, len: usize) -> Result<&'a [u8]> {
         let end = self
             .pos

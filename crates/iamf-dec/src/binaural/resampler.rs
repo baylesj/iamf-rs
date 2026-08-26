@@ -12,7 +12,7 @@ fn gcd(a: usize, b: usize) -> usize {
     if b == 0 { a } else { gcd(b, a % b) }
 }
 
-pub fn rates_supported(source: u32, destination: u32) -> bool {
+pub(super) fn rates_supported(source: u32, destination: u32) -> bool {
     let g = gcd(source as usize, destination as usize);
     let max_rate = (source.max(destination) as usize) / g;
     let mut filter_length = max_rate * TRANSITION_BANDWIDTH_RATIO;
@@ -22,7 +22,7 @@ pub fn rates_supported(source: u32, destination: u32) -> bool {
 
 /// Resamples one channel from `source` Hz to `destination` Hz (whole
 /// buffer, fresh state — obr resets the resampler per HRIR load).
-pub fn resample(input: &[f32], source: u32, destination: u32) -> Vec<f32> {
+pub(super) fn resample(input: &[f32], source: u32, destination: u32) -> Vec<f32> {
     let g = gcd(source as usize, destination as usize);
     let up_rate = destination as usize / g;
     let down_rate = source as usize / g;

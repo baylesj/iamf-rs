@@ -31,7 +31,7 @@ fn render_m2m(
             planar.len()
         )));
     }
-    let frames = planar.first().map(Vec::len).unwrap_or(0);
+    let frames = planar.first().map_or(0, Vec::len);
     let mut out = vec![vec![0.0f32; frames]; entry.n];
     for (m, plane) in planar.iter().enumerate() {
         for (n, out_plane) in out.iter_mut().enumerate() {
@@ -63,7 +63,7 @@ fn render_h2m(
             planar.len()
         )));
     }
-    let frames = planar.first().map(Vec::len).unwrap_or(0);
+    let frames = planar.first().map_or(0, Vec::len);
     // Matrix output skips LFE channels; compute the non-LFE channels then
     // reinsert silent LFE planes at lfe1/lfe2 (libiamf's LFE synthesis
     // filter is optional and off by default).

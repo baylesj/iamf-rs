@@ -6,7 +6,7 @@
 
 use std::fmt;
 
-pub struct Mp4Iamf {
+pub(crate) struct Mp4Iamf {
     /// Descriptor OBUs from the `iacb` box.
     pub descriptors: Vec<u8>,
     /// All samples (temporal-unit OBUs) concatenated in track order.
@@ -14,7 +14,7 @@ pub struct Mp4Iamf {
 }
 
 #[derive(Debug)]
-pub struct Mp4Error(String);
+pub(crate) struct Mp4Error(String);
 
 impl fmt::Display for Mp4Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -28,7 +28,7 @@ fn err<T>(message: impl Into<String>) -> Result<T, Mp4Error> {
     Err(Mp4Error(message.into()))
 }
 
-pub fn is_mp4(data: &[u8]) -> bool {
+pub(crate) fn is_mp4(data: &[u8]) -> bool {
     data.len() >= 8 && &data[4..8] == b"ftyp"
 }
 
@@ -96,11 +96,11 @@ impl<'a> Cursor<'a> {
     }
 }
 
-fn find_box<'a>(container: &'a [u8], fourcc: &[u8; 4]) -> Option<&'a [u8]> {
+fn find_box(container: &[u8], fourcc: [u8; 4]) -> Option<&[u8]> {
     let mut c = Cursor::new(container);
     while c.remaining() >= 8 {
         match c.next_box() {
-            Ok((name, body)) if &name == fourcc => return Some(body),
+            Ok((name, body)) if name == fourcc => return Some(body),
             Ok(_) => {}
             Err(_) => return None,
         }
@@ -108,12 +108,12 @@ fn find_box<'a>(container: &'a [u8], fourcc: &[u8; 4]) -> Option<&'a [u8]> {
     None
 }
 
-fn boxes<'a>(container: &'a [u8], fourcc: &[u8; 4]) -> Vec<&'a [u8]> {
+fn boxes(container: &[u8], fourcc: [u8; 4]) -> Vec<&[u8]> {
     let mut out = Vec::new();
     let mut c = Cursor::new(container);
     while c.remaining() >= 8 {
         match c.next_box() {
-            Ok((name, body)) if &name == fourcc => out.push(body),
+            Ok((name, body)) if name == fourcc => out.push(body),
             Ok(_) => {}
             Err(_) => break,
         }
@@ -133,7 +133,7 @@ struct SampleTables {
 }
 
 fn parse_stbl(stbl: &[u8]) -> Result<(Vec<u8>, SampleTables), Mp4Error> {
-    let stsd = find_box(stbl, b"stsd").ok_or(Mp4Error("no stsd".into()))?;
+    let stsd = find_box(stbl, *b"stsd").ok_or(Mp4Error("no stsd".into()))?;
     let mut c = Cursor::new(stsd);
     c.u32()?; // version/flags
     let entry_count = c.u32()?;
@@ -149,7 +149,7 @@ fn parse_stbl(stbl: &[u8]) -> Result<(Vec<u8>, SampleTables), Mp4Error> {
         if body.len() < 28 {
             return err("iamf sample entry too small");
         }
-        let iacb = find_box(&body[28..], b"iacb").ok_or(Mp4Error("no iacb box".into()))?;
+        let iacb = find_box(&body[28..], *b"iacb").ok_or(Mp4Error("no iacb box".into()))?;
         let mut b = Cursor::new(iacb);
         let version = b.u8()?;
         if version != 1 {
@@ -170,7 +170,7 @@ fn parse_stbl(stbl: &[u8]) -> Result<(Vec<u8>, SampleTables), Mp4Error> {
         return err("no iamf sample entry in stsd");
     };
 
-    let stsz = find_box(stbl, b"stsz").ok_or(Mp4Error("no stsz".into()))?;
+    let stsz = find_box(stbl, *b"stsz").ok_or(Mp4Error("no stsz".into()))?;
     let mut c = Cursor::new(stsz);
     c.u32()?; // version/flags
     let uniform = c.u32()?;
@@ -186,14 +186,14 @@ fn parse_stbl(stbl: &[u8]) -> Result<(Vec<u8>, SampleTables), Mp4Error> {
             .collect::<Result<_, _>>()?
     };
 
-    let chunk_offsets = if let Some(stco) = find_box(stbl, b"stco") {
+    let chunk_offsets = if let Some(stco) = find_box(stbl, *b"stco") {
         let mut c = Cursor::new(stco);
         c.u32()?;
         let n = c.u32()? as usize;
         (0..n)
             .map(|_| c.u32().map(u64::from))
             .collect::<Result<Vec<_>, _>>()?
-    } else if let Some(co64) = find_box(stbl, b"co64") {
+    } else if let Some(co64) = find_box(stbl, *b"co64") {
         let mut c = Cursor::new(co64);
         c.u32()?;
         let n = c.u32()? as usize;
@@ -202,7 +202,7 @@ fn parse_stbl(stbl: &[u8]) -> Result<(Vec<u8>, SampleTables), Mp4Error> {
         return err("no stco/co64");
     };
 
-    let stsc = find_box(stbl, b"stsc").ok_or(Mp4Error("no stsc".into()))?;
+    let stsc = find_box(stbl, *b"stsc").ok_or(Mp4Error("no stsc".into()))?;
     let mut c = Cursor::new(stsc);
     c.u32()?;
     let n = c.u32()? as usize;
@@ -225,18 +225,18 @@ fn parse_stbl(stbl: &[u8]) -> Result<(Vec<u8>, SampleTables), Mp4Error> {
 }
 
 /// Demuxes an IAMF track from a non-fragmented MP4 file.
-pub fn demux(file: &[u8]) -> Result<Mp4Iamf, Mp4Error> {
-    let moov = find_box(file, b"moov").ok_or(Mp4Error("no moov box".into()))?;
+pub(crate) fn demux(file: &[u8]) -> Result<Mp4Iamf, Mp4Error> {
+    let moov = find_box(file, *b"moov").ok_or(Mp4Error("no moov box".into()))?;
 
     let mut found = None;
-    for trak in boxes(moov, b"trak") {
-        let Some(mdia) = find_box(trak, b"mdia") else {
+    for trak in boxes(moov, *b"trak") {
+        let Some(mdia) = find_box(trak, *b"mdia") else {
             continue;
         };
-        let Some(minf) = find_box(mdia, b"minf") else {
+        let Some(minf) = find_box(mdia, *b"minf") else {
             continue;
         };
-        let Some(stbl) = find_box(minf, b"stbl") else {
+        let Some(stbl) = find_box(minf, *b"stbl") else {
             continue;
         };
         if let Ok(parsed) = parse_stbl(stbl) {
@@ -245,12 +245,12 @@ pub fn demux(file: &[u8]) -> Result<Mp4Iamf, Mp4Error> {
         }
     }
     let Some((descriptors, tables)) = found else {
-        if find_box(file, b"moof").is_some() {
+        if find_box(file, *b"moof").is_some() {
             return err("fragmented MP4 is not supported");
         }
         return err("no IAMF audio track found");
     };
-    if tables.sizes.is_empty() && find_box(file, b"moof").is_some() {
+    if tables.sizes.is_empty() && find_box(file, *b"moof").is_some() {
         return err("fragmented MP4 is not supported");
     }
 
@@ -261,8 +261,9 @@ pub fn demux(file: &[u8]) -> Result<Mp4Iamf, Mp4Error> {
         let last_chunk = tables
             .chunk_runs
             .get(run + 1)
-            .map(|&(next_first, _)| next_first)
-            .unwrap_or(tables.chunk_offsets.len() as u32 + 1);
+            .map_or(tables.chunk_offsets.len() as u32 + 1, |&(next_first, _)| {
+                next_first
+            });
         for chunk in first_chunk..last_chunk {
             let Some(&base) = tables.chunk_offsets.get(chunk as usize - 1) else {
                 break;
@@ -296,9 +297,9 @@ pub fn demux(file: &[u8]) -> Result<Mp4Iamf, Mp4Error> {
 mod tests {
     use super::*;
 
-    fn boxed(fourcc: &[u8; 4], body: &[u8]) -> Vec<u8> {
+    fn boxed(fourcc: [u8; 4], body: &[u8]) -> Vec<u8> {
         let mut out = ((body.len() + 8) as u32).to_be_bytes().to_vec();
-        out.extend_from_slice(fourcc);
+        out.extend_from_slice(&fourcc);
         out.extend_from_slice(body);
         out
     }
@@ -310,23 +311,23 @@ mod tests {
         let descriptors = vec![0xAA; 37];
         let samples: Vec<Vec<u8>> = (0u8..6).map(|i| vec![i; 100 + usize::from(i)]).collect();
 
-        let ftyp = boxed(b"ftyp", b"iamf\0\0\0\0iamf");
+        let ftyp = boxed(*b"ftyp", b"iamf\0\0\0\0iamf");
         let mut mdat_body = Vec::new();
         let mut sample_offsets = Vec::new();
         for s in &samples {
             sample_offsets.push(mdat_body.len());
             mdat_body.extend_from_slice(s);
         }
-        let mdat = boxed(b"mdat", &mdat_body);
+        let mdat = boxed(*b"mdat", &mdat_body);
         let mdat_start = ftyp.len() + 8; // data begins after the mdat header
 
         let mut iacb = vec![1u8]; // configuration_version
         iacb.push(descriptors.len() as u8); // leb128 (fits one byte)
         iacb.extend_from_slice(&descriptors);
         let mut entry = vec![0u8; 28];
-        entry.extend_from_slice(&boxed(b"iacb", &iacb));
+        entry.extend_from_slice(&boxed(*b"iacb", &iacb));
         let mut stsd = vec![0, 0, 0, 0, 0, 0, 0, 1];
-        stsd.extend_from_slice(&boxed(b"iamf", &entry));
+        stsd.extend_from_slice(&boxed(*b"iamf", &entry));
 
         let mut stsz = vec![0u8; 8]; // version/flags + uniform=0
         stsz.extend_from_slice(&(samples.len() as u32).to_be_bytes());
@@ -346,19 +347,19 @@ mod tests {
         stsc.extend_from_slice(&1u32.to_be_bytes()); // sample_description_index
 
         let stbl_body = [
-            boxed(b"stsd", &stsd),
-            boxed(b"stsz", &stsz),
-            boxed(b"stco", &stco),
-            boxed(b"stsc", &stsc),
+            boxed(*b"stsd", &stsd),
+            boxed(*b"stsz", &stsz),
+            boxed(*b"stco", &stco),
+            boxed(*b"stsc", &stsc),
         ]
         .concat();
         let hdlr = boxed(
-            b"hdlr",
+            *b"hdlr",
             &[b"\0\0\0\0\0\0\0\0soun".to_vec(), vec![0; 14]].concat(),
         );
-        let minf = boxed(b"minf", &boxed(b"stbl", &stbl_body));
-        let mdia = boxed(b"mdia", &[hdlr, minf].concat());
-        let moov = boxed(b"moov", &boxed(b"trak", &mdia));
+        let minf = boxed(*b"minf", &boxed(*b"stbl", &stbl_body));
+        let mdia = boxed(*b"mdia", &[hdlr, minf].concat());
+        let moov = boxed(*b"moov", &boxed(*b"trak", &mdia));
 
         let file = [ftyp, mdat, moov].concat();
         assert!(is_mp4(&file));
@@ -369,6 +370,6 @@ mod tests {
 
     #[test]
     fn rejects_non_iamf() {
-        assert!(demux(&boxed(b"moov", &[])).is_err());
+        assert!(demux(&boxed(*b"moov", &[])).is_err());
     }
 }

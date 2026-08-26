@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-pub fn vectors_dir() -> PathBuf {
+pub(crate) fn vectors_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/vectors")
 }
 

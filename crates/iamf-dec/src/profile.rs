@@ -36,6 +36,7 @@ impl ProfileSet {
         self.0 == 0
     }
 
+    #[must_use]
     pub const fn union(self, other: ProfileSet) -> Self {
         ProfileSet(self.0 | other.0)
     }

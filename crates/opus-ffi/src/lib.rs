@@ -30,8 +30,16 @@ pub struct Decoder {
     channels: usize,
 }
 
-// libopus decoder state is plain heap data with no thread affinity; it is
-// safe to move across threads (but not to share: no Sync).
+impl std::fmt::Debug for Decoder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Decoder")
+            .field("channels", &self.channels)
+            .finish_non_exhaustive()
+    }
+}
+
+// SAFETY: libopus decoder state is plain heap data with no thread
+// affinity; it is safe to move across threads (but not to share: no Sync).
 unsafe impl Send for Decoder {}
 
 #[derive(Debug)]

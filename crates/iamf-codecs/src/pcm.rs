@@ -24,6 +24,7 @@ impl SampleFormat {
 ///
 /// IAMF's `sample_format_flags` selects endianness; sample size is 16, 24,
 /// or 32 bits (IAMF §3.6.4).
+#[derive(Debug)]
 pub struct PcmDecoder {
     format: SampleFormat,
     little_endian: bool,

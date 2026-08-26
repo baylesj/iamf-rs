@@ -10,9 +10,13 @@ use crate::{ByteReader, Error, Obu, ObuType, Result};
 /// A parsed descriptor OBU payload.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Descriptor {
+    /// IA sequence header (§3.5).
     SequenceHeader(SequenceHeader),
+    /// Codec config (§3.6).
     CodecConfig(CodecConfig),
+    /// Audio element (§3.7).
     AudioElement(AudioElement),
+    /// Mix presentation (§3.8).
     MixPresentation(MixPresentation),
 }
 
@@ -40,13 +44,19 @@ fn invalid(r: &ByteReader<'_>) -> Error {
 // IA sequence header (§3.5)
 // ---------------------------------------------------------------------------
 
+/// IA sequence header (§3.5): the profiles the stream complies with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SequenceHeader {
+    /// Profile the full stream complies with (0 = simple, 1 = base,
+    /// 2 = base-enhanced).
     pub primary_profile: u8,
+    /// A profile the stream also complies with when unsupported elements
+    /// are ignored.
     pub additional_profile: u8,
 }
 
 impl SequenceHeader {
+    /// Parses a sequence header OBU payload (validates the `iamf` 4CC).
     pub fn parse(r: &mut ByteReader<'_>) -> Result<Self> {
         if &r.read_fourcc()? != b"iamf" {
             return Err(invalid(r));
@@ -62,16 +72,23 @@ impl SequenceHeader {
 // Codec config (§3.6)
 // ---------------------------------------------------------------------------
 
+/// The codec of a codec config, from its 4CC (§3.6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodecId {
+    /// `Opus`.
     Opus,
+    /// `mp4a` (AAC-LC).
     AacLc,
+    /// `fLaC`.
     Flac,
+    /// `ipcm` (linear PCM).
     Lpcm,
+    /// An unrecognized 4CC, preserved for diagnostics.
     Unknown([u8; 4]),
 }
 
 impl CodecId {
+    /// Maps a codec_id 4CC to a [`CodecId`].
     pub fn from_fourcc(fourcc: [u8; 4]) -> Self {
         match &fourcc {
             b"Opus" => CodecId::Opus,
@@ -88,44 +105,67 @@ impl CodecId {
 pub enum DecoderConfig {
     /// §3.6.1: OpusHead-equivalent fields, but big-endian.
     Opus {
+        /// OpusHead version; §3.6.1 requires 1.
         version: u8,
+        /// Channels of the element (substreams are mono/stereo regardless).
         output_channel_count: u8,
+        /// Encoder look-ahead in 48 kHz samples (informational; trimming
+        /// is carried by the audio frames).
         pre_skip: u16,
+        /// The encoder's input rate (decode is always at 48 kHz).
         input_sample_rate: u32,
+        /// OpusHead output gain, Q7.8 dB (informational).
         output_gain: i16,
+        /// OpusHead channel mapping family (informational).
         mapping_family: u8,
     },
     /// §3.6.3: fields from the FLAC STREAMINFO metadata block, plus the
     /// raw 34-byte block body for codec initialization.
     Flac {
+        /// From STREAMINFO.
         sample_rate: u32,
+        /// From STREAMINFO.
         bits_per_sample: u8,
+        /// The raw STREAMINFO block body.
         streaminfo: Vec<u8>,
     },
     /// §3.6.4.
     Lpcm {
+        /// sample_format_flags bit 0.
         little_endian: bool,
+        /// Bits per sample (16, 24, or 32).
         sample_size: u8,
+        /// Samples per second.
         sample_rate: u32,
     },
     /// §3.6.2: the AudioSpecificConfig extracted from the
     /// DecoderConfigDescriptor, for codec initialization.
     AacLc {
+        /// The raw AudioSpecificConfig bytes.
         audio_specific_config: Vec<u8>,
     },
+    /// Unrecognized codec: the raw decoder_config bytes.
     Unknown(Vec<u8>),
 }
 
+/// Codec config descriptor (§3.6): how substreams referencing it are
+/// coded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodecConfig {
+    /// Identifier audio elements reference.
     pub codec_config_id: u32,
+    /// The codec, from its 4CC.
     pub codec_id: CodecId,
+    /// Samples per audio frame (per channel).
     pub num_samples_per_frame: u32,
+    /// Frames needed to converge after a seek (§3.6, e.g. -4 for AAC).
     pub audio_roll_distance: i16,
+    /// Codec-specific initialization data.
     pub decoder_config: DecoderConfig,
 }
 
 impl CodecConfig {
+    /// Parses a codec config OBU payload.
     pub fn parse(r: &mut ByteReader<'_>) -> Result<Self> {
         let codec_config_id = r.read_leb128()?;
         let codec_id = CodecId::from_fourcc(r.read_fourcc()?);
@@ -230,17 +270,23 @@ impl CodecConfig {
 /// Common parameter definition fields (§3.6.1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParamDefinition {
+    /// The id parameter block OBUs carry to reference this definition.
     pub parameter_id: u32,
+    /// Ticks per second of the parameter's time base.
     pub parameter_rate: u32,
     /// Mode 1: parameter blocks define their own timing. Mode 0: timing
     /// below applies.
     pub mode: bool,
+    /// Mode-0 block duration in parameter ticks.
     pub duration: u32,
+    /// Mode-0 subblock duration; 0 means explicit per-subblock durations.
     pub constant_subblock_duration: u32,
+    /// Mode-0 explicit subblock durations (when the above is 0).
     pub subblock_durations: Vec<u32>,
 }
 
 impl ParamDefinition {
+    #[allow(clippy::redundant_closure_for_method_calls)]
     fn parse(r: &mut ByteReader<'_>) -> Result<Self> {
         let parameter_id = r.read_leb128()?;
         let parameter_rate = r.read_leb128()?;
@@ -270,24 +316,33 @@ impl ParamDefinition {
 const PARAM_TYPE_DEMIXING: u32 = 1;
 const PARAM_TYPE_RECON_GAIN: u32 = 2;
 
+/// A parameter declared by an audio element (§3.7 param_definition).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ElementParam {
+    /// Demixing info (type 1): dynamic down-mix parameters.
     Demixing {
+        /// Common definition fields.
         base: ParamDefinition,
+        /// dmixp_mode used when no parameter block covers a frame.
         default_demixing_mode: u8,
+        /// Initial demixing weight index (w_idx).
         default_weight_index: u8,
     },
+    /// Recon gain (type 2), for scalable-channel layers.
     ReconGain(ParamDefinition),
     /// Reserved type; its sized definition was skipped.
     Unknown {
+        /// The reserved param_definition_type value.
         param_type: u32,
     },
 }
 
+/// Mix gain parameter definition (§3.8 element/output mix config).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MixGainParam {
+    /// Common definition fields.
     pub base: ParamDefinition,
-    /// Q7.8 dB.
+    /// Gain applied when no parameter block covers a frame, Q7.8 dB.
     pub default_mix_gain: i16,
 }
 
@@ -304,11 +359,16 @@ impl MixGainParam {
 // Audio element (§3.7)
 // ---------------------------------------------------------------------------
 
+/// One layer of a scalable channel audio config (§3.7.4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelAudioLayer {
+    /// Layout 0..=9 (mono..binaural) or 15 (expanded).
     pub loudspeaker_layout: u8,
+    /// Substreams this layer adds on top of the previous layers.
     pub substream_count: u8,
+    /// Of those, how many are coupled (stereo) substreams.
     pub coupled_substream_count: u8,
+    /// Whether recon-gain parameter blocks carry data for this layer.
     pub recon_gain_is_present: bool,
     /// (output_gain_flags, output_gain Q7.8 dB) when present.
     pub output_gain: Option<(u8, i16)>,
@@ -317,19 +377,29 @@ pub struct ChannelAudioLayer {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// The element-type-specific half of an audio element (§3.7).
 pub enum AudioElementConfig {
     /// §3.7.4 scalable channel layout config.
-    ChannelBased { layers: Vec<ChannelAudioLayer> },
+    ChannelBased {
+        /// The scalable layers, lowest first.
+        layers: Vec<ChannelAudioLayer>,
+    },
     /// §3.7.5 ambisonics config, MONO mode.
     AmbisonicsMono {
+        /// ACN channel count ((order+1)²).
         output_channel_count: u8,
+        /// Mono substreams carrying the mapped channels.
         substream_count: u8,
+        /// ACN slot → substream index; 255 = silent channel.
         channel_mapping: Vec<u8>,
     },
     /// §3.7.5 ambisonics config, PROJECTION mode.
     AmbisonicsProjection {
+        /// ACN channel count ((order+1)²).
         output_channel_count: u8,
+        /// Substreams feeding the demixing matrix.
         substream_count: u8,
+        /// Of those, how many are coupled (stereo).
         coupled_substream_count: u8,
         /// (substream_count + coupled_substream_count) rows of
         /// output_channel_count Q1.15 entries, decoded-channel-major
@@ -338,16 +408,25 @@ pub enum AudioElementConfig {
     },
 }
 
+/// Audio element descriptor (§3.7): a set of substreams that decode into
+/// one channel-based or scene-based element.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioElement {
+    /// Identifier mix presentations reference.
     pub audio_element_id: u32,
+    /// The codec config all substreams of this element use.
     pub codec_config_id: u32,
+    /// Substream ids, in decode order.
     pub substream_ids: Vec<u32>,
+    /// Parameters (demixing, recon gain) declared by the element.
     pub params: Vec<ElementParam>,
+    /// The element-type-specific layout config.
     pub config: AudioElementConfig,
 }
 
 impl AudioElement {
+    #[allow(clippy::redundant_closure_for_method_calls)]
+    /// Parses an audio element OBU payload.
     pub fn parse(r: &mut ByteReader<'_>) -> Result<Self> {
         let audio_element_id = r.read_leb128()?;
         let element_type = r.read_u8()? >> 5 & 0x07;
@@ -476,11 +555,15 @@ pub enum Layout {
     /// layout_type 2: ITU-R BS.2051 sound system letter (0..=9 → A..=J,
     /// then extensions).
     LoudspeakersSsConvention {
+        /// Sound system number (the [`crate::descriptors`] numbering
+        /// shared with mix rendering targets).
         sound_system: u8,
     },
     /// layout_type 3.
     Binaural,
+    /// Reserved layout types 0..=1.
     Reserved {
+        /// The reserved layout_type value.
         layout_type: u8,
     },
 }
@@ -501,9 +584,13 @@ impl Layout {
 /// §3.8.4 loudness_info. Gains/loudness values are Q7.8.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoudnessInfo {
+    /// Bitmask of optional measurements present (§3.8.4 info_type).
     pub info_type: u8,
+    /// Integrated loudness of the mix for this layout, Q7.8 LKFS.
     pub integrated_loudness: i16,
+    /// Digital (sample) peak, Q7.8 dBFS.
     pub digital_peak: i16,
+    /// True peak, Q7.8 dBFS, when measured.
     pub true_peak: Option<i16>,
     /// (anchor_element, anchored_loudness) pairs.
     pub anchored_loudness: Vec<(u8, i16)>,
@@ -541,35 +628,49 @@ impl LoudnessInfo {
     }
 }
 
+/// One audio element's entry in a sub mix (§3.8.1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubMixElement {
+    /// The referenced audio element.
     pub audio_element_id: u32,
+    /// Human-readable labels, one per annotation language.
     pub localized_annotations: Vec<String>,
     /// §3.8.2 rendering_config.
     pub headphones_rendering_mode: u8,
+    /// This element's mix gain into the sub mix.
     pub element_mix_gain: MixGainParam,
 }
 
+/// One sub mix of a mix presentation (§3.8.1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubMix {
+    /// The audio elements summed into this sub mix.
     pub elements: Vec<SubMixElement>,
+    /// Gain applied to the summed output.
     pub output_mix_gain: MixGainParam,
     /// Layouts the mix was authored/measured for, with loudness for each.
     pub layouts: Vec<(Layout, LoudnessInfo)>,
 }
 
+/// Mix presentation descriptor (§3.8): a renderable presentation of one
+/// or more audio elements.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MixPresentation {
+    /// Identifier used for selection.
     pub mix_presentation_id: u32,
     /// BCP-47-ish language tags, one per label.
     pub annotation_languages: Vec<String>,
+    /// Human-readable presentation labels, one per language.
     pub localized_annotations: Vec<String>,
+    /// The sub mixes (IAMF v1.1 requires exactly one).
     pub sub_mixes: Vec<SubMix>,
     /// §8.x mix presentation tags (name, value), when present.
     pub tags: Vec<(String, String)>,
 }
 
 impl MixPresentation {
+    #[allow(clippy::redundant_closure_for_method_calls)]
+    /// Parses a mix presentation OBU payload.
     pub fn parse(r: &mut ByteReader<'_>) -> Result<Self> {
         let mix_presentation_id = r.read_leb128()?;
         let count_label = r.read_leb128()?;
@@ -633,6 +734,9 @@ impl MixPresentation {
 /// Reads `count` items, guarding against absurd counts from a hostile
 /// bitstream: each item must consume at least one byte, so `count` can never
 /// legitimately exceed the bytes remaining.
+///
+/// Callers pass `|r| r.read_x()` closures rather than method paths: the
+/// paths pin a single reader lifetime and fail higher-ranked inference.
 fn read_bounded_vec<T>(
     r: &mut ByteReader<'_>,
     count: u32,

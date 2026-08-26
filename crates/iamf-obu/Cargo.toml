@@ -6,6 +6,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "../../README.md"
+keywords = ["iamf", "audio", "spatial-audio", "decoder", "eclipsa"]
+categories = ["multimedia::audio", "multimedia::encoding"]
 
 [dependencies]
 

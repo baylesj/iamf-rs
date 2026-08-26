@@ -1,14 +1,14 @@
 //! obr's peak limiter (`peak_limiter.cc`): instantaneous attack,
 //! exponential release, envelope shared across channels.
 
-pub struct ObrPeakLimiter {
+pub(super) struct ObrPeakLimiter {
     ceiling: f64,
     release_time_constant: f64,
     env: f64,
 }
 
 impl ObrPeakLimiter {
-    pub fn new(sample_rate: u32, release_ms: f64, ceiling_db: f64) -> Self {
+    pub(super) fn new(sample_rate: u32, release_ms: f64, ceiling_db: f64) -> Self {
         ObrPeakLimiter {
             ceiling: 10f64.powf(ceiling_db / 20.0),
             release_time_constant: (-3.0 / (f64::from(sample_rate) * release_ms / 1000.0)).exp(),
@@ -25,7 +25,7 @@ impl ObrPeakLimiter {
     }
 
     /// Applies the limiter in place to a stereo pair of planes.
-    pub fn process(&mut self, channels: &mut [Vec<f32>; 2]) {
+    pub(super) fn process(&mut self, channels: &mut [Vec<f32>; 2]) {
         let frames = channels[0].len();
         for frame in 0..frames {
             let max_sample = channels

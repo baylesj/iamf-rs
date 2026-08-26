@@ -1,8 +1,7 @@
-//! Inspects a standalone .iamf bitstream: OBU listing plus parsed
-//! descriptor summaries.
-//!
-//! Will grow into a full decode-to-WAV tool (the Rust counterpart of
-//! libiamf's iamfdec) as pipeline milestones land.
+//! Inspects and decodes standalone .iamf bitstreams (the Rust
+//! counterpart of libiamf's iamfdec): descriptor summaries by default,
+//! decode-to-WAV with `-o`, with optional loudness normalization and
+//! peak limiting.
 
 use std::process::ExitCode;
 
@@ -19,8 +18,11 @@ struct Options {
     loudness: Option<f32>,
 }
 
+const USAGE: &str =
+    "usage: iamfdec <file.iamf> [-o out.wav] [-s sound_system] [--limiter] [--loudness dB]";
+
 fn main() -> ExitCode {
-    let mut args = std::env::args().skip(1).collect::<Vec<_>>();
+    let mut args = std::env::args().skip(1);
     let mut opts = Options {
         sound_system: 0,
         limiter: false,
@@ -28,37 +30,46 @@ fn main() -> ExitCode {
     };
     let mut wav_out = None;
     let mut path = None;
-    while !args.is_empty() {
-        match args.remove(0).as_str() {
-            "-o" if !args.is_empty() => wav_out = Some(args.remove(0)),
-            "-s" if !args.is_empty() => match args.remove(0).parse() {
-                Ok(s) => opts.sound_system = s,
-                Err(_) => {
-                    eprintln!("error: -s expects a sound system number (0..=13)");
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-o" => {
+                if let Some(out) = args.next() {
+                    wav_out = Some(out)
+                } else {
+                    eprintln!("error: -o expects an output path");
                     return ExitCode::FAILURE;
                 }
-            },
+            }
+            "-s" => {
+                if let Some(s) = args.next().and_then(|v| v.parse().ok()) {
+                    opts.sound_system = s
+                } else {
+                    eprintln!("error: -s expects a sound system number (0..=14)");
+                    return ExitCode::FAILURE;
+                }
+            }
             "--limiter" => opts.limiter = true,
-            "--loudness" if !args.is_empty() => match args.remove(0).parse() {
-                Ok(db) => opts.loudness = Some(db),
-                Err(_) => {
+            "--loudness" => {
+                if let Some(db) = args.next().and_then(|v| v.parse().ok()) {
+                    opts.loudness = Some(db)
+                } else {
                     eprintln!("error: --loudness expects a dB value (e.g. -24)");
                     return ExitCode::FAILURE;
                 }
-            },
-            arg if path.is_none() => path = Some(arg.to_string()),
+            }
+            flag if flag.starts_with('-') => {
+                eprintln!("error: unknown option {flag}\n{USAGE}");
+                return ExitCode::FAILURE;
+            }
+            _ if path.is_none() => path = Some(arg),
             _ => {
-                eprintln!(
-                    "usage: iamfdec <file.iamf> [-o out.wav] [-s sound_system] [--limiter] [--loudness dB]"
-                );
+                eprintln!("{USAGE}");
                 return ExitCode::FAILURE;
             }
         }
     }
     let Some(path) = path else {
-        eprintln!(
-            "usage: iamfdec <file.iamf> [-o out.wav] [-s sound_system] [--limiter] [--loudness dB]"
-        );
+        eprintln!("{USAGE}");
         return ExitCode::FAILURE;
     };
     let data = match std::fs::read(&path) {
@@ -163,9 +174,9 @@ fn decode_to_wav(data: &[u8], out_path: &str, opts: &Options) -> ExitCode {
                 sm.layouts
                     .iter()
                     .find_map(|(layout, loudness)| match layout {
-                        iamf_obu::descriptors::Layout::LoudspeakersSsConvention {
-                            sound_system: s,
-                        } if *s == sound_system => {
+                        Layout::LoudspeakersSsConvention { sound_system: s }
+                            if *s == sound_system =>
+                        {
                             Some(f32::from(loudness.integrated_loudness) / 256.0)
                         }
                         _ => None,

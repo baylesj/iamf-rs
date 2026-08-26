@@ -4,6 +4,5 @@ fuzz/corpus
 fuzz/artifacts
 fuzz/coverage
 tests/vectors/
-Cargo.lock
 .DS_Store
 tests/demo/

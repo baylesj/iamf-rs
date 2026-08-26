@@ -9,6 +9,14 @@ use iamf_obu::descriptors::CodecConfig;
 
 use crate::opus_common::{MAX_FRAME_SAMPLES, SAMPLE_RATE};
 
+impl core::fmt::Debug for OpusSubstreamDecoder {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("OpusSubstreamDecoder")
+            .field("channels", &self.channels)
+            .finish_non_exhaustive()
+    }
+}
+
 pub struct OpusSubstreamDecoder {
     decoder: opus_decoder::OpusDecoder,
     channels: u8,

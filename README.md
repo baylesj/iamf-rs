@@ -119,29 +119,17 @@ dependencies to vendor. Dropping `binaural` also drops the FFT stack and
 ~1.8 MB of embedded HRIR filters; binaural output then falls back to
 stereo. CI checks these combinations.
 
-## Milestones
+## Scope
 
-1. **OBU framing** — header/trimming/extension parsing, fuzz target. *(done)*
-2. **Descriptors** — codec config, audio element, mix presentation. *(done)*
-3. **Opus path** — substream decode, trimming, parameter blocks. *(done)*
-4. **Reconstruction & rendering** — scalable demixing, ambisonics, gain
-   matrices from libiamf v1.1.0 (`tools/extract_matrices.py`), animated
-   gains, loudness/limiter. *(done)*
-5. **Integration surface** — streaming decoder + C ABI shaped after the
-   iamf-tools API Chromium consumes. *(done; ISO-BMFF demuxing is out of
-   scope — Chromium's demuxer delivers descriptors + temporal units)*
-6. **Binaural** — *(done)* native obr-style renderer: speaker/object→HOA
-   SH encoding, partitioned FFT convolution with obr's SH-HRIR filters,
-   obr peak limiter; validated against iamf-tools' `decoder_main
-   --output_layout Binaural` (≤4 LSB), with HRIR resampling for
-   non-48 kHz streams.
-7. **Hardening** — *(done)* profile validation (iamf-tools
-   `ProfileFilter` port), subblock-granular parameter timelines,
-   temporal-unit consistency checks, in-place mix switching, loudness &
-   limiter on the streaming/C-API path, PROJECTION-mode and codec-adapter
-   conformance coverage.
-8. **Later** — expanded loudspeaker layouts (base-enhanced),
-   output-rate resampling, higher profiles.
+Everything the pipeline needs for IAMF v1.1 simple/base(-enhanced-aware)
+playback is implemented: OBU/descriptor parsing, all four codecs,
+scalable-channel reconstruction, ambisonics (mono + projection),
+rendering to every sound system, HRTF binaural (obr port), profile
+validation, and the streaming decoder + C ABI Chromium-shaped surface.
+ISO-BMFF demuxing is deliberately out of scope for the library
+(Chromium's demuxer delivers descriptors and temporal units; `iamfplay`
+carries its own minimal MP4 reader). Remaining gaps and the full history
+live in `CHANGELOG.md`.
 
 ## Development
 

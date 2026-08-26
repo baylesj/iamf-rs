@@ -6,6 +6,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "../../README.md"
+keywords = ["iamf", "audio", "capi", "ffi", "decoder"]
+categories = ["multimedia::audio", "multimedia::encoding"]
 
 [lib]
 name = "iamf_rs"
@@ -30,3 +33,15 @@ iamf-codecs = { path = "../iamf-codecs", default-features = false }
 
 # FFI requires unsafe; this crate intentionally does not inherit the
 # workspace-wide forbid(unsafe_code).
+
+# The workspace lint table forbids unsafe_code, which this FFI crate
+# cannot inherit; the safety-adjacent lints are re-declared here.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+unused_qualifications = "warn"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"

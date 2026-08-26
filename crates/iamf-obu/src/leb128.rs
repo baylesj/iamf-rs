@@ -1,14 +1,14 @@
 use crate::Error;
 
 /// Maximum encoded length of a leb128() value, per IAMF §3 (as in AV1).
-pub const MAX_LEB128_BYTES: usize = 8;
+pub(crate) const MAX_LEB128_BYTES: usize = 8;
 
 /// Decodes an unsigned leb128 value from the start of `data`.
 ///
 /// Returns `(value, bytes_consumed)`. IAMF constrains decoded values to fit
 /// in 32 bits and the encoding to at most 8 bytes; both are enforced here.
 /// `offset` is only used to report error positions.
-pub fn decode(data: &[u8], offset: usize) -> Result<(u32, usize), Error> {
+pub(crate) fn decode(data: &[u8], offset: usize) -> Result<(u32, usize), Error> {
     let mut value: u64 = 0;
     for i in 0..MAX_LEB128_BYTES {
         let byte = *data

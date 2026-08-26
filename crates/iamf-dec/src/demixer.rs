@@ -28,7 +28,8 @@ const WIDX2W: [f32; 11] = [
     0.0, 0.0179, 0.0391, 0.0658, 0.1038, 0.25, 0.3962, 0.4342, 0.4609, 0.4821, 0.5,
 ];
 
-pub struct Demixer {
+#[derive(Debug)]
+pub(crate) struct Demixer {
     /// Transmitted channels in substream decode order.
     channels_in: Vec<Channel>,
     /// Target layer channels in rendering order.
@@ -54,7 +55,7 @@ struct ChannelData<'a> {
     computed: [Option<Vec<f32>>; CHANNEL_COUNT],
 }
 
-impl<'a> ChannelData<'a> {
+impl ChannelData<'_> {
     fn get(&self, ch: Channel) -> Option<&[f32]> {
         self.computed[ch.index()]
             .as_deref()
@@ -71,7 +72,7 @@ impl<'a> ChannelData<'a> {
 }
 
 impl Demixer {
-    pub fn new(
+    pub(crate) fn new(
         channels_in: Vec<Channel>,
         channels_out: Vec<Channel>,
         output_gains: Vec<(Channel, f32)>,
@@ -94,14 +95,23 @@ impl Demixer {
     /// path: both current and previous state are pinned. Out-of-range
     /// `w_idx` (libiamf passes -1) is the dynamic per-frame path: the mode
     /// rotates and the weight index steps by the mode's offset.
-    pub fn set_demixing_info(&mut self, mode: u8, w_idx: i32) -> Result<(), DecodeError> {
+    pub(crate) fn set_demixing_info(&mut self, mode: u8, w_idx: i32) -> Result<(), DecodeError> {
         let mode = usize::from(mode);
         if mode == 3 || mode > 6 {
             return Err(DecodeError::InvalidDescriptors(format!(
                 "invalid demixing mode {mode}"
             )));
         }
-        if !(0..=10).contains(&w_idx) {
+        if (0..=10).contains(&w_idx) {
+            if mode != self.mode {
+                self.mode = mode;
+                self.last_mode = mode;
+            }
+            if self.w_idx != w_idx {
+                self.w_idx = w_idx;
+                self.last_w_idx = w_idx;
+            }
+        } else {
             self.last_mode = self.mode;
             self.mode = mode;
             self.last_w_idx = self.w_idx;
@@ -111,29 +121,20 @@ impl Demixer {
             } else {
                 (self.last_w_idx - 1).max(0)
             };
-        } else {
-            if mode != self.mode {
-                self.mode = mode;
-                self.last_mode = mode;
-            }
-            if self.w_idx != w_idx {
-                self.w_idx = w_idx;
-                self.last_w_idx = w_idx;
-            }
         }
         Ok(())
     }
 
     /// Sets recon gains: one linear gain per set flag bit, already mapped
     /// to target-layout channels.
-    pub fn set_recon_gains(&mut self, flags: u32, gains: Vec<(Channel, f32)>) {
+    pub(crate) fn set_recon_gains(&mut self, flags: u32, gains: Vec<(Channel, f32)>) {
         self.recon_gains = gains;
         self.recon_flags = flags;
     }
 
     /// Demixes one frame. `input` are planes matching `channels_in`; the
     /// result matches `channels_out`.
-    pub fn demix(&mut self, input: &[Vec<f32>]) -> Result<Vec<Vec<f32>>, DecodeError> {
+    pub(crate) fn demix(&mut self, input: &[Vec<f32>]) -> Result<Vec<Vec<f32>>, DecodeError> {
         if input.len() != self.channels_in.len() {
             return Err(DecodeError::InvalidDescriptors(format!(
                 "demixer expects {} channels, got {}",
@@ -181,13 +182,13 @@ impl Demixer {
         (a, b, g, d)
     }
 
-    fn demix_channel(&self, data: &mut ChannelData, ch: Channel) -> Result<(), DecodeError> {
+    fn demix_channel(&self, data: &mut ChannelData<'_>, ch: Channel) -> Result<(), DecodeError> {
         if data.has(ch) {
             return Ok(());
         }
         match ch {
             Channel::R2 => Self::dmx_s2(data),
-            Channel::L3 | Channel::R3 => self.dmx_s3(data),
+            Channel::L3 | Channel::R3 => Self::dmx_s3(data),
             Channel::Sl5 | Channel::Sr5 => self.dmx_s5(data),
             Channel::Bl7 | Channel::Br7 => self.dmx_s7(data),
             Channel::Hl | Channel::Hr => self.dmx_h2(data),
@@ -198,14 +199,14 @@ impl Demixer {
         }
     }
 
-    fn require<'b>(data: &'b ChannelData, ch: Channel) -> Result<&'b [f32], DecodeError> {
+    fn require<'b>(data: &'b ChannelData<'_>, ch: Channel) -> Result<&'b [f32], DecodeError> {
         data.get(ch).ok_or_else(|| {
             DecodeError::InvalidDescriptors(format!("demix prerequisite {ch:?} missing"))
         })
     }
 
     /// R2 = 2 x Mono - L2
-    fn dmx_s2(data: &mut ChannelData) -> Result<(), DecodeError> {
+    fn dmx_s2(data: &mut ChannelData<'_>) -> Result<(), DecodeError> {
         if data.has(Channel::R2) {
             return Ok(());
         }
@@ -219,7 +220,7 @@ impl Demixer {
     }
 
     /// L3 = L2 - 0.707 x C, R3 = R2 - 0.707 x C
-    fn dmx_s3(&self, data: &mut ChannelData) -> Result<(), DecodeError> {
+    fn dmx_s3(data: &mut ChannelData<'_>) -> Result<(), DecodeError> {
         if data.has(Channel::R3) {
             return Ok(());
         }
@@ -248,11 +249,11 @@ impl Demixer {
     }
 
     /// Ls = (L3 - L5) / delta, Rs = (R3 - R5) / delta
-    fn dmx_s5(&self, data: &mut ChannelData) -> Result<(), DecodeError> {
+    fn dmx_s5(&self, data: &mut ChannelData<'_>) -> Result<(), DecodeError> {
         if data.has(Channel::Sr5) {
             return Ok(());
         }
-        self.dmx_s3(data)?;
+        Self::dmx_s3(data)?;
         let (_, _, _, delta) = self.params();
         let (sl, sr) = {
             let l3 = Self::require(data, Channel::L3)?;
@@ -270,7 +271,7 @@ impl Demixer {
     }
 
     /// Lrs = (Ls - alpha x Lss) / beta, Rrs = (Rs - alpha x Rss) / beta
-    fn dmx_s7(&self, data: &mut ChannelData) -> Result<(), DecodeError> {
+    fn dmx_s7(&self, data: &mut ChannelData<'_>) -> Result<(), DecodeError> {
         if data.has(Channel::Br7) {
             return Ok(());
         }
@@ -298,7 +299,7 @@ impl Demixer {
     }
 
     /// Ltf2 = Ltf3 - w x delta x Ls, Rtf2 = Rtf3 - w x delta x Rs
-    fn dmx_h2(&self, data: &mut ChannelData) -> Result<(), DecodeError> {
+    fn dmx_h2(&self, data: &mut ChannelData<'_>) -> Result<(), DecodeError> {
         if data.has(Channel::Hr) {
             return Ok(());
         }
@@ -327,7 +328,7 @@ impl Demixer {
     }
 
     /// Ltb = (Ltf2 - Ltf4) / gamma, Rtb = (Rtf2 - Rtf4) / gamma
-    fn dmx_h4(&self, data: &mut ChannelData) -> Result<(), DecodeError> {
+    fn dmx_h4(&self, data: &mut ChannelData<'_>) -> Result<(), DecodeError> {
         if data.has(Channel::Hbr) {
             return Ok(());
         }
@@ -350,7 +351,7 @@ impl Demixer {
 
     /// Recon gain smoothing (demixer.c dmx_rms): exponential moving average
     /// over frames (N = 7), applied to reconstructed channels.
-    fn apply_recon_gains(&mut self, data: &mut ChannelData) {
+    fn apply_recon_gains(&mut self, data: &mut ChannelData<'_>) {
         const N: f32 = 7.0;
         for &(ch, sf) in &self.recon_gains {
             let sfavg =

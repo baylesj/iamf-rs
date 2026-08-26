@@ -43,6 +43,7 @@ pub fn normalize_loudness(interleaved: &mut [f32], target_db: f32, content_db: f
 /// Samples are delayed by `lookahead`; when the delayed peak would exceed
 /// the threshold, gain ramps down over the attack time along
 /// `1 - (x-1)^2` and recovers over the release time.
+#[derive(Debug)]
 pub struct PeakLimiter {
     threshold: f32,
     attack_sec: f32,
@@ -134,6 +135,7 @@ impl PeakLimiter {
         for k in 0..frames + self.lookahead {
             let idx = (k + self.entry_index) % buffer_len;
 
+            #[allow(clippy::single_match_else)] // the None arm is a stateful scan
             let peak = match self.peak_pos {
                 Some(pos) => self.peaks[pos],
                 None => {

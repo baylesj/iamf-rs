@@ -58,8 +58,9 @@ pub fn descriptor_split(data: &[u8]) -> Option<usize> {
 }
 
 struct Render {
-    /// Interleaved f32 samples.
-    pcm: Vec<f32>,
+    /// Interleaved f32 samples, shared with the audio callback (long
+    /// content would otherwise be deep-copied on every stream rebuild).
+    pcm: Arc<Vec<f32>>,
     channels: usize,
     rate: u32,
     mix_id: u32,
@@ -78,7 +79,7 @@ fn predecode(
     settings.mix_selection = mix;
     let start = Instant::now();
     let mut decoder = StreamDecoder::new_from_descriptors(descriptors, settings, &DefaultFactory)
-        .map_err(|e| format!("decoder init ({layout:?}): {e:?}"))?;
+        .map_err(|e| format!("decoder init ({layout:?}): {e}"))?;
     let sample_bytes = decoder.sample_type().bytes_per_sample();
     let mut pcm = Vec::new();
     let mut push = |bytes: &[u8]| {
@@ -99,10 +100,10 @@ fn predecode(
     for chunk in media.chunks(4096) {
         decoder
             .decode(chunk)
-            .map_err(|e| format!("decode ({layout:?}): {e:?}"))?;
+            .map_err(|e| format!("decode ({layout:?}): {e}"))?;
         while let Some(unit) = decoder
             .get_output_temporal_unit()
-            .map_err(|e| format!("render ({layout:?}): {e:?}"))?
+            .map_err(|e| format!("render ({layout:?}): {e}"))?
         {
             push(&unit);
         }
@@ -110,7 +111,7 @@ fn predecode(
     decoder.signal_end_of_decoding();
     while let Some(unit) = decoder
         .get_output_temporal_unit()
-        .map_err(|e| format!("render ({layout:?}): {e:?}"))?
+        .map_err(|e| format!("render ({layout:?}): {e}"))?
     {
         push(&unit);
     }
@@ -122,7 +123,7 @@ fn predecode(
     }
     let duration = pcm.len() as f64 / channels as f64 / rate as f64;
     Ok(Render {
-        pcm,
+        pcm: Arc::new(pcm),
         channels,
         rate,
         mix_id: decoder.selected_mix().0,
@@ -191,8 +192,8 @@ fn build_stream_typed<T: cpal::SizedSample + cpal::FromSample<f32>>(
     let out_channels = config.channels as usize;
     let step = f64::from(renders.stereo.rate) / f64::from(config.sample_rate.0);
     let buffers: [Arc<Vec<f32>>; 2] = [
-        Arc::new(renders.stereo.pcm.clone()),
-        Arc::new(renders.binaural.pcm.clone()),
+        Arc::clone(&renders.stereo.pcm),
+        Arc::clone(&renders.binaural.pcm),
     ];
     let total_frames = (buffers[0].len() / 2).min(buffers[1].len() / 2) as u64;
     let mut phase = 0.0f64;
@@ -308,10 +309,10 @@ fn restore_terminal() {
 }
 
 #[allow(clippy::too_many_lines)]
-fn run(name: &str, descriptors_bytes: Vec<u8>, media: Vec<u8>) -> Result<(), String> {
-    let mix_info = parse_mix_info(&descriptors_bytes);
+fn run(name: &str, descriptors_bytes: &[u8], media: &[u8]) -> Result<(), String> {
+    let mix_info = parse_mix_info(descriptors_bytes);
     let mut mix_index: Option<usize> = None; // None = automatic selection
-    let mut renders = predecode_all(&descriptors_bytes, &media, MixSelection::Auto)?;
+    let mut renders = predecode_all(descriptors_bytes, media, MixSelection::Auto)?;
 
     let host = cpal::default_host();
     let device = host
@@ -464,8 +465,7 @@ fn run(name: &str, descriptors_bytes: Vec<u8>, media: Vec<u8>) -> Result<(), Str
                     KeyCode::Char('m') if mix_info.ids.len() > 1 => {
                         let next = mix_index.map_or(1, |i| (i + 1) % mix_info.ids.len());
                         drop(stream);
-                        match predecode_all(&descriptors_bytes, &media, MixSelection::ByIndex(next))
-                        {
+                        match predecode_all(descriptors_bytes, media, MixSelection::ByIndex(next)) {
                             Ok(next_renders) => {
                                 renders = next_renders;
                                 mix_index = Some(next);
@@ -549,14 +549,11 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         }
+    } else if let Some(split) = descriptor_split(&data) {
+        (data[..split].to_vec(), data[split..].to_vec())
     } else {
-        match descriptor_split(&data) {
-            Some(split) => (data[..split].to_vec(), data[split..].to_vec()),
-            None => {
-                eprintln!("error: not a parseable IAMF stream or MP4 file");
-                return ExitCode::FAILURE;
-            }
-        }
+        eprintln!("error: not a parseable IAMF stream or MP4 file");
+        return ExitCode::FAILURE;
     };
 
     if check_only {
@@ -582,7 +579,7 @@ fn main() -> ExitCode {
         };
     }
 
-    match run(&name, descriptors_bytes, media) {
+    match run(&name, &descriptors_bytes, &media) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");

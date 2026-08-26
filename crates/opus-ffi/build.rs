@@ -4,6 +4,10 @@
 //! 2. pkg-config.
 
 fn main() {
+    // docs.rs builds have no libopus and never link; skip probing.
+    if std::env::var("DOCS_RS").is_ok() {
+        return;
+    }
     println!("cargo:rerun-if-env-changed=OPUS_LIB_DIR");
     println!("cargo:rerun-if-env-changed=OPUS_STATIC");
     if let Ok(dir) = std::env::var("OPUS_LIB_DIR") {

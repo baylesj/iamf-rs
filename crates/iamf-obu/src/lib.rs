@@ -7,6 +7,7 @@
 //! Spec: <https://aomediacodec.github.io/iamf/>
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 mod error;
 mod frames;
@@ -21,4 +22,5 @@ pub use frames::AudioFrame;
 pub use obu::{Obu, ObuHeader, ObuIter, ObuType};
 pub use reader::ByteReader;
 
+/// Crate-wide result type over [`Error`].
 pub type Result<T> = core::result::Result<T, Error>;

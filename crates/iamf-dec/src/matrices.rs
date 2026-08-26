@@ -45,7 +45,7 @@ pub enum HoaOrder {
     H4a,
 }
 
-pub struct M2m {
+pub(crate) struct M2m {
     pub input: MatrixLayout,
     pub output: MatrixLayout,
     pub mat: &'static [f32],
@@ -55,7 +55,7 @@ pub struct M2m {
     pub n: usize,
 }
 
-pub struct H2m {
+pub(crate) struct H2m {
     pub input: HoaOrder,
     pub output: MatrixLayout,
     /// Channel count of the full output layout including LFEs.
@@ -2627,7 +2627,7 @@ static IAMF916_IAMF916: [f32; 256] = [
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
 ];
 
-pub static M2M_TABLE: [M2m; 165] = [
+pub(crate) static M2M_TABLE: [M2m; 165] = [
     M2m {
         input: MatrixLayout::Mono,
         output: MatrixLayout::Bs2051A,
@@ -10740,7 +10740,7 @@ static H4A_IAMF916: [f32; 375] = [
     0.0736016215,
 ];
 
-pub static H2M_TABLE: [H2m; 75] = [
+pub(crate) static H2M_TABLE: [H2m; 75] = [
     H2m {
         input: HoaOrder::Zoa,
         output: MatrixLayout::Bs2051A,

@@ -20,6 +20,7 @@ use crate::matrices::{HoaOrder, MatrixLayout};
 use crate::params::{ReconGainLayers, q78_db_to_linear};
 
 /// Planar element audio, one `Vec<f32>` per channel.
+#[derive(Debug)]
 #[non_exhaustive]
 pub enum Reconstructed {
     Channels {
@@ -43,6 +44,7 @@ impl Reconstructed {
 /// Frame-based reconstruction of a channel-based element up to the layer
 /// selected for the playback layout (libiamf `iamf_stream_set_output_layout`
 /// + `iamf_stream_scale_demixer_configure`).
+#[derive(Debug)]
 pub struct ChannelReconstructor {
     demixer: Demixer,
     /// Index of the selected layer.
@@ -97,9 +99,7 @@ impl ChannelReconstructor {
             } else if layers.len() > 1 {
                 let playback_channels = target.channels();
                 let bigger = layers.iter().position(|l| {
-                    rendering_channels(l.loudspeaker_layout)
-                        .map(<[Channel]>::len)
-                        .unwrap_or(0)
+                    rendering_channels(l.loudspeaker_layout).map_or(0, <[Channel]>::len)
                         > playback_channels
                 });
                 if let Some(i) = bigger {
@@ -263,7 +263,7 @@ pub fn ambisonics_from_planes(
             ..
         } => {
             let order = hoa_order(*output_channel_count)?;
-            let frames = decoded.first().map(Vec::len).unwrap_or(0);
+            let frames = decoded.first().map_or(0, Vec::len);
             // Each decoded plane is moved to its ACN slot; §3.7.5 requires
             // the mapping to be injective, so a repeated index is invalid.
             let mut decoded: Vec<Option<Vec<f32>>> = decoded.into_iter().map(Some).collect();
@@ -300,7 +300,7 @@ pub fn ambisonics_from_planes(
                     demixing_matrix.len()
                 )));
             }
-            let frames = decoded.first().map(Vec::len).unwrap_or(0);
+            let frames = decoded.first().map_or(0, Vec::len);
             // out[acn] = sum_l in[l] * matrix[l * rows + acn], Q1.15.
             // Iterated decoded-channel-major with the coefficient hoisted;
             // per-sample accumulation stays in l order (bit-identical to a

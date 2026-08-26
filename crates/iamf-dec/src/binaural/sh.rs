@@ -104,7 +104,7 @@ const NEGATIVE_120_DB: f32 = 1e-6;
 
 /// Builds the (order+1)² × sources encoding matrix
 /// (obr `AmbisonicEncoder::SetSource` with gain 1.0 per source).
-pub fn encoding_matrix(sources: &[Source], order: usize) -> Vec<Vec<f32>> {
+pub(super) fn encoding_matrix(sources: &[Source], order: usize) -> Vec<Vec<f32>> {
     let rows = (order + 1) * (order + 1);
     let mut matrix = vec![vec![0.0f32; sources.len()]; rows];
     for (col, source) in sources.iter().enumerate() {

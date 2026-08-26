@@ -21,11 +21,12 @@ fn is_valid_to_decode(iamf_path: &std::path::Path) -> bool {
 }
 
 #[test]
+#[allow(clippy::match_wild_err_arm)] // any read_dir error means "no vectors"
 fn parse_fetched_vectors() {
     let dir = vectors_dir();
     let mut paths: Vec<_> = match std::fs::read_dir(&dir) {
         Ok(entries) => entries
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .map(|e| e.path())
             .filter(|p| p.extension().is_some_and(|ext| ext == "iamf"))
             .collect(),

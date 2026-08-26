@@ -26,7 +26,7 @@ use crate::{CodecFactory, DecodeError};
 
 /// All descriptor OBUs of an IA sequence, first copy wins for redundant
 /// re-transmissions.
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Descriptors {
     pub sequence_header: Option<descriptors::SequenceHeader>,
     pub codec_configs: Vec<CodecConfig>,
@@ -43,7 +43,7 @@ impl Descriptors {
                 .map_err(|e| DecodeError::InvalidDescriptors(e.to_string()))?
             {
                 Some(Descriptor::SequenceHeader(sh)) if out.sequence_header.is_none() => {
-                    out.sequence_header = Some(sh)
+                    out.sequence_header = Some(sh);
                 }
                 Some(Descriptor::CodecConfig(cc))
                     if !out
@@ -51,7 +51,7 @@ impl Descriptors {
                         .iter()
                         .any(|c| c.codec_config_id == cc.codec_config_id) =>
                 {
-                    out.codec_configs.push(cc)
+                    out.codec_configs.push(cc);
                 }
                 Some(Descriptor::AudioElement(ae))
                     if !out
@@ -59,7 +59,7 @@ impl Descriptors {
                         .iter()
                         .any(|e| e.audio_element_id == ae.audio_element_id) =>
                 {
-                    out.audio_elements.push(ae)
+                    out.audio_elements.push(ae);
                 }
                 Some(Descriptor::MixPresentation(mp))
                     if !out
@@ -67,7 +67,7 @@ impl Descriptors {
                         .iter()
                         .any(|m| m.mix_presentation_id == mp.mix_presentation_id) =>
                 {
-                    out.mix_presentations.push(mp)
+                    out.mix_presentations.push(mp);
                 }
                 _ => {}
             }
@@ -87,6 +87,7 @@ impl Descriptors {
 }
 
 /// Final rendered output of one sub mix.
+#[derive(Debug)]
 pub struct RenderedMix {
     pub channels: usize,
     pub sample_rate: u32,
@@ -110,6 +111,15 @@ struct ElementSlot {
     dmx_blocks: Vec<(ParameterBlock, u32)>,
     /// Recon-gain parameter blocks, same shape.
     recon_blocks: Vec<(ParameterBlock, u32)>,
+}
+
+impl core::fmt::Debug for PresentationDecoder {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PresentationDecoder")
+            .field("elements", &self.slots.len())
+            .field("target", &self.target)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Decodes and renders the first sub mix of one mix presentation to a
@@ -221,7 +231,7 @@ impl PresentationDecoder {
                 ParamKind::Demixing => ParamContext::Demixing,
                 ParamKind::ElementMixGain | ParamKind::OutputMixGain => ParamContext::MixGain,
                 ParamKind::ReconGain => {
-                    let iamf_obu::descriptors::AudioElementConfig::ChannelBased { layers } =
+                    let descriptors::AudioElementConfig::ChannelBased { layers } =
                         &slot.element.config
                     else {
                         continue;
@@ -320,7 +330,7 @@ impl PresentationDecoder {
             })
             .flatten();
 
-        let frames = mixed.first().map(Vec::len).unwrap_or(0);
+        let frames = mixed.first().map_or(0, Vec::len);
         let mut interleaved = vec![0.0f32; frames * mixed.len()];
         for (c, plane) in mixed.iter().enumerate() {
             for (t, &s) in plane.iter().enumerate() {
@@ -407,7 +417,7 @@ fn binauralize(
     sample_rate: u32,
 ) -> Result<Vec<Vec<f32>>, DecodeError> {
     let mut renderer = crate::binaural::BinauralRenderer::new(input, frame_size, sample_rate)?;
-    let total = planes.first().map(Vec::len).unwrap_or(0);
+    let total = planes.first().map_or(0, Vec::len);
     let mut out = vec![Vec::with_capacity(total), Vec::with_capacity(total)];
     let mut pos = 0usize;
     while pos < total {
@@ -484,7 +494,7 @@ fn reconstruct_slot(
     match &element.config {
         AudioElementConfig::ChannelBased { layers } => {
             let substreams = decoder.finish_frames();
-            let sample_rate = substreams.first().map(|s| s.sample_rate).unwrap_or(0);
+            let sample_rate = substreams.first().map_or(0, |s| s.sample_rate);
 
             // Subblock timelines over the sample clock; a block spanning
             // several temporal units applies each subblock to the units it
@@ -499,7 +509,7 @@ fn reconstruct_slot(
             let mut dmx_cursor = crate::params::ParamCursor::default();
             for (block, rate) in &dmx_blocks {
                 for sb in &block.subblocks {
-                    if let crate::params::SubblockData::Demixing { dmixp_mode } = &sb.data {
+                    if let SubblockData::Demixing { dmixp_mode } = &sb.data {
                         dmx_cursor.push(
                             *dmixp_mode,
                             (f64::from(sb.duration) * scale(*rate)) as usize,
@@ -510,7 +520,7 @@ fn reconstruct_slot(
             let mut recon_cursor = crate::params::ParamCursor::default();
             for (block, rate) in &recon_blocks {
                 for sb in &block.subblocks {
-                    if let crate::params::SubblockData::ReconGain(gains) = &sb.data {
+                    if let SubblockData::ReconGain(gains) = &sb.data {
                         recon_cursor.push(
                             gains.clone(),
                             (f64::from(sb.duration) * scale(*rate)) as usize,
@@ -522,8 +532,9 @@ fn reconstruct_slot(
             let frame_size = substreams
                 .first()
                 .and_then(|s| s.frames.first())
-                .map(|f| f.samples.len() / usize::from(substreams[0].channels.max(1)))
-                .unwrap_or(0);
+                .map_or(0, |f| {
+                    f.samples.len() / usize::from(substreams[0].channels.max(1))
+                });
 
             let mut rec = ChannelReconstructor::with_layer_selection(layers, target, hrtf)?;
             for param in &element.params {
@@ -560,7 +571,7 @@ fn reconstruct_slot(
                 // For the HRTF path the untrimmed timeline is kept and
                 // trimmed after convolution; otherwise trim per unit
                 // (frame-level trims are identical across substreams).
-                let count = out.first().map(Vec::len).unwrap_or(0);
+                let count = out.first().map_or(0, Vec::len);
                 let kept = if hrtf {
                     0..count
                 } else {
@@ -604,7 +615,7 @@ fn reconstruct_slot(
         AudioElementConfig::AmbisonicsMono { .. }
         | AudioElementConfig::AmbisonicsProjection { .. } => {
             let frames = decoder.finish_frames();
-            let sample_rate = frames.first().map(|s| s.sample_rate).unwrap_or(0);
+            let sample_rate = frames.first().map_or(0, |s| s.sample_rate);
             let trim_map = frames
                 .first()
                 .map(|s| trim_map_of(&s.frames, usize::from(s.channels.max(1))))
@@ -628,7 +639,7 @@ fn reconstruct_slot(
                 let reconstructed = reconstruct_ambisonics(&element, &untrimmed)?;
                 let planes = reconstructed.planar();
                 let order = crate::reconstruct::hoa_order_index(planes.len());
-                let frame_size = trim_map.first().map(|t| t.len).unwrap_or(0);
+                let frame_size = trim_map.first().map_or(0, |t| t.len);
                 let stereo = binauralize(
                     planes,
                     crate::binaural::BinauralInput::Hoa { order },
@@ -638,7 +649,10 @@ fn reconstruct_slot(
                 let stereo = apply_trim_map(stereo, &trim_map);
                 return Ok((SlotOutput::Stereo(stereo), sample_rate, trim_map));
             }
-            let substreams: Vec<_> = frames.iter().map(|f| f.trimmed()).collect();
+            let substreams: Vec<_> = frames
+                .iter()
+                .map(crate::element::SubstreamFrames::trimmed)
+                .collect();
             Ok((
                 SlotOutput::Planar(reconstruct_ambisonics(&element, &substreams)?),
                 sample_rate,

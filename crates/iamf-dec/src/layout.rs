@@ -66,13 +66,12 @@ impl SoundSystem {
         match self {
             SoundSystem::Mono => 1,
             SoundSystem::A | SoundSystem::Binaural => 2,
-            SoundSystem::B => 6,
+            SoundSystem::B | SoundSystem::Ext312 => 6,
             SoundSystem::C | SoundSystem::I => 8,
             SoundSystem::D | SoundSystem::Ext712 => 10,
             SoundSystem::E => 11,
             SoundSystem::F | SoundSystem::J => 12,
             SoundSystem::G => 14,
-            SoundSystem::Ext312 => 6,
             SoundSystem::Ext916 => 16,
             SoundSystem::H => 24,
         }
@@ -101,6 +100,7 @@ impl SoundSystem {
 }
 
 /// Static info for a channel-based element's loudspeaker_layout (§3.7.4).
+#[derive(Debug)]
 pub struct LoudspeakerInfo {
     pub channels: usize,
     /// Position in rendering (channel_layout) order of each channel in

@@ -98,6 +98,14 @@ pub struct ElementDecoder {
     scratch: DecodedFrame,
 }
 
+impl core::fmt::Debug for ElementDecoder {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ElementDecoder")
+            .field("substream_ids", &self.substream_ids)
+            .finish_non_exhaustive()
+    }
+}
+
 impl ElementDecoder {
     pub fn new(
         element: &AudioElement,

@@ -89,6 +89,7 @@ pub(crate) fn build_param_index(
 
 /// What kind of parameter a block's ID resolves to, plus the context needed
 /// to parse its payload.
+#[derive(Debug)]
 #[non_exhaustive]
 pub enum ParamContext<'a> {
     MixGain,

@@ -5,10 +5,13 @@ use crate::{ByteReader, Obu, ObuType, Result};
 /// One coded audio frame for one substream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioFrame<'a> {
+    /// The substream this frame belongs to (explicit or from the OBU type).
     pub substream_id: u32,
     /// Coded frame bytes, handed to the codec as-is.
     pub data: &'a [u8],
+    /// Decoded samples to drop at the start of this frame (§3.9).
     pub num_samples_to_trim_at_start: u32,
+    /// Decoded samples to drop at the end of this frame (§3.9).
     pub num_samples_to_trim_at_end: u32,
 }
 

@@ -4,7 +4,7 @@
 /// One virtual loudspeaker: azimuth (degrees, positive = left), elevation
 /// (degrees, positive = up), distance (meters).
 #[derive(Debug, Clone, Copy)]
-pub struct Source {
+pub(super) struct Source {
     pub azimuth: f32,
     pub elevation: f32,
     pub distance: f32,
@@ -34,7 +34,7 @@ const fn lfe() -> Source {
 
 /// Virtual speakers for loudspeaker_layout 0..=8, in rendering channel
 /// order.
-pub fn layout_sources(loudspeaker_layout: u8) -> Option<&'static [Source]> {
+pub(super) fn layout_sources(loudspeaker_layout: u8) -> Option<&'static [Source]> {
     const C: Source = spk(0.0, 0.0);
     const L30: Source = spk(30.0, 0.0);
     const R30: Source = spk(-30.0, 0.0);

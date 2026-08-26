@@ -6,8 +6,8 @@
 
 use iamf_dec::binaural::sh_coeffs;
 
-pub const SAMPLE_RATE: u32 = 48_000;
-pub const FRAME: usize = 960;
+pub(crate) const SAMPLE_RATE: u32 = 48_000;
+pub(crate) const FRAME: usize = 960;
 const ORDER: usize = 3;
 const CHANNELS: usize = (ORDER + 1) * (ORDER + 1); // 16
 const SECONDS: usize = 24;
@@ -193,7 +193,7 @@ fn synthesize() -> Vec<Vec<f32>> {
 
     // Ambience: soft low-passed noise in W only.
     let mut lp = 0.0f32;
-    for s in planes[0].iter_mut() {
+    for s in &mut planes[0] {
         lp += 0.02 * (rng.white() - lp);
         *s += 0.6 * lp;
     }
@@ -202,7 +202,7 @@ fn synthesize() -> Vec<Vec<f32>> {
 }
 
 /// Builds the complete standalone IA sequence (descriptors + frames).
-pub fn generate() -> Vec<u8> {
+pub(crate) fn generate() -> Vec<u8> {
     let planes = synthesize();
     let total = planes[0].len();
     let mut stream = descriptors();

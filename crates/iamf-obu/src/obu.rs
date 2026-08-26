@@ -6,16 +6,23 @@ use crate::{ByteReader, Error, Result};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ObuType {
+    /// Codec config descriptor (type 0, §3.6).
     CodecConfig,
+    /// Audio element descriptor (type 1, §3.7).
     AudioElement,
+    /// Mix presentation descriptor (type 2, §3.8).
     MixPresentation,
+    /// Parameter block (type 3, §3.10).
     ParameterBlock,
+    /// Temporal-unit boundary marker (type 4).
     TemporalDelimiter,
+    /// Audio frame with an explicit substream ID (type 5, §3.9).
     AudioFrame,
     /// Audio frame with an implicit substream ID of 0..=17 (types 6..=23).
     AudioFrameId(u8),
     /// Metadata OBU (type 24, added after IAMF v1.1).
     Metadata,
+    /// IA sequence header (type 31, §3.5).
     SequenceHeader,
 }
 
@@ -49,22 +56,31 @@ impl ObuType {
 
 /// Parsed OBU header per IAMF v1.1 §3.2.
 ///
-/// TODO: post-v1.1 drafts (base-advanced/advanced profiles) reinterpret the
-/// optional-field bits for some OBU types; revisit when targeting those.
+/// NOTE: post-v1.1 drafts (base-advanced/advanced profiles) reinterpret
+/// the optional-field bits for some OBU types; revisit when targeting
+/// those profiles.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObuHeader {
+    /// The OBU's type (5-bit obu_type field).
     pub obu_type: ObuType,
+    /// Whether this OBU is a redundant copy of an earlier descriptor.
     pub redundant_copy: bool,
-    /// Present iff obu_trimming_status_flag was set (audio frames only).
+    /// Trailing samples to trim; nonzero only when
+    /// obu_trimming_status_flag was set (audio frames only).
     pub num_samples_to_trim_at_end: u32,
+    /// Leading samples to trim, under the same flag.
     pub num_samples_to_trim_at_start: u32,
+    /// Size of the (skipped) extension header region, when present.
     pub extension_header_size: u32,
 }
 
 /// One OBU: its header plus a borrowed view of its payload bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Obu<'a> {
+    /// The parsed header fields.
     pub header: ObuHeader,
+    /// The payload bytes after the header (and any trimming/extension
+    /// fields), borrowed from the input.
     pub payload: &'a [u8],
 }
 
@@ -115,12 +131,14 @@ impl<'a> Obu<'a> {
 
 /// Iterator over the OBUs of a standalone IA sequence. Yields an error once
 /// and then terminates if the stream is malformed.
+#[derive(Debug)]
 pub struct ObuIter<'a> {
     reader: ByteReader<'a>,
     failed: bool,
 }
 
 impl<'a> ObuIter<'a> {
+    /// Iterates the OBUs of `data` from the start.
     pub fn new(data: &'a [u8]) -> Self {
         Self {
             reader: ByteReader::new(data),

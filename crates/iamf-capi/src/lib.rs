@@ -10,6 +10,7 @@
 //! from one thread at a time; distinct instances are independent.
 
 #![deny(unsafe_op_in_unsafe_fn)]
+#![warn(missing_docs)]
 
 use std::ffi::c_int;
 
@@ -18,12 +19,19 @@ use iamf_dec::DecodeError;
 use iamf_dec::layout::SoundSystem;
 use iamf_dec::stream::{OutputSampleType, StreamDecoder, StreamSettings};
 
+/// Success.
 pub const IAMFRS_OK: c_int = 0;
+/// A null pointer or out-of-range argument.
 pub const IAMFRS_ERR_INVALID_ARG: c_int = -1;
+/// The stream needs a codec or profile outside the supported set.
 pub const IAMFRS_ERR_UNSUPPORTED: c_int = -2;
+/// Malformed descriptors or bitstream data.
 pub const IAMFRS_ERR_CORRUPT_DATA: c_int = -3;
+/// The output buffer is too small; the required size was reported.
 pub const IAMFRS_ERR_BUFFER_TOO_SMALL: c_int = -4;
+/// No decoded temporal unit is ready.
 pub const IAMFRS_ERR_NO_TEMPORAL_UNIT: c_int = -5;
+/// An error that fits no other status.
 pub const IAMFRS_ERR_INTERNAL: c_int = -6;
 
 fn status_of(err: &DecodeError) -> c_int {
@@ -40,6 +48,7 @@ fn status_of(err: &DecodeError) -> c_int {
 }
 
 /// Opaque decoder handle.
+#[derive(Debug)]
 pub struct IamfrsDecoder {
     inner: StreamDecoder,
     /// A rendered unit that did not fit the caller's buffer yet.
@@ -48,6 +57,7 @@ pub struct IamfrsDecoder {
 
 /// Decoder configuration, mirroring iamf-tools' `IamfDecoderFactory::Settings`.
 #[repr(C)]
+#[derive(Debug, Clone, Copy)]
 pub struct IamfrsSettings {
     /// IAMF sound system numbering shared with iamf-tools `OutputLayout`
     /// (0 = stereo ... 13 = 9.1.6, 14 = binaural).
@@ -64,6 +74,7 @@ pub struct IamfrsSettings {
     /// num_samples_to_trim_at_end (for callers whose demuxer trims via
     /// edts/elst).
     pub disable_trim_start: u8,
+    /// Nonzero disables end trimming (see `disable_trim_start`).
     pub disable_trim_end: u8,
     /// Bitmask of supported profiles (iamf-tools
     /// `requested_profile_versions`): bit 0 = simple, bit 1 = base,
@@ -97,6 +108,8 @@ pub unsafe extern "C" fn iamfrs_decoder_create_from_descriptors(
     if descriptors.is_null() || out.is_null() || settings.is_null() {
         return IAMFRS_ERR_INVALID_ARG;
     }
+    // SAFETY: `settings` is non-null (checked) and the caller promises a
+    // valid IamfrsSettings.
     let c_settings = unsafe { &*settings };
     let Some(layout) = u8::try_from(c_settings.output_layout)
         .ok()
@@ -115,6 +128,8 @@ pub unsafe extern "C" fn iamfrs_decoder_create_from_descriptors(
         1 => iamf_dec::stream::ChannelOrdering::Android,
         _ => return IAMFRS_ERR_INVALID_ARG,
     };
+    // SAFETY: `descriptors` is non-null (checked) and the caller promises
+    // `size` readable bytes.
     let data = unsafe { std::slice::from_raw_parts(descriptors, size) };
     let mix_selection = if c_settings.mix_presentation_id < 0 {
         iamf_dec::stream::MixSelection::Auto
@@ -142,6 +157,8 @@ pub unsafe extern "C" fn iamfrs_decoder_create_from_descriptors(
                 inner,
                 pending_unit: None,
             });
+            // SAFETY: `out` is non-null (checked) and the caller promises
+            // it is writable.
             unsafe { out.write(Box::into_raw(handle)) };
             IAMFRS_OK
         }
@@ -160,6 +177,7 @@ pub unsafe extern "C" fn iamfrs_decoder_decode(
     data: *const u8,
     size: usize,
 ) -> c_int {
+    // SAFETY: the caller promises `decoder` is null or a live handle.
     let Some(handle) = (unsafe { decoder.as_mut() }) else {
         return IAMFRS_ERR_INVALID_ARG;
     };
@@ -169,6 +187,8 @@ pub unsafe extern "C" fn iamfrs_decoder_decode(
     let bytes = if size == 0 {
         &[][..]
     } else {
+        // SAFETY: `data` is non-null (checked) and the caller promises
+        // `size` readable bytes.
         unsafe { std::slice::from_raw_parts(data, size) }
     };
     match handle.inner.decode(bytes) {
@@ -185,6 +205,7 @@ pub unsafe extern "C" fn iamfrs_decoder_decode(
 pub unsafe extern "C" fn iamfrs_decoder_is_temporal_unit_available(
     decoder: *const IamfrsDecoder,
 ) -> c_int {
+    // SAFETY: the caller promises `decoder` is null or a live handle.
     match unsafe { decoder.as_ref() } {
         Some(h) => (h.pending_unit.is_some() || h.inner.is_temporal_unit_available()) as c_int,
         None => 0,
@@ -207,6 +228,7 @@ pub unsafe extern "C" fn iamfrs_decoder_get_output_temporal_unit(
     capacity: usize,
     bytes_written: *mut usize,
 ) -> c_int {
+    // SAFETY: the caller promises `decoder` is null or a live handle.
     let Some(handle) = (unsafe { decoder.as_mut() }) else {
         return IAMFRS_ERR_INVALID_ARG;
     };
@@ -217,6 +239,8 @@ pub unsafe extern "C" fn iamfrs_decoder_get_output_temporal_unit(
         match handle.inner.get_output_temporal_unit() {
             Ok(Some(unit)) => handle.pending_unit = Some(unit),
             Ok(None) => {
+                // SAFETY: `bytes_written` is non-null (checked) and the
+                // caller promises it is writable.
                 unsafe { bytes_written.write(0) };
                 return IAMFRS_ERR_NO_TEMPORAL_UNIT;
             }
@@ -224,6 +248,7 @@ pub unsafe extern "C" fn iamfrs_decoder_get_output_temporal_unit(
         }
     }
     let unit = handle.pending_unit.as_ref().expect("filled above");
+    // SAFETY: `bytes_written` is non-null (checked) and writable.
     unsafe { bytes_written.write(unit.len()) };
     if unit.len() > capacity {
         return IAMFRS_ERR_BUFFER_TOO_SMALL;
@@ -232,6 +257,8 @@ pub unsafe extern "C" fn iamfrs_decoder_get_output_temporal_unit(
         if buffer.is_null() {
             return IAMFRS_ERR_INVALID_ARG;
         }
+        // SAFETY: `buffer` is non-null (checked), the caller promises
+        // `capacity` writable bytes, and unit.len() <= capacity here.
         unsafe { std::ptr::copy_nonoverlapping(unit.as_ptr(), buffer, unit.len()) };
     }
     handle.pending_unit = None;
@@ -245,12 +272,16 @@ macro_rules! getter {
         /// and writable.
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $name(decoder: *const IamfrsDecoder, out: *mut $ty) -> c_int {
+            // SAFETY: the caller promises `decoder` is null or a live
+            // handle.
             let Some(handle) = (unsafe { decoder.as_ref() }) else {
                 return IAMFRS_ERR_INVALID_ARG;
             };
             if out.is_null() {
                 return IAMFRS_ERR_INVALID_ARG;
             }
+            // SAFETY: `out` is non-null (checked) and the caller promises
+            // it is writable.
             #[allow(clippy::redundant_closure_call)]
             unsafe {
                 out.write(($get)(&handle.inner))
@@ -293,6 +324,7 @@ getter!(iamfrs_decoder_get_sample_type, u32, |d: &StreamDecoder| {
 /// `decoder` must be a live handle from create.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn iamfrs_decoder_reset(decoder: *mut IamfrsDecoder) -> c_int {
+    // SAFETY: the caller promises `decoder` is null or a live handle.
     let Some(handle) = (unsafe { decoder.as_mut() }) else {
         return IAMFRS_ERR_INVALID_ARG;
     };
@@ -317,6 +349,7 @@ pub unsafe extern "C" fn iamfrs_decoder_reset_with_new_mix(
     mix_presentation_id: i64,
     output_layout: i32,
 ) -> c_int {
+    // SAFETY: the caller promises `decoder` is null or a live handle.
     let Some(handle) = (unsafe { decoder.as_mut() }) else {
         return IAMFRS_ERR_INVALID_ARG;
     };
@@ -357,6 +390,7 @@ pub unsafe extern "C" fn iamfrs_decoder_reset_with_new_mix(
 pub unsafe extern "C" fn iamfrs_decoder_signal_end_of_decoding(
     decoder: *mut IamfrsDecoder,
 ) -> c_int {
+    // SAFETY: the caller promises `decoder` is null or a live handle.
     let Some(handle) = (unsafe { decoder.as_mut() }) else {
         return IAMFRS_ERR_INVALID_ARG;
     };
@@ -372,6 +406,8 @@ pub unsafe extern "C" fn iamfrs_decoder_signal_end_of_decoding(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn iamfrs_decoder_destroy(decoder: *mut IamfrsDecoder) {
     if !decoder.is_null() {
+        // SAFETY: non-null (checked); the caller promises this is a live
+        // handle from create, owned solely by us from here.
         drop(unsafe { Box::from_raw(decoder) });
     }
 }
@@ -499,6 +535,36 @@ mod tests {
             iamfrs_decoder_destroy(decoder);
             // 8000 samples x 2 channels x 2 bytes.
             assert_eq!(total.len(), 8000 * 2 * 2);
+        }
+    }
+
+    /// The hand-maintained C header must agree with the Rust constants.
+    #[test]
+    fn header_constants_match_rust() {
+        let header = include_str!("../include/iamf_rs.h");
+        for (name, value) in [
+            ("IAMFRS_OK", IAMFRS_OK),
+            ("IAMFRS_ERR_INVALID_ARG", IAMFRS_ERR_INVALID_ARG),
+            ("IAMFRS_ERR_UNSUPPORTED", IAMFRS_ERR_UNSUPPORTED),
+            ("IAMFRS_ERR_CORRUPT_DATA", IAMFRS_ERR_CORRUPT_DATA),
+            ("IAMFRS_ERR_BUFFER_TOO_SMALL", IAMFRS_ERR_BUFFER_TOO_SMALL),
+            ("IAMFRS_ERR_NO_TEMPORAL_UNIT", IAMFRS_ERR_NO_TEMPORAL_UNIT),
+            ("IAMFRS_ERR_INTERNAL", IAMFRS_ERR_INTERNAL),
+        ] {
+            let needle = format!("{name} = {value},");
+            assert!(header.contains(&needle), "header disagrees on {name}");
+        }
+        // Sample types, orderings, and profile bits.
+        for needle in [
+            "IAMFRS_SAMPLE_INT16_LE = 1,",
+            "IAMFRS_SAMPLE_INT32_LE = 2,",
+            "IAMFRS_ORDERING_IAMF = 0,",
+            "IAMFRS_ORDERING_ANDROID = 1,",
+            "IAMFRS_PROFILE_SIMPLE = 1 << 0,",
+            "IAMFRS_PROFILE_BASE = 1 << 1,",
+            "IAMFRS_PROFILE_BASE_ENHANCED = 1 << 2,",
+        ] {
+            assert!(header.contains(needle), "header missing `{needle}`");
         }
     }
 
