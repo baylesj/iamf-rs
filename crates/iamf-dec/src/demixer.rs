@@ -161,12 +161,17 @@ impl Demixer {
         }
         self.apply_recon_gains(&mut data);
 
+        // Reconstructed planes are moved out; transmitted (borrowed)
+        // planes are copied, which the owned output requires anyway.
         self.channels_out
             .iter()
             .map(|&ch| {
-                data.get(ch).map(<[f32]>::to_vec).ok_or_else(|| {
-                    DecodeError::InvalidDescriptors(format!("channel {ch:?} missing"))
-                })
+                data.computed[ch.index()]
+                    .take()
+                    .or_else(|| data.planes[ch.index()].map(<[f32]>::to_vec))
+                    .ok_or_else(|| {
+                        DecodeError::InvalidDescriptors(format!("channel {ch:?} missing"))
+                    })
             })
             .collect()
     }
@@ -193,8 +198,8 @@ impl Demixer {
         }
     }
 
-    fn need(data: &ChannelData, ch: Channel) -> Result<Vec<f32>, DecodeError> {
-        data.get(ch).map(<[f32]>::to_vec).ok_or_else(|| {
+    fn require<'b>(data: &'b ChannelData, ch: Channel) -> Result<&'b [f32], DecodeError> {
+        data.get(ch).ok_or_else(|| {
             DecodeError::InvalidDescriptors(format!("demix prerequisite {ch:?} missing"))
         })
     }
@@ -204,12 +209,12 @@ impl Demixer {
         if data.has(Channel::R2) {
             return Ok(());
         }
-        let mono = Self::need(data, Channel::Mono)?;
-        let l2 = Self::need(data, Channel::L2)?;
-        data.set(
-            Channel::R2,
-            mono.iter().zip(&l2).map(|(&m, &l)| 2.0 * m - l).collect(),
-        );
+        let r2 = {
+            let mono = Self::require(data, Channel::Mono)?;
+            let l2 = Self::require(data, Channel::L2)?;
+            mono.iter().zip(l2).map(|(&m, &l)| 2.0 * m - l).collect()
+        };
+        data.set(Channel::R2, r2);
         Ok(())
     }
 
@@ -228,17 +233,17 @@ impl Demixer {
                 ))
             }
         })?;
-        let c = Self::need(data, Channel::C)?;
-        let l2 = Self::need(data, Channel::L2)?;
-        let r2 = Self::need(data, Channel::R2)?;
-        data.set(
-            Channel::L3,
-            l2.iter().zip(&c).map(|(&l, &cc)| l - 0.707 * cc).collect(),
-        );
-        data.set(
-            Channel::R3,
-            r2.iter().zip(&c).map(|(&r, &cc)| r - 0.707 * cc).collect(),
-        );
+        let (l3, r3) = {
+            let c = Self::require(data, Channel::C)?;
+            let l2 = Self::require(data, Channel::L2)?;
+            let r2 = Self::require(data, Channel::R2)?;
+            (
+                l2.iter().zip(c).map(|(&l, &cc)| l - 0.707 * cc).collect(),
+                r2.iter().zip(c).map(|(&r, &cc)| r - 0.707 * cc).collect(),
+            )
+        };
+        data.set(Channel::L3, l3);
+        data.set(Channel::R3, r3);
         Ok(())
     }
 
@@ -249,18 +254,18 @@ impl Demixer {
         }
         self.dmx_s3(data)?;
         let (_, _, _, delta) = self.params();
-        let l3 = Self::need(data, Channel::L3)?;
-        let r3 = Self::need(data, Channel::R3)?;
-        let l5 = Self::need(data, Channel::L5)?;
-        let r5 = Self::need(data, Channel::R5)?;
-        data.set(
-            Channel::Sl5,
-            l3.iter().zip(&l5).map(|(&a, &b)| (a - b) / delta).collect(),
-        );
-        data.set(
-            Channel::Sr5,
-            r3.iter().zip(&r5).map(|(&a, &b)| (a - b) / delta).collect(),
-        );
+        let (sl, sr) = {
+            let l3 = Self::require(data, Channel::L3)?;
+            let r3 = Self::require(data, Channel::R3)?;
+            let l5 = Self::require(data, Channel::L5)?;
+            let r5 = Self::require(data, Channel::R5)?;
+            (
+                l3.iter().zip(l5).map(|(&a, &b)| (a - b) / delta).collect(),
+                r3.iter().zip(r5).map(|(&a, &b)| (a - b) / delta).collect(),
+            )
+        };
+        data.set(Channel::Sl5, sl);
+        data.set(Channel::Sr5, sr);
         Ok(())
     }
 
@@ -271,24 +276,24 @@ impl Demixer {
         }
         self.dmx_s5(data)?;
         let (alpha, beta, _, _) = self.params();
-        let sl5 = Self::need(data, Channel::Sl5)?;
-        let sr5 = Self::need(data, Channel::Sr5)?;
-        let sl7 = Self::need(data, Channel::Sl7)?;
-        let sr7 = Self::need(data, Channel::Sr7)?;
-        data.set(
-            Channel::Bl7,
-            sl5.iter()
-                .zip(&sl7)
-                .map(|(&s, &ss)| (s - ss * alpha) / beta)
-                .collect(),
-        );
-        data.set(
-            Channel::Br7,
-            sr5.iter()
-                .zip(&sr7)
-                .map(|(&s, &ss)| (s - ss * alpha) / beta)
-                .collect(),
-        );
+        let (bl, br) = {
+            let sl5 = Self::require(data, Channel::Sl5)?;
+            let sr5 = Self::require(data, Channel::Sr5)?;
+            let sl7 = Self::require(data, Channel::Sl7)?;
+            let sr7 = Self::require(data, Channel::Sr7)?;
+            (
+                sl5.iter()
+                    .zip(sl7)
+                    .map(|(&s, &ss)| (s - ss * alpha) / beta)
+                    .collect(),
+                sr5.iter()
+                    .zip(sr7)
+                    .map(|(&s, &ss)| (s - ss * alpha) / beta)
+                    .collect(),
+            )
+        };
+        data.set(Channel::Bl7, bl);
+        data.set(Channel::Br7, br);
         Ok(())
     }
 
@@ -300,24 +305,24 @@ impl Demixer {
         self.dmx_s5(data)?;
         let (_, _, _, delta) = self.params();
         let w = WIDX2W[self.w_idx.clamp(0, 10) as usize];
-        let tl = Self::need(data, Channel::Tl)?;
-        let tr = Self::need(data, Channel::Tr)?;
-        let sl5 = Self::need(data, Channel::Sl5)?;
-        let sr5 = Self::need(data, Channel::Sr5)?;
-        data.set(
-            Channel::Hl,
-            tl.iter()
-                .zip(&sl5)
-                .map(|(&t, &s)| t - delta * w * s)
-                .collect(),
-        );
-        data.set(
-            Channel::Hr,
-            tr.iter()
-                .zip(&sr5)
-                .map(|(&t, &s)| t - delta * w * s)
-                .collect(),
-        );
+        let (hl, hr) = {
+            let tl = Self::require(data, Channel::Tl)?;
+            let tr = Self::require(data, Channel::Tr)?;
+            let sl5 = Self::require(data, Channel::Sl5)?;
+            let sr5 = Self::require(data, Channel::Sr5)?;
+            (
+                tl.iter()
+                    .zip(sl5)
+                    .map(|(&t, &s)| t - delta * w * s)
+                    .collect(),
+                tr.iter()
+                    .zip(sr5)
+                    .map(|(&t, &s)| t - delta * w * s)
+                    .collect(),
+            )
+        };
+        data.set(Channel::Hl, hl);
+        data.set(Channel::Hr, hr);
         Ok(())
     }
 
@@ -328,24 +333,18 @@ impl Demixer {
         }
         self.dmx_h2(data)?;
         let (_, _, gamma, _) = self.params();
-        let hl = Self::need(data, Channel::Hl)?;
-        let hr = Self::need(data, Channel::Hr)?;
-        let hfl = Self::need(data, Channel::Hfl)?;
-        let hfr = Self::need(data, Channel::Hfr)?;
-        data.set(
-            Channel::Hbl,
-            hl.iter()
-                .zip(&hfl)
-                .map(|(&h, &f)| (h - f) / gamma)
-                .collect(),
-        );
-        data.set(
-            Channel::Hbr,
-            hr.iter()
-                .zip(&hfr)
-                .map(|(&h, &f)| (h - f) / gamma)
-                .collect(),
-        );
+        let (hbl, hbr) = {
+            let hl = Self::require(data, Channel::Hl)?;
+            let hr = Self::require(data, Channel::Hr)?;
+            let hfl = Self::require(data, Channel::Hfl)?;
+            let hfr = Self::require(data, Channel::Hfr)?;
+            (
+                hl.iter().zip(hfl).map(|(&h, &f)| (h - f) / gamma).collect(),
+                hr.iter().zip(hfr).map(|(&h, &f)| (h - f) / gamma).collect(),
+            )
+        };
+        data.set(Channel::Hbl, hbl);
+        data.set(Channel::Hbr, hbr);
         Ok(())
     }
 
@@ -356,10 +355,14 @@ impl Demixer {
         for &(ch, sf) in &self.recon_gains {
             let sfavg =
                 (2.0 / (N + 1.0)) * sf + (1.0 - 2.0 / (N + 1.0)) * self.last_sfavg[ch.index()];
-            if let Some(plane) = data.get(ch) {
-                // Steady-state windows (no codec-delay offset): the start
-                // window is 1 and the stop window 0, so the crossfade
-                // reduces to sfavg.
+            // Steady-state windows (no codec-delay offset): the start
+            // window is 1 and the stop window 0, so the crossfade reduces
+            // to sfavg. Reconstructed channels are scaled in place.
+            if let Some(plane) = data.computed[ch.index()].as_mut() {
+                for s in plane.iter_mut() {
+                    *s *= sfavg;
+                }
+            } else if let Some(plane) = data.planes[ch.index()] {
                 data.set(ch, plane.iter().map(|&s| s * sfavg).collect());
             }
             self.last_sfavg[ch.index()] = sfavg;

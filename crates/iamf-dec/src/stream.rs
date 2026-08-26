@@ -220,16 +220,18 @@ pub(crate) fn select_mix_index(
 }
 
 /// Per-sample animated gain cursor: consumes subblocks in arrival order,
-/// falling back to the default gain when exhausted.
+/// falling back to the default gain when exhausted. Animations are stored
+/// with endpoints pre-converted to linear gain.
 #[derive(Default)]
 struct GainCursor {
-    queue: VecDeque<(crate::params::MixGainAnimation, usize, usize)>,
+    queue: VecDeque<(crate::params::LinearAnimation, usize, usize)>,
 }
 
 impl GainCursor {
-    fn push(&mut self, anim: crate::params::MixGainAnimation, duration: usize) {
+    fn push(&mut self, anim: &crate::params::MixGainAnimation, duration: usize) {
         if duration > 0 {
-            self.queue.push_back((anim, duration, 0));
+            self.queue
+                .push_back((crate::params::LinearAnimation::from(anim), duration, 0));
         }
     }
 
@@ -545,41 +547,45 @@ impl StreamDecoder {
     /// with [`StreamDecoder::get_output_temporal_unit`].
     pub fn decode(&mut self, data: &[u8]) -> Result<(), DecodeError> {
         self.pending.extend_from_slice(data);
+        // The buffer is taken out of `self` for the loop so OBU payloads
+        // can be handled as borrowed slices (no per-OBU copies) while the
+        // handlers take `&mut self`.
+        let pending = std::mem::take(&mut self.pending);
         let mut consumed = 0usize;
+        let result = self.decode_pending(&pending, &mut consumed);
+        self.pending = pending;
+        self.pending.drain(..consumed);
+        result
+    }
+
+    fn decode_pending(&mut self, pending: &[u8], consumed: &mut usize) -> Result<(), DecodeError> {
         loop {
-            let mut reader = ByteReader::new(&self.pending[consumed..]);
+            let mut reader = ByteReader::new(&pending[*consumed..]);
             match Obu::parse(&mut reader) {
                 Ok(obu) => {
                     let advance = reader.position();
-                    let obu_type = obu.header.obu_type;
-                    let payload = obu.payload.to_vec();
                     let frame = AudioFrame::from_obu(&obu)
-                        .map_err(|e| DecodeError::CorruptPacket(e.to_string()))?
-                        .map(|f| {
-                            (
-                                f.substream_id,
-                                f.data.to_vec(),
-                                f.num_samples_to_trim_at_start,
-                                f.num_samples_to_trim_at_end,
-                            )
-                        });
-                    consumed += advance;
-                    if let Some((id, data, trim_start, trim_end)) = frame {
-                        self.handle_frame(id, &data, trim_start, trim_end)?;
-                    } else if obu_type == ObuType::ParameterBlock {
-                        self.handle_parameter_block(&payload)?;
-                    } else if obu_type == ObuType::TemporalDelimiter {
+                        .map_err(|e| DecodeError::CorruptPacket(e.to_string()))?;
+                    if let Some(frame) = frame {
+                        self.handle_frame(
+                            frame.substream_id,
+                            frame.data,
+                            frame.num_samples_to_trim_at_start,
+                            frame.num_samples_to_trim_at_end,
+                        )?;
+                    } else if obu.header.obu_type == ObuType::ParameterBlock {
+                        self.handle_parameter_block(obu.payload)?;
+                    } else if obu.header.obu_type == ObuType::TemporalDelimiter {
                         self.check_unit_alignment()?;
                     }
                     // Descriptor OBUs after configuration are redundant
                     // copies; ignored.
+                    *consumed += advance;
                 }
-                Err(Error::UnexpectedEof { .. }) => break,
+                Err(Error::UnexpectedEof { .. }) => return Ok(()),
                 Err(e) => return Err(DecodeError::CorruptPacket(e.to_string())),
             }
         }
-        self.pending.drain(..consumed);
-        Ok(())
     }
 
     /// §3.9: a temporal delimiter sits on a temporal-unit boundary, so
@@ -627,14 +633,22 @@ impl StreamDecoder {
     fn handle_parameter_block(&mut self, payload: &[u8]) -> Result<(), DecodeError> {
         let id = ParameterBlock::peek_parameter_id(payload)
             .map_err(|e| DecodeError::CorruptPacket(e.to_string()))?;
-        let Some(targets) = self.param_index.get(&id).cloned() else {
+        let sample_rate = self.sample_rate();
+        // Split borrows: the index is only read while slots/cursors are
+        // updated, so no target list needs cloning.
+        let StreamDecoder {
+            param_index,
+            slots,
+            output_cursor,
+            ..
+        } = self;
+        let Some(targets) = param_index.get(&id) else {
             return Ok(());
         };
         let corrupt = |e: iamf_obu::Error| DecodeError::CorruptPacket(e.to_string());
         // libiamf scales parameter durations to the sample clock by
         // (rate + 0.1) / parameter_rate; before the first decoded frame of
         // an unknown-rate codec the rates are assumed equal.
-        let sample_rate = self.sample_rate();
         let ratio = |parameter_rate: u32| {
             if sample_rate == 0 {
                 1.0
@@ -646,47 +660,44 @@ impl StreamDecoder {
             let scale = ratio(definition.parameter_rate);
             match kind {
                 ParamKind::Demixing => {
-                    let block =
-                        ParameterBlock::parse(payload, &definition, &ParamContext::Demixing)
-                            .map_err(corrupt)?;
+                    let block = ParameterBlock::parse(payload, definition, &ParamContext::Demixing)
+                        .map_err(corrupt)?;
                     for sb in &block.subblocks {
                         if let SubblockData::Demixing { dmixp_mode } = &sb.data {
-                            self.slots[slot_index]
+                            slots[*slot_index]
                                 .dmx_cursor
                                 .push(*dmixp_mode, (f64::from(sb.duration) * scale) as usize);
                         }
                     }
                 }
                 ParamKind::ReconGain => {
-                    let AudioElementConfig::ChannelBased { layers } =
-                        self.slots[slot_index].element.config.clone()
-                    else {
-                        continue;
+                    let block = {
+                        let AudioElementConfig::ChannelBased { layers } =
+                            &slots[*slot_index].element.config
+                        else {
+                            continue;
+                        };
+                        ParameterBlock::parse(payload, definition, &ParamContext::ReconGain(layers))
+                            .map_err(corrupt)?
                     };
-                    let block = ParameterBlock::parse(
-                        payload,
-                        &definition,
-                        &ParamContext::ReconGain(&layers),
-                    )
-                    .map_err(corrupt)?;
-                    for sb in &block.subblocks {
-                        if let SubblockData::ReconGain(gains) = &sb.data {
-                            self.slots[slot_index]
+                    for sb in block.subblocks {
+                        if let SubblockData::ReconGain(gains) = sb.data {
+                            slots[*slot_index]
                                 .recon_cursor
-                                .push(gains.clone(), (f64::from(sb.duration) * scale) as usize);
+                                .push(gains, (f64::from(sb.duration) * scale) as usize);
                         }
                     }
                 }
                 ParamKind::ElementMixGain | ParamKind::OutputMixGain => {
-                    let block = ParameterBlock::parse(payload, &definition, &ParamContext::MixGain)
+                    let block = ParameterBlock::parse(payload, definition, &ParamContext::MixGain)
                         .map_err(corrupt)?;
                     let cursor = match kind {
-                        ParamKind::ElementMixGain => &mut self.slots[slot_index].gain_cursor,
-                        _ => &mut self.output_cursor,
+                        ParamKind::ElementMixGain => &mut slots[*slot_index].gain_cursor,
+                        _ => &mut *output_cursor,
                     };
                     for sb in &block.subblocks {
                         if let SubblockData::MixGain(anim) = &sb.data {
-                            cursor.push(anim.clone(), (f64::from(sb.duration) * scale) as usize);
+                            cursor.push(anim, (f64::from(sb.duration) * scale) as usize);
                         }
                     }
                 }
@@ -893,11 +904,10 @@ impl StreamDecoder {
             }
             // Per-unit limiting: the look-ahead works within the unit and
             // gain state carries across units (see post::PeakLimiter).
-            samples = self
-                .limiter
+            self.limiter
                 .as_mut()
                 .expect("created above")
-                .process(&samples);
+                .process_in_place(&mut samples);
         }
         let mut bytes = Vec::with_capacity(samples.len() * self.sample_type.bytes_per_sample());
         for &sample in &samples {

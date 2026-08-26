@@ -128,27 +128,82 @@ impl MixGainAnimation {
     /// interpolated in the linear domain (`mix_gain_bezier_linear` /
     /// `mix_gain_bezier_quad`).
     pub fn evaluate_at(&self, duration: usize, i: usize) -> f32 {
-        match *self {
-            MixGainAnimation::Step { start } => q78_db_to_linear(start),
-            MixGainAnimation::Linear { start, end } => {
-                let s = q78_db_to_linear(start);
-                let e = q78_db_to_linear(end);
-                s + (e - s) * i as f32 / duration.max(1) as f32
-            }
+        LinearAnimation::from(self).evaluate_at(duration, i)
+    }
+
+    /// Writes per-sample linear gains for one subblock of `duration`
+    /// samples into `out` (`out.len() <= duration`).
+    pub fn evaluate(&self, duration: usize, out: &mut [f32]) {
+        let linear = LinearAnimation::from(self);
+        for (i, o) in out.iter_mut().enumerate() {
+            *o = linear.evaluate_at(duration, i);
+        }
+    }
+}
+
+/// [`MixGainAnimation`] with endpoints pre-converted to linear gain, so
+/// per-sample evaluation avoids recomputing `powf` (a `Step` subblock is
+/// otherwise one transcendental per output sample).
+#[derive(Debug, Clone)]
+pub(crate) enum LinearAnimation {
+    Step {
+        gain: f32,
+    },
+    Linear {
+        start: f32,
+        end: f32,
+    },
+    Bezier {
+        start: f64,
+        end: f64,
+        control: f64,
+        /// control_relative_time / 255.
+        control_time: f64,
+    },
+}
+
+impl From<&MixGainAnimation> for LinearAnimation {
+    fn from(anim: &MixGainAnimation) -> Self {
+        match *anim {
+            MixGainAnimation::Step { start } => LinearAnimation::Step {
+                gain: q78_db_to_linear(start),
+            },
+            MixGainAnimation::Linear { start, end } => LinearAnimation::Linear {
+                start: q78_db_to_linear(start),
+                end: q78_db_to_linear(end),
+            },
             MixGainAnimation::Bezier {
                 start,
                 end,
                 control,
                 control_relative_time,
+            } => LinearAnimation::Bezier {
+                start: f64::from(q78_db_to_linear(start)),
+                end: f64::from(q78_db_to_linear(end)),
+                control: f64::from(q78_db_to_linear(control)),
+                control_time: f64::from(control_relative_time) / 255.0,
+            },
+        }
+    }
+}
+
+impl LinearAnimation {
+    pub(crate) fn evaluate_at(&self, duration: usize, i: usize) -> f32 {
+        match *self {
+            LinearAnimation::Step { gain } => gain,
+            LinearAnimation::Linear { start, end } => {
+                start + (end - start) * i as f32 / duration.max(1) as f32
+            }
+            LinearAnimation::Bezier {
+                start: s,
+                end: e,
+                control: c,
+                control_time: crt,
             } => {
                 if duration == 0 {
                     // Degenerate subblock: avoid the 0/0 below (NaN).
-                    return q78_db_to_linear(start);
+                    return s as f32;
                 }
-                let s = f64::from(q78_db_to_linear(start));
-                let e = f64::from(q78_db_to_linear(end));
-                let c = f64::from(q78_db_to_linear(control));
-                let crt = f64::from(control_relative_time) / 255.0;
                 // libiamf truncates the control time to whole samples.
                 let ct = (crt * (duration as f64 + 0.1)) as i64;
                 let alpha = duration as i64 - 2 * ct;
@@ -160,14 +215,6 @@ impl MixGainAnimation {
                 };
                 ((s + e - 2.0 * c) * a * a + 2.0 * a * (c - s) + s) as f32
             }
-        }
-    }
-
-    /// Writes per-sample linear gains for one subblock of `duration`
-    /// samples into `out` (`out.len() <= duration`).
-    pub fn evaluate(&self, duration: usize, out: &mut [f32]) {
-        for (i, o) in out.iter_mut().enumerate() {
-            *o = self.evaluate_at(duration, i);
         }
     }
 }

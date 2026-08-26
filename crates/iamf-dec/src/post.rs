@@ -117,10 +117,19 @@ impl PeakLimiter {
     /// Limits a whole interleaved buffer, compensating the look-ahead delay
     /// (output length equals input length).
     pub fn process(&mut self, interleaved: &[f32]) -> Vec<f32> {
+        let mut out = interleaved.to_vec();
+        self.process_in_place(&mut out);
+        out
+    }
+
+    /// In-place variant of [`PeakLimiter::process`], for callers that
+    /// already own the buffer (the streaming decoder limits each temporal
+    /// unit this way). Trailing samples of a partial frame are left
+    /// untouched.
+    pub fn process_in_place(&mut self, interleaved: &mut [f32]) {
         let channels = self.channels.max(1);
         let frames = interleaved.len() / channels;
         let buffer_len = self.peaks.len();
-        let mut out = Vec::with_capacity(interleaved.len());
 
         for k in 0..frames + self.lookahead {
             let idx = (k + self.entry_index) % buffer_len;
@@ -152,10 +161,12 @@ impl PeakLimiter {
                     let delayed = self.delay[c][idx] * gain;
                     self.delay[c][idx] = input;
                     if k >= self.lookahead {
-                        out.push(delayed);
+                        // Position (k - lookahead) was fully read lookahead
+                        // iterations ago, so writing it here is safe.
+                        interleaved[(k - self.lookahead) * channels + c] = delayed;
                     }
                 } else {
-                    out.push(input * gain);
+                    interleaved[k * channels + c] = input * gain;
                 }
                 let channel_peak = self.delay[c][idx].abs();
                 if channel_peak > peak_max {
@@ -173,7 +184,6 @@ impl PeakLimiter {
         if self.lookahead > 0 {
             self.entry_index = (self.entry_index + frames + self.lookahead) % buffer_len;
         }
-        out
     }
 }
 

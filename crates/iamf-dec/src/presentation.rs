@@ -203,12 +203,20 @@ impl PresentationDecoder {
     fn process_parameter_block(&mut self, payload: &[u8]) -> Result<bool, DecodeError> {
         let id = ParameterBlock::peek_parameter_id(payload)
             .map_err(|e| DecodeError::CorruptPacket(e.to_string()))?;
-        let Some(targets) = self.param_index.get(&id).cloned() else {
+        // Split borrows: the index is only read while slots are updated,
+        // so no target list needs cloning.
+        let PresentationDecoder {
+            param_index,
+            slots,
+            output_gain_blocks,
+            ..
+        } = self;
+        let Some(targets) = param_index.get(&id) else {
             return Ok(false);
         };
         let mut consumed = false;
         for (slot_index, kind, definition) in targets {
-            let slot = &mut self.slots[slot_index];
+            let slot = &mut slots[*slot_index];
             let context = match kind {
                 ParamKind::Demixing => ParamContext::Demixing,
                 ParamKind::ElementMixGain | ParamKind::OutputMixGain => ParamContext::MixGain,
@@ -221,11 +229,11 @@ impl PresentationDecoder {
                     ParamContext::ReconGain(layers)
                 }
             };
-            let block = ParameterBlock::parse(payload, &definition, &context)
+            let block = ParameterBlock::parse(payload, definition, &context)
                 .map_err(|e| DecodeError::CorruptPacket(e.to_string()))?;
             match kind {
                 ParamKind::ElementMixGain => slot.gain_blocks.push(block),
-                ParamKind::OutputMixGain => self.output_gain_blocks.push(block),
+                ParamKind::OutputMixGain => output_gain_blocks.push(block),
                 ParamKind::Demixing => {
                     slot.dmx_blocks.push((block, definition.parameter_rate));
                 }
@@ -257,10 +265,10 @@ impl PresentationDecoder {
         let mut sample_rate = 0;
         let mut first_trim_map: Option<TrimMap> = None;
 
-        for slot in self.slots {
+        for mut slot in self.slots {
             let gain = slot.gain;
             let gain_rate = slot.gain_rate;
-            let gain_blocks = slot.gain_blocks.clone();
+            let gain_blocks = std::mem::take(&mut slot.gain_blocks);
             let (slot_output, rate, trim_map) = reconstruct_slot(slot, target)?;
             if rate != 0 {
                 sample_rate = rate;

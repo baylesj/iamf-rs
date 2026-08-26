@@ -264,17 +264,23 @@ pub fn ambisonics_from_planes(
         } => {
             let order = hoa_order(*output_channel_count)?;
             let frames = decoded.first().map(Vec::len).unwrap_or(0);
+            // Each decoded plane is moved to its ACN slot; §3.7.5 requires
+            // the mapping to be injective, so a repeated index is invalid.
+            let mut decoded: Vec<Option<Vec<f32>>> = decoded.into_iter().map(Some).collect();
             let planar = channel_mapping
                 .iter()
                 .map(|&m| {
                     if m == 255 {
                         Ok(vec![0.0; frames])
                     } else {
-                        decoded.get(usize::from(m)).cloned().ok_or_else(|| {
-                            DecodeError::InvalidDescriptors(format!(
-                                "channel_mapping index {m} out of range"
-                            ))
-                        })
+                        decoded
+                            .get_mut(usize::from(m))
+                            .and_then(Option::take)
+                            .ok_or_else(|| {
+                                DecodeError::InvalidDescriptors(format!(
+                                    "channel_mapping index {m} out of range or repeated"
+                                ))
+                            })
                     }
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -296,20 +302,18 @@ pub fn ambisonics_from_planes(
             }
             let frames = decoded.first().map(Vec::len).unwrap_or(0);
             // out[acn] = sum_l in[l] * matrix[l * rows + acn], Q1.15.
-            let planar = (0..rows)
-                .map(|r| {
-                    (0..frames)
-                        .map(|s| {
-                            (0..cols)
-                                .map(|l| {
-                                    decoded[l][s]
-                                        * (f32::from(demixing_matrix[l * rows + r]) / 32768.0)
-                                })
-                                .sum()
-                        })
-                        .collect()
-                })
-                .collect();
+            // Iterated decoded-channel-major with the coefficient hoisted;
+            // per-sample accumulation stays in l order (bit-identical to a
+            // per-sample sum over l).
+            let mut planar = vec![vec![0.0f32; frames]; rows];
+            for (l, plane) in decoded.iter().enumerate() {
+                for (r, out) in planar.iter_mut().enumerate() {
+                    let coefficient = f32::from(demixing_matrix[l * rows + r]) / 32768.0;
+                    for (o, &sample) in out.iter_mut().zip(plane) {
+                        *o += sample * coefficient;
+                    }
+                }
+            }
             Ok(Reconstructed::Hoa { order, planar })
         }
         AudioElementConfig::ChannelBased { .. } => Err(DecodeError::InvalidDescriptors(

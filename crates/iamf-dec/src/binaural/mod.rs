@@ -92,7 +92,7 @@ impl BinauralRenderer {
         };
         let hoa_channels = (order + 1) * (order + 1);
 
-        let fft = FftManager::new(frame_size);
+        let mut fft = FftManager::new(frame_size);
         let (mut left, mut right) = filters::sh_hrirs(order, FilterProfile::Ambient)?;
         if sample_rate != FILTER_SAMPLE_RATE {
             // obr resamples the SH-HRIRs to the stream rate at load.
@@ -103,11 +103,11 @@ impl BinauralRenderer {
         debug_assert_eq!(left.len(), hoa_channels);
         let filters_left = left
             .iter()
-            .map(|hrir| PartitionedFftFilter::new(hrir, frame_size, &fft))
+            .map(|hrir| PartitionedFftFilter::new(hrir, frame_size, &mut fft))
             .collect();
         let filters_right = right
             .iter()
-            .map(|hrir| PartitionedFftFilter::new(hrir, frame_size, &fft))
+            .map(|hrir| PartitionedFftFilter::new(hrir, frame_size, &mut fft))
             .collect();
 
         Ok(BinauralRenderer {

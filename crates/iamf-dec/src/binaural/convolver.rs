@@ -11,9 +11,10 @@ const MIN_FFT_SIZE: usize = 32;
 
 pub struct FftManager {
     fft_size: usize,
-    frame_size: usize,
     forward: Arc<dyn RealToComplex<f32>>,
     inverse: Arc<dyn ComplexToReal<f32>>,
+    /// Zero-padded time-domain scratch for [`FftManager::forward`].
+    input_scratch: Vec<f32>,
 }
 
 impl FftManager {
@@ -22,9 +23,9 @@ impl FftManager {
         let mut planner = RealFftPlanner::<f32>::new();
         FftManager {
             fft_size,
-            frame_size,
             forward: planner.plan_fft_forward(fft_size),
             inverse: planner.plan_fft_inverse(fft_size),
+            input_scratch: vec![0.0; fft_size],
         }
     }
 
@@ -32,21 +33,17 @@ impl FftManager {
         self.fft_size
     }
 
-    pub fn frame_size(&self) -> usize {
-        self.frame_size
-    }
-
     pub fn spectrum_scratch(&self) -> Vec<Complex<f32>> {
         vec![Complex::default(); self.fft_size / 2 + 1]
     }
 
     /// FFT of `time` zero-padded to `fft_size`.
-    pub fn forward(&self, time: &[f32], spectrum: &mut [Complex<f32>]) {
-        let mut input = vec![0.0f32; self.fft_size];
+    pub fn forward(&mut self, time: &[f32], spectrum: &mut [Complex<f32>]) {
         let n = time.len().min(self.fft_size);
-        input[..n].copy_from_slice(&time[..n]);
+        self.input_scratch[..n].copy_from_slice(&time[..n]);
+        self.input_scratch[n..].fill(0.0);
         self.forward
-            .process(&mut input, spectrum)
+            .process(&mut self.input_scratch, spectrum)
             .expect("fft sizes match");
     }
 
@@ -72,7 +69,7 @@ pub struct PartitionedFftFilter {
 }
 
 impl PartitionedFftFilter {
-    pub fn new(kernel: &[f32], frame_size: usize, fft: &FftManager) -> Self {
+    pub fn new(kernel: &[f32], frame_size: usize, fft: &mut FftManager) -> Self {
         let partitions = kernel.len().div_ceil(frame_size).max(1);
         let kernel_spectra = (0..partitions)
             .map(|p| {
@@ -123,7 +120,6 @@ impl PartitionedFftFilter {
         for s in &mut self.current {
             *s *= scale;
         }
-        let _ = fft.frame_size();
     }
 
     /// Adds this block's filtered output (overlap-add of current and
@@ -144,10 +140,10 @@ mod tests {
     #[test]
     fn delta_kernel_is_identity() {
         let frame = 64;
-        let fft = FftManager::new(frame);
+        let mut fft = FftManager::new(frame);
         let mut kernel = vec![0.0f32; 256];
         kernel[0] = 1.0;
-        let mut filter = PartitionedFftFilter::new(&kernel, frame, &fft);
+        let mut filter = PartitionedFftFilter::new(&kernel, frame, &mut fft);
 
         let input: Vec<f32> = (0..frame).map(|i| (i as f32 * 0.37).sin()).collect();
         let mut spectrum = fft.spectrum_scratch();
@@ -165,10 +161,10 @@ mod tests {
     fn delayed_kernel_delays() {
         let frame = 32;
         let delay = 40; // crosses into the second partition
-        let fft = FftManager::new(frame);
+        let mut fft = FftManager::new(frame);
         let mut kernel = vec![0.0f32; 96];
         kernel[delay] = 1.0;
-        let mut filter = PartitionedFftFilter::new(&kernel, frame, &fft);
+        let mut filter = PartitionedFftFilter::new(&kernel, frame, &mut fft);
 
         // Feed three blocks of a ramp; collect output.
         let signal: Vec<f32> = (0..3 * frame).map(|i| i as f32).collect();
