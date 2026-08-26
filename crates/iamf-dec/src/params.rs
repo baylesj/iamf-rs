@@ -241,6 +241,72 @@ fn parse_recon_gain(
         .collect()
 }
 
+/// Timeline of parameter values over the output sample clock, fed from
+/// parameter-block subblocks and consumed one temporal unit at a time.
+///
+/// Each pushed value covers `duration` samples. [`ParamCursor::take_for_unit`]
+/// returns the value covering the start of the next unit and advances the
+/// clock by the unit length, so a single parameter block whose subblocks span
+/// several temporal units applies each subblock to the units it covers.
+/// When the timeline runs dry the last value stays in effect (parameter
+/// values persist until the next block, matching the previous frame-snapshot
+/// behavior); `None` is returned only before any value has arrived, letting
+/// callers keep the descriptor defaults.
+#[derive(Debug, Clone)]
+pub struct ParamCursor<T> {
+    queue: std::collections::VecDeque<(T, usize)>,
+    last: Option<T>,
+}
+
+impl<T> Default for ParamCursor<T> {
+    fn default() -> Self {
+        ParamCursor {
+            queue: std::collections::VecDeque::new(),
+            last: None,
+        }
+    }
+}
+
+impl<T: Clone> ParamCursor<T> {
+    pub fn push(&mut self, value: T, duration: usize) {
+        if duration > 0 {
+            self.queue.push_back((value, duration));
+        } else {
+            // Zero-length coverage still updates the sticky value.
+            self.last = Some(value);
+        }
+    }
+
+    /// Value in effect at the start of a `unit_len`-sample temporal unit;
+    /// consumes the unit from the timeline.
+    pub fn take_for_unit(&mut self, unit_len: usize) -> Option<T> {
+        let value = self
+            .queue
+            .front()
+            .map(|(v, _)| v.clone())
+            .or_else(|| self.last.clone());
+        let mut remaining = unit_len;
+        while remaining > 0 {
+            let Some((_, duration)) = self.queue.front_mut() else {
+                break;
+            };
+            let consumed = remaining.min(*duration);
+            *duration -= consumed;
+            remaining -= consumed;
+            if *duration == 0 {
+                let (v, _) = self.queue.pop_front().expect("checked non-empty");
+                self.last = Some(v);
+            }
+        }
+        value
+    }
+
+    pub fn clear(&mut self) {
+        self.queue.clear();
+        self.last = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,6 +392,40 @@ mod tests {
         };
         assert_eq!(per_layer[0], None);
         assert_eq!(per_layer[1], Some((0x05, vec![200, 180])));
+    }
+
+    #[test]
+    fn cursor_spanning_block_covers_multiple_units() {
+        // One block: two 960-sample subblocks with different values.
+        let mut cursor = ParamCursor::default();
+        cursor.push(1u8, 960);
+        cursor.push(2u8, 960);
+        assert_eq!(cursor.take_for_unit(960), Some(1));
+        assert_eq!(cursor.take_for_unit(960), Some(2));
+        // Timeline dry: last value stays in effect.
+        assert_eq!(cursor.take_for_unit(960), Some(2));
+    }
+
+    #[test]
+    fn cursor_uses_value_covering_unit_start() {
+        // A subblock boundary mid-unit: the unit takes the value at its
+        // start, and the next unit lands in the following subblock.
+        let mut cursor = ParamCursor::default();
+        cursor.push(7u8, 1440);
+        cursor.push(8u8, 480);
+        assert_eq!(cursor.take_for_unit(960), Some(7));
+        assert_eq!(cursor.take_for_unit(960), Some(7));
+        assert_eq!(cursor.take_for_unit(960), Some(8));
+    }
+
+    #[test]
+    fn cursor_empty_returns_none_until_first_value() {
+        let mut cursor: ParamCursor<u8> = ParamCursor::default();
+        assert_eq!(cursor.take_for_unit(960), None);
+        cursor.push(3, 960);
+        assert_eq!(cursor.take_for_unit(960), Some(3));
+        cursor.clear();
+        assert_eq!(cursor.take_for_unit(960), None);
     }
 
     #[test]

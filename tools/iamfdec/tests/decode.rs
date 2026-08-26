@@ -1,11 +1,12 @@
 //! End-to-end substream decoding against real libiamf vectors (fetch with
-//! tools/fetch_vectors.sh; passes trivially when vectors are absent).
+//! tools/fetch_vectors.sh; missing vectors fail unless
+//! IAMF_VECTORS_OPTIONAL=1 downgrades them to skips).
 //!
 //! test_000002 (LPCM stereo) was verified bit-exact against libiamf's
 //! rendered reference WAV; the sample-count and shape assertions here guard
 //! that behavior. Opus output is lossy, so only shape is asserted.
 
-use std::path::PathBuf;
+mod common;
 
 use iamf_codecs::DefaultFactory;
 use iamf_dec::element::{ElementDecoder, SubstreamPcm};
@@ -13,9 +14,7 @@ use iamf_obu::descriptors::{self, Descriptor};
 use iamf_obu::{AudioFrame, ObuIter};
 
 fn decode_vector(name: &str) -> Option<Vec<SubstreamPcm>> {
-    let path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("../../tests/vectors/{name}"));
-    let data = std::fs::read(path).ok()?;
+    let data = std::fs::read(common::vectors_dir().join(name)).ok()?;
 
     let mut codec_config = None;
     let mut element = None;
@@ -43,10 +42,7 @@ fn decode_vector(name: &str) -> Option<Vec<SubstreamPcm>> {
 
 #[test]
 fn lpcm_stereo_shape() {
-    let Some(subs) = decode_vector("test_000002.iamf") else {
-        eprintln!("vector missing; run tools/fetch_vectors.sh");
-        return;
-    };
+    let subs = require_vectors!(decode_vector("test_000002.iamf"), "test_000002");
     assert_eq!(subs.len(), 1);
     assert_eq!(subs[0].channels, 2);
     assert_eq!(subs[0].sample_rate, 16000);
@@ -58,10 +54,7 @@ fn lpcm_stereo_shape() {
 
 #[test]
 fn opus_stereo_shape() {
-    let Some(subs) = decode_vector("test_000026.iamf") else {
-        eprintln!("vector missing; run tools/fetch_vectors.sh");
-        return;
-    };
+    let subs = require_vectors!(decode_vector("test_000026.iamf"), "test_000026");
     assert_eq!(subs.len(), 1);
     assert_eq!(subs[0].channels, 2);
     assert_eq!(subs[0].sample_rate, 48000);
@@ -75,10 +68,7 @@ fn opus_stereo_shape() {
 
 #[test]
 fn ambisonics_lpcm_shape() {
-    let Some(subs) = decode_vector("test_000038.iamf") else {
-        eprintln!("vector missing; run tools/fetch_vectors.sh");
-        return;
-    };
+    let subs = require_vectors!(decode_vector("test_000038.iamf"), "test_000038");
     assert_eq!(subs.len(), 4);
     assert!(subs.iter().all(|s| s.channels == 1));
     assert!(subs.iter().all(|s| s.samples.len() == 24000));

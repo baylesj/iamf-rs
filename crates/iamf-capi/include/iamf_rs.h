@@ -40,6 +40,14 @@ enum iamfrs_channel_ordering {
   IAMFRS_ORDERING_ANDROID = 1, /* Android AudioFormat / WAVE order */
 };
 
+/* Bits for iamfrs_settings.requested_profiles, numbered like the IA
+ * sequence header profile values (iamf_tools ProfileVersion). */
+enum iamfrs_profile {
+  IAMFRS_PROFILE_SIMPLE = 1 << 0,
+  IAMFRS_PROFILE_BASE = 1 << 1,
+  IAMFRS_PROFILE_BASE_ENHANCED = 1 << 2,
+};
+
 /* Decoder configuration, mirroring iamf_tools IamfDecoderFactory::Settings. */
 typedef struct IamfrsSettings {
   /* IAMF sound-system numbering shared with iamf_tools OutputLayout:
@@ -59,6 +67,20 @@ typedef struct IamfrsSettings {
    * demuxer trims via edts/elst). */
   uint8_t disable_trim_start;
   uint8_t disable_trim_end;
+  /* Bitmask of enum iamfrs_profile (iamf_tools requested_profile_versions).
+   * 0 means all known profiles. The stream's declared profiles must
+   * intersect the set and only mix presentations within some requested
+   * profile's limits are selectable (iamf-tools ProfileFilter semantics). */
+  uint32_t requested_profiles;
+  /* Nonzero enables the libiamf-style -1 dBFS look-ahead peak limiter.
+   * Off by default, matching the iamf_tools decoder. */
+  uint8_t enable_limiter;
+  /* Nonzero enables loudness normalization to loudness_target_db using
+   * the stream's loudness_info. Off by default. */
+  uint8_t enable_loudness_normalization;
+  /* Target loudness in dB (LKFS), e.g. -24.0f; read only when
+   * enable_loudness_normalization is nonzero. */
+  float loudness_target_db;
 } iamfrs_settings;
 
 int iamfrs_decoder_create_from_descriptors(const uint8_t *descriptors,
@@ -103,6 +125,16 @@ int iamfrs_decoder_get_sample_type(const iamfrs_decoder *decoder,
 
 /* Drops buffered audio and parameter state (seek/discontinuity). */
 int iamfrs_decoder_reset(iamfrs_decoder *decoder);
+
+/* Reconfigures for a different mix presentation and/or output layout
+ * without reparsing descriptors (iamf_tools ResetWithNewMix). Codec
+ * decoders shared between the old and new mix are reset and reused.
+ * mix_presentation_id < 0 selects automatically; output_layout < 0 keeps
+ * the current layout. Buffered audio and parameter state are dropped. On
+ * error the decoder is unconfigured until a successful reconfigure. */
+int iamfrs_decoder_reset_with_new_mix(iamfrs_decoder *decoder,
+                                      int64_t mix_presentation_id,
+                                      int32_t output_layout);
 
 /* Marks end of stream; remaining buffered units stay pullable. */
 int iamfrs_decoder_signal_end_of_decoding(iamfrs_decoder *decoder);

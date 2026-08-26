@@ -24,7 +24,15 @@ Notes:
   not defined in the API headers; in Chromium they come from the
   iamf_tools library. If you build the adapter without iamf-tools, add
   trivial definitions.
-- `Settings::requested_profile_versions` is not forwarded; iamf-rs
-  validates profiles against IAMF v1.1 itself.
-- `ResetWithNewMix` rebuilds the decoder from the retained descriptor
-  blob, since iamf-rs fixes its settings at creation.
+- `Settings::requested_profile_versions` is forwarded as
+  `iamfrs_settings.requested_profiles` and enforced with iamf-tools
+  `ProfileFilter` semantics: the sequence-header profiles must intersect
+  the requested set, and only mix presentations within some requested
+  profile's limits (sub-mix count, element types and layouts,
+  element/channel budgets, codec-config rules) are selectable.
+- `ResetWithNewMix` maps to `iamfrs_decoder_reset_with_new_mix`, which
+  reconfigures in place and reuses the codec decoders of audio elements
+  shared between the old and new mix.
+- Loudness normalization and a libiamf-style peak limiter are available
+  via `iamfrs_settings` but default off, matching the iamf-tools
+  decoder's unprocessed output.

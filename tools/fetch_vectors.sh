@@ -16,12 +16,13 @@ API_URL="https://api.github.com/repos/AOMediaCodec/libiamf/contents/tests"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/tests/vectors"
 
 # Curated spread: LPCM/Opus/AAC-LC codecs, channel- and scene-based
-# elements, plus two should-fail-to-decode cases (000007, 000025).
+# elements (ambisonics MONO and PROJECTION: 000042/000048), plus two
+# should-fail-to-decode cases (000007, 000025).
 DEFAULT_VECTORS=(
   test_000002 test_000005 test_000007 test_000024 test_000025 test_000026
-  test_000032 test_000033 test_000036 test_000038 test_000039 test_000065
-  test_000066 test_000069 test_000070 test_000082 test_000086 test_000088
-  test_000073 test_000090 test_000092
+  test_000032 test_000033 test_000036 test_000038 test_000039 test_000042
+  test_000048 test_000065 test_000066 test_000069 test_000070 test_000082
+  test_000086 test_000088 test_000073 test_000090 test_000092
 )
 
 if [[ "${1:-}" == "--demo" ]]; then

@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.2.0 — 2026-08-25
+
+Spec-conformance and Chromium-integration hardening. The C ABI settings
+struct gained fields and a function, hence the minor bump.
+
+- **Profile validation** (new `iamf_dec::profile`): a port of iamf-tools'
+  `ProfileFilter`. `StreamSettings::requested_profiles` /
+  `iamfrs_settings.requested_profiles` are enforced — the sequence
+  header's declared profiles must intersect the requested set, and mix
+  selection only considers presentations within some requested profile's
+  limits (sub-mix count, headphone rendering modes, element types and
+  layouts, expanded-layout variants, element/channel budgets, and the
+  one-codec-config / uniform frame-size-and-rate rules). The Chromium
+  adapter now forwards `Settings::requested_profile_versions`.
+- **Loudness normalization and peak limiting in the streaming decoder
+  and C ABI** (`loudness_target_db`, `enable_limiter`), not just the
+  CLI. Both default off, matching the iamf-tools decoder that Chromium
+  ships (libiamf, by contrast, limits at -1 dBFS by default).
+- **Subblock-granular parameter timelines** (`params::ParamCursor`):
+  demixing and recon-gain parameter blocks whose subblocks span several
+  temporal units now apply each subblock to the units it covers, in both
+  drivers; previously only the first subblock was used. Durations follow
+  libiamf's `(rate + 0.1) / parameter_rate` scaling.
+- **Parameter-ID multimap**: a parameter id consumed by several
+  definitions (invalid per spec, but previously last-writer-wins) now
+  reaches every consumer; the output-mix-gain entry can no longer
+  clobber an element parameter.
+- **Temporal-unit assembly robustness**: temporal delimiter OBUs are
+  checked for unit alignment (a mid-unit delimiter is a
+  `CorruptPacket`); frames of one unit must agree on trimming (§3.9) and
+  on frame length across elements; parameter application no longer
+  assumes the first substream's frame arrives first.
+- **`reset_with_new_mix`** (`iamfrs_decoder_reset_with_new_mix`,
+  iamf-tools `ResetWithNewMix`): in-place mix/layout switching that
+  reuses (and resets) the codec decoders of retained audio elements
+  instead of rebuilding the decoder from scratch; the Chromium adapter
+  uses it and no longer retains a descriptor copy.
+- **Mix selection by id now falls back to automatic selection** when the
+  id is absent or unsupported, matching iamf-tools' documented
+  `RequestedMix` semantics (previously an error).
+- Ported/verified against upstream: libiamf PR #176 (limiter default
+  threshold: rename only, value unchanged at -1 dBFS) and PR #168
+  (`rendering_config` parsing — not applicable, iamf-rs skips the sized
+  extension region); iamf-tools' August 2026 allocation caps are covered
+  by existing bounded parsing.
+- Tests: ambisonics PROJECTION coverage (unit tests plus conformance
+  vectors 000042/000048, new in the curated fetch set); invalid vectors
+  000007/000025 asserted rejected (including new Opus version
+  validation); sound systems E–H and 9.1.6 render sanity; FLAC/AAC
+  adapter tests; pure-Rust vs libopus Opus equivalence (>60 dB SNR);
+  synthetic-stream tests for spanning parameter blocks, delimiter
+  alignment, trim mismatches, and duplicate parameter ids. Vector-driven
+  tests now fail with fetch instructions when vectors are missing
+  (`IAMF_VECTORS_OPTIONAL=1` restores skip-with-message).
+- Docs: corrected stale notes (binaural status, batch-driver mix gains,
+  projection matrix Q-format, milestones).
+
 ## 0.1.1 — 2026-08-25
 
 - `tools/iamfplay`: terminal demo player — live playback of `.iamf` and

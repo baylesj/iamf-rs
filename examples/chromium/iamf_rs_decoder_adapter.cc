@@ -5,8 +5,6 @@
 #include <cstdint>
 #include <memory>
 #include <string>
-#include <utility>
-#include <vector>
 
 #include "iamf_rs.h"
 #include "iamf_tools_api_snapshot/iamf_decoder_factory.h"
@@ -20,6 +18,7 @@ using ::iamf_tools::api::ChannelOrdering;
 using ::iamf_tools::api::IamfStatus;
 using ::iamf_tools::api::OutputLayout;
 using ::iamf_tools::api::OutputSampleType;
+using ::iamf_tools::api::ProfileVersion;
 using ::iamf_tools::api::RequestedMix;
 using ::iamf_tools::api::SelectedMix;
 
@@ -51,6 +50,12 @@ iamfrs_settings SettingsToC(
   c_settings.disable_trim_start =
       settings.trimming_settings.trim_beginning ? 0 : 1;
   c_settings.disable_trim_end = settings.trimming_settings.trim_end ? 0 : 1;
+  /* ProfileVersion values are the profile numbers (simple=0, base=1,
+   * base-enhanced=2), which are the iamfrs_profile bit positions. */
+  c_settings.requested_profiles = 0;
+  for (ProfileVersion profile : settings.requested_profile_versions) {
+    c_settings.requested_profiles |= 1u << static_cast<uint32_t>(profile);
+  }
   return c_settings;
 }
 
@@ -70,9 +75,7 @@ std::unique_ptr<IamfRsDecoderAdapter> IamfRsDecoderAdapter::CreateFromDescriptor
                                              &decoder) != IAMFRS_OK) {
     return nullptr;
   }
-  return std::unique_ptr<IamfRsDecoderAdapter>(new IamfRsDecoderAdapter(
-      decoder, c_settings,
-      std::vector<uint8_t>(input_buffer, input_buffer + input_buffer_size)));
+  return std::unique_ptr<IamfRsDecoderAdapter>(new IamfRsDecoderAdapter(decoder));
 }
 
 IamfRsDecoderAdapter::~IamfRsDecoderAdapter() {
@@ -160,26 +163,19 @@ IamfStatus IamfRsDecoderAdapter::Reset() {
 
 IamfStatus IamfRsDecoderAdapter::ResetWithNewMix(
     const RequestedMix& requested_mix, SelectedMix& selected_mix) {
-  /* The iamf-rs settings are fixed at creation, so a mix change rebuilds
-   * the decoder from the retained descriptor blob. */
-  iamfrs_settings c_settings = settings_;
-  if (requested_mix.output_layout.has_value()) {
-    c_settings.output_layout =
-        static_cast<int32_t>(*requested_mix.output_layout);
-  }
-  c_settings.mix_presentation_id =
+  const int64_t mix_id =
       requested_mix.mix_presentation_id.has_value()
           ? static_cast<int64_t>(*requested_mix.mix_presentation_id)
           : -1;
-  iamfrs_decoder* decoder = nullptr;
-  const int code = iamfrs_decoder_create_from_descriptors(
-      descriptors_.data(), descriptors_.size(), &c_settings, &decoder);
+  const int32_t layout =
+      requested_mix.output_layout.has_value()
+          ? static_cast<int32_t>(*requested_mix.output_layout)
+          : -1;
+  const int code =
+      iamfrs_decoder_reset_with_new_mix(decoder_, mix_id, layout);
   if (code != IAMFRS_OK) {
     return StatusOf(code, "ResetWithNewMix");
   }
-  iamfrs_decoder_destroy(decoder_);
-  decoder_ = decoder;
-  settings_ = c_settings;
   return GetOutputMix(selected_mix);
 }
 

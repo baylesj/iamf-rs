@@ -331,8 +331,9 @@ pub enum AudioElementConfig {
         output_channel_count: u8,
         substream_count: u8,
         coupled_substream_count: u8,
-        /// Row-major (substream_count + coupled_substream_count) x
-        /// output_channel_count, Q7.8.
+        /// (substream_count + coupled_substream_count) rows of
+        /// output_channel_count Q1.15 entries, decoded-channel-major
+        /// (entry `[c * output_channel_count + acn]`).
         demixing_matrix: Vec<i16>,
     },
 }

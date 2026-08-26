@@ -18,7 +18,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <vector>
 
 #include "iamf_rs.h"
 #include "iamf_tools_api_snapshot/iamf_decoder_factory.h"
@@ -31,9 +30,9 @@ class IamfRsDecoderAdapter : public iamf_tools::api::IamfDecoderInterface {
  public:
   /* Mirrors IamfDecoderFactory::CreateFromDescriptors: `input_buffer`
    * must contain all (and only) the descriptor OBUs. Returns nullptr on
-   * failure. Note `Settings::requested_profile_versions` is not
-   * consulted: iamf-rs itself validates the sequence-header profiles
-   * against IAMF v1.1 (Simple/Base/Base-Enhanced). */
+   * failure. `Settings::requested_profile_versions` is forwarded and
+   * enforced with iamf-tools ProfileFilter semantics (sequence-header
+   * intersection plus per-mix capability limits). */
   static std::unique_ptr<IamfRsDecoderAdapter> CreateFromDescriptors(
       const iamf_tools::api::IamfDecoderFactory::Settings& settings,
       const uint8_t* input_buffer, size_t input_buffer_size);
@@ -65,16 +64,9 @@ class IamfRsDecoderAdapter : public iamf_tools::api::IamfDecoderInterface {
   iamf_tools::api::IamfStatus SignalEndOfDecoding() override;
 
  private:
-  IamfRsDecoderAdapter(iamfrs_decoder* decoder, iamfrs_settings settings,
-                       std::vector<uint8_t> descriptors)
-      : decoder_(decoder),
-        settings_(settings),
-        descriptors_(std::move(descriptors)) {}
+  explicit IamfRsDecoderAdapter(iamfrs_decoder* decoder) : decoder_(decoder) {}
 
   iamfrs_decoder* decoder_;  // Owned.
-  /* Kept so ResetWithNewMix can rebuild the decoder with a new target. */
-  iamfrs_settings settings_;
-  std::vector<uint8_t> descriptors_;
 };
 
 }  // namespace iamf_rs

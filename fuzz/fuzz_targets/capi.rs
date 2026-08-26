@@ -15,7 +15,8 @@ use iamf_rs::{
     iamfrs_decoder_get_output_temporal_unit, iamfrs_decoder_get_sample_rate,
     iamfrs_decoder_get_sample_type, iamfrs_decoder_get_selected_layout,
     iamfrs_decoder_get_selected_mix_presentation_id, iamfrs_decoder_is_temporal_unit_available,
-    iamfrs_decoder_reset, iamfrs_decoder_signal_end_of_decoding,
+    iamfrs_decoder_reset, iamfrs_decoder_reset_with_new_mix,
+    iamfrs_decoder_signal_end_of_decoding,
 };
 use libfuzzer_sys::fuzz_target;
 
@@ -35,6 +36,10 @@ fuzz_target!(|data: &[u8]| {
         channel_ordering: i32::from(data[1] & 1),
         disable_trim_start: data[1] >> 1 & 1,
         disable_trim_end: data[1] >> 2 & 1,
+        requested_profiles: u32::from(data[2] & 0x07),
+        enable_limiter: data[2] >> 3 & 1,
+        enable_loudness_normalization: data[2] >> 4 & 1,
+        loudness_target_db: -24.0,
     };
     let payload = &data[3..];
 
@@ -101,6 +106,14 @@ fuzz_target!(|data: &[u8]| {
         }
         let _ = iamfrs_decoder_reset(decoder);
         let _ = iamfrs_decoder_decode(decoder, payload.as_ptr(), mid);
+        // In-place mix/layout switch, then keep decoding on the handle.
+        let _ = iamfrs_decoder_reset_with_new_mix(
+            decoder,
+            if data[2] & 0x20 == 0 { -1 } else { i64::from(data[0]) },
+            i32::from(data[2] % 16) - 1,
+        );
+        let _ = iamfrs_decoder_decode(decoder, payload[mid..].as_ptr(), payload.len() - mid);
+        let _ = iamfrs_decoder_is_temporal_unit_available(decoder);
         iamfrs_decoder_destroy(decoder);
     }
 });

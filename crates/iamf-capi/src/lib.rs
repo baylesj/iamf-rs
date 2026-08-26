@@ -28,7 +28,9 @@ pub const IAMFRS_ERR_INTERNAL: c_int = -6;
 
 fn status_of(err: &DecodeError) -> c_int {
     match err {
-        DecodeError::UnsupportedCodec | DecodeError::Unimplemented(_) => IAMFRS_ERR_UNSUPPORTED,
+        DecodeError::UnsupportedCodec
+        | DecodeError::UnsupportedProfile(_)
+        | DecodeError::Unimplemented(_) => IAMFRS_ERR_UNSUPPORTED,
         DecodeError::CorruptPacket(_) | DecodeError::InvalidDescriptors(_) => {
             IAMFRS_ERR_CORRUPT_DATA
         }
@@ -61,6 +63,20 @@ pub struct IamfrsSettings {
     /// edts/elst).
     pub disable_trim_start: u8,
     pub disable_trim_end: u8,
+    /// Bitmask of supported profiles (iamf-tools
+    /// `requested_profile_versions`): bit 0 = simple, bit 1 = base,
+    /// bit 2 = base-enhanced. 0 means all known profiles.
+    pub requested_profiles: u32,
+    /// Nonzero enables the libiamf-style -1 dBFS look-ahead peak limiter.
+    /// Off by default, matching the iamf-tools decoder.
+    pub enable_limiter: u8,
+    /// Nonzero enables loudness normalization to `loudness_target_db`
+    /// using the stream's loudness_info. Off by default (iamf-tools
+    /// ignores loudness metadata).
+    pub enable_loudness_normalization: u8,
+    /// Target loudness in dB (LKFS), e.g. -24.0; read only when
+    /// `enable_loudness_normalization` is nonzero.
+    pub loudness_target_db: f32,
 }
 
 /// Creates a decoder from a descriptor blob (the descriptor OBUs of an IA
@@ -115,6 +131,10 @@ pub unsafe extern "C" fn iamfrs_decoder_create_from_descriptors(
             trim_beginning: c_settings.disable_trim_start == 0,
             trim_end: c_settings.disable_trim_end == 0,
         },
+        requested_profiles: iamf_dec::profile::ProfileSet::from_bits(c_settings.requested_profiles),
+        loudness_target_db: (c_settings.enable_loudness_normalization != 0)
+            .then_some(c_settings.loudness_target_db),
+        enable_limiter: c_settings.enable_limiter != 0,
     };
     match StreamDecoder::new_from_descriptors(data, settings, &DefaultFactory) {
         Ok(inner) => {
@@ -280,6 +300,54 @@ pub unsafe extern "C" fn iamfrs_decoder_reset(decoder: *mut IamfrsDecoder) -> c_
     IAMFRS_OK
 }
 
+/// Reconfigures for a different mix presentation and/or output layout
+/// without reparsing descriptors (iamf-tools `ResetWithNewMix`). Codec
+/// decoders shared between the old and new mix are reset and reused.
+/// `mix_presentation_id < 0` selects automatically; `output_layout < 0`
+/// keeps the current layout. Buffered audio and parameter state are
+/// dropped. On error the decoder is unconfigured until a successful
+/// reconfigure; destroy it or call this again with valid arguments.
+///
+/// # Safety
+/// `decoder` must be a live handle from create.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn iamfrs_decoder_reset_with_new_mix(
+    decoder: *mut IamfrsDecoder,
+    mix_presentation_id: i64,
+    output_layout: i32,
+) -> c_int {
+    let Some(handle) = (unsafe { decoder.as_mut() }) else {
+        return IAMFRS_ERR_INVALID_ARG;
+    };
+    let selection = if mix_presentation_id < 0 {
+        iamf_dec::stream::MixSelection::Auto
+    } else {
+        match u32::try_from(mix_presentation_id) {
+            Ok(id) => iamf_dec::stream::MixSelection::ById(id),
+            Err(_) => return IAMFRS_ERR_INVALID_ARG,
+        }
+    };
+    let layout = if output_layout < 0 {
+        None
+    } else {
+        match u8::try_from(output_layout)
+            .ok()
+            .and_then(SoundSystem::from_u8)
+        {
+            Some(layout) => Some(layout),
+            None => return IAMFRS_ERR_INVALID_ARG,
+        }
+    };
+    handle.pending_unit = None;
+    match handle
+        .inner
+        .reset_with_new_mix(selection, layout, &DefaultFactory)
+    {
+        Ok(_) => IAMFRS_OK,
+        Err(e) => status_of(&e),
+    }
+}
+
 /// Marks end of stream; remaining buffered units stay pullable.
 ///
 /// # Safety
@@ -319,9 +387,16 @@ mod tests {
 
     #[test]
     fn c_api_end_to_end() {
-        let Some(data) = vector() else {
-            eprintln!("vector missing; run tools/fetch_vectors.sh");
-            return;
+        let data = match vector() {
+            Some(data) => data,
+            None if std::env::var_os("IAMF_VECTORS_OPTIONAL").is_some() => {
+                eprintln!("SKIPPED: test_000002 missing; run tools/fetch_vectors.sh");
+                return;
+            }
+            None => panic!(
+                "test_000002 missing; run tools/fetch_vectors.sh \
+                 (or set IAMF_VECTORS_OPTIONAL=1 to skip vector tests)"
+            ),
         };
         let mut decoder: *mut IamfrsDecoder = std::ptr::null_mut();
         // SAFETY: valid pointers throughout; handle lifecycle follows the
@@ -338,11 +413,28 @@ mod tests {
                         channel_ordering: 0,
                         disable_trim_start: 0,
                         disable_trim_end: 0,
+                        requested_profiles: 0,
+                        enable_limiter: 0,
+                        enable_loudness_normalization: 0,
+                        loudness_target_db: 0.0,
                     },
                     &mut decoder
                 ),
                 IAMFRS_OK
             );
+            // In-place reconfigure (same mix, mono layout) reuses the
+            // codec decoders and keeps the handle usable.
+            assert_eq!(
+                iamfrs_decoder_reset_with_new_mix(decoder, -1, 12),
+                IAMFRS_OK
+            );
+            let mut layout = u32::MAX;
+            assert_eq!(
+                iamfrs_decoder_get_selected_layout(decoder, &mut layout),
+                IAMFRS_OK
+            );
+            assert_eq!(layout, 12);
+            assert_eq!(iamfrs_decoder_reset_with_new_mix(decoder, 42, 0), IAMFRS_OK);
             let (mut channels, mut rate, mut frame_size) = (0u32, 0u32, 0u32);
             let (mut mix_id, mut resolved_type) = (0u32, 0u32);
             assert_eq!(

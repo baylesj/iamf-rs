@@ -1,6 +1,6 @@
 //! Parses real libiamf test vectors from tests/vectors/ (populate with
-//! tools/fetch_vectors.sh; the test passes trivially when none are present
-//! so CI without vectors stays green).
+//! tools/fetch_vectors.sh; a missing vectors directory fails the test
+//! unless IAMF_VECTORS_OPTIONAL=1 downgrades it to a skip).
 
 use std::path::PathBuf;
 
@@ -29,13 +29,18 @@ fn parse_fetched_vectors() {
             .map(|e| e.path())
             .filter(|p| p.extension().is_some_and(|ext| ext == "iamf"))
             .collect(),
-        Err(_) => {
+        Err(_) if std::env::var_os("IAMF_VECTORS_OPTIONAL").is_some() => {
             eprintln!(
-                "no vectors in {}; run tools/fetch_vectors.sh",
+                "SKIPPED: no vectors in {}; run tools/fetch_vectors.sh",
                 dir.display()
             );
             return;
         }
+        Err(_) => panic!(
+            "no vectors in {}; run tools/fetch_vectors.sh \
+             (or set IAMF_VECTORS_OPTIONAL=1 to skip vector tests)",
+            dir.display()
+        ),
     };
     paths.sort();
     assert!(

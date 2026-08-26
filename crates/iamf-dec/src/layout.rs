@@ -7,10 +7,11 @@ use crate::matrices::MatrixLayout;
 /// also iamf-tools `OutputLayout`) plus binaural (14, iamf-tools
 /// `kIAMF_Binaural`).
 ///
-/// Binaural currently renders through the same gain matrices libiamf uses
-/// when built without its external binauralizer libraries — i.e. a stereo
-/// feed suitable for headphones, without HRTF processing. A true HRTF
-/// binauralizer is future work.
+/// With the `binaural` feature, elements whose `headphones_rendering_mode`
+/// is 1 go through the native obr-style HRTF renderer (see
+/// `crate::binaural`); mode-0 elements — and every element when the
+/// feature is off — render through the stereo gain matrices, matching
+/// libiamf built without its binauralizer libraries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SoundSystem {
     A,

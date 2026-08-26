@@ -15,22 +15,30 @@ OBU parser → codec decoders → element reconstructor → renderer → mixer �
 ## Features
 
 - IAMF v1.1 simple & base profile decoding: OBUs, descriptors, parameter blocks
+- Profile validation with iamf-tools `ProfileFilter` semantics: requested
+  profile sets, sequence-header checks, per-mix capability limits
 - Codecs: Opus (pure-Rust, or libopus via `opus-ffi`), LPCM, FLAC, AAC-LC
 - Scalable channel audio: demixing, recon gains, output gain, layer selection
 - Ambisonics, mono and projection modes, orders 1–4
 - Rendering to all 14 loudspeaker sound systems (libiamf v1.1 gain matrices)
 - Binaural rendering for headphones — native port of [google/obr](https://github.com/google/obr) (layout 14), any supported sample rate
-- Animated mix gains (step/linear/bezier) and per-frame demixing/recon-gain parameters
-- Optional loudness normalization and peak limiter post stage
+- Animated mix gains (step/linear/bezier); demixing/recon-gain parameter
+  timelines at subblock granularity (blocks may span temporal units)
+- Optional loudness normalization and peak limiter (off by default,
+  matching the iamf-tools decoder), in both drivers and the C ABI
 - Batch and streaming decoders (partial-OBU input, reset/seek), byte-identical outputs
-- Mix presentation selection: automatic by layout, by id, or by index
+- Mix presentation selection: automatic by layout, by id, or by index;
+  in-place mix/layout switching (`reset_with_new_mix`) that reuses codec state
 - Output options matching iamf-tools: channel ordering (IAMF or Android/WAVE), auto or explicit s16le/s32le, trimming control, selected-mix query
 - C ABI (`iamf-capi`) shaped after the iamf-tools API Chromium consumes
+- Bitstream consistency checks: temporal-delimiter alignment, per-unit
+  trim agreement, one codec config / frame size per mix
 - `#![forbid(unsafe_code)]` outside the FFI boundary; parser and full stream decoder fuzzed (CI smoke + local corpus)
 
-Not yet supported: expanded loudspeaker layouts (base-enhanced profile) and
-output-rate resampling. Multi-sub-mix presentations are rejected as invalid,
-matching the v1.1 spec (`num_sub_mixes` must be 1) and libiamf.
+Not yet supported: expanded loudspeaker layouts (base-enhanced profile;
+they are profile-filtered but not decodable) and output-rate resampling.
+Multi-sub-mix presentations are rejected as invalid, matching the v1.1
+spec (`num_sub_mixes` must be 1) and libiamf.
 
 ## Demo
 
@@ -124,10 +132,16 @@ stereo. CI checks these combinations.
    scope — Chromium's demuxer delivers descriptors + temporal units)*
 6. **Binaural** — *(done)* native obr-style renderer: speaker/object→HOA
    SH encoding, partitioned FFT convolution with obr's SH-HRIR filters,
-   obr peak limiter; validated ≤2 LSB against iamf-tools' `decoder_main
-   --output_layout Binaural`. 48 kHz streams only.
-7. **Later** — AAC-LC/FLAC, expanded layouts, HRIR resampling, higher
-   profiles.
+   obr peak limiter; validated against iamf-tools' `decoder_main
+   --output_layout Binaural` (≤4 LSB), with HRIR resampling for
+   non-48 kHz streams.
+7. **Hardening** — *(done)* profile validation (iamf-tools
+   `ProfileFilter` port), subblock-granular parameter timelines,
+   temporal-unit consistency checks, in-place mix switching, loudness &
+   limiter on the streaming/C-API path, PROJECTION-mode and codec-adapter
+   conformance coverage.
+8. **Later** — expanded loudspeaker layouts (base-enhanced),
+   output-rate resampling, higher profiles.
 
 ## Development
 

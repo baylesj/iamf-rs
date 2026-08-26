@@ -1,9 +1,11 @@
 //! Mix presentation orchestration: descriptors → per-element decode →
 //! reconstruct (frame-based demixing) → render → mix gains → summed output.
 //!
-//! Demixing-mode and recon-gain parameter blocks are applied per frame.
-//! Element/output mix gains currently use the static defaults; animated
-//! mix-gain parameter blocks are not yet applied.
+//! Demixing-mode and recon-gain parameter blocks are applied per temporal
+//! unit from a subblock timeline (a block whose subblocks span several
+//! units applies each subblock to the units it covers). Element and output
+//! mix gains are applied per sample, including step/linear/bezier
+//! animations.
 
 use std::collections::HashMap;
 
@@ -14,7 +16,7 @@ use iamf_obu::{AudioFrame, Obu, ObuIter, ObuType};
 
 use crate::element::ElementDecoder;
 use crate::layout::SoundSystem;
-use crate::params::{ParamContext, ParameterBlock, ReconGainLayers, SubblockData};
+use crate::params::{ParamContext, ParameterBlock, SubblockData};
 use crate::reconstruct::{
     ChannelReconstructor, Reconstructed, deinterleave, reconstruct_ambisonics,
 };
@@ -23,8 +25,9 @@ use crate::{CodecFactory, DecodeError};
 
 /// All descriptor OBUs of an IA sequence, first copy wins for redundant
 /// re-transmissions.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Descriptors {
+    pub sequence_header: Option<descriptors::SequenceHeader>,
     pub codec_configs: Vec<CodecConfig>,
     pub audio_elements: Vec<AudioElement>,
     pub mix_presentations: Vec<MixPresentation>,
@@ -38,6 +41,9 @@ impl Descriptors {
             match descriptors::parse(&obu)
                 .map_err(|e| DecodeError::InvalidDescriptors(e.to_string()))?
             {
+                Some(Descriptor::SequenceHeader(sh)) if out.sequence_header.is_none() => {
+                    out.sequence_header = Some(sh)
+                }
                 Some(Descriptor::CodecConfig(cc))
                     if !out
                         .codec_configs
@@ -92,13 +98,6 @@ pub struct RenderedMix {
     pub interleaved: Vec<f32>,
 }
 
-/// Parameters snapshotted for one temporal unit of one element.
-#[derive(Clone, Default)]
-struct FrameParams {
-    dmx_mode: Option<u8>,
-    recon: Option<ReconGainLayers>,
-}
-
 struct ElementSlot {
     element: AudioElement,
     decoder: ElementDecoder,
@@ -110,10 +109,11 @@ struct ElementSlot {
     gain_rate: u32,
     /// Animated mix gain blocks, in arrival order.
     gain_blocks: Vec<ParameterBlock>,
-    current: FrameParams,
-    /// One snapshot per temporal unit, taken when the first substream's
-    /// frame arrives.
-    frame_params: Vec<FrameParams>,
+    /// Demixing parameter blocks with their parameter rate, in arrival
+    /// order; consumed as a subblock timeline at finish.
+    dmx_blocks: Vec<(ParameterBlock, u32)>,
+    /// Recon-gain parameter blocks, same shape.
+    recon_blocks: Vec<(ParameterBlock, u32)>,
 }
 
 #[derive(Clone, Copy)]
@@ -134,8 +134,9 @@ pub struct PresentationDecoder {
     output_gain_rate: u32,
     output_gain_blocks: Vec<ParameterBlock>,
     target: SoundSystem,
-    /// parameter_id → (slot index, kind, definition).
-    param_index: HashMap<u32, (usize, ParamKind, ParamDefinition)>,
+    /// parameter_id → every consumer of that id (IAMF requires unique ids;
+    /// a multimap keeps duplicate-id streams from dropping consumers).
+    param_index: HashMap<u32, Vec<(usize, ParamKind, ParamDefinition)>>,
 }
 
 impl PresentationDecoder {
@@ -159,7 +160,8 @@ impl PresentationDecoder {
         };
 
         let mut slots = Vec::new();
-        let mut param_index = HashMap::new();
+        let mut param_index: HashMap<u32, Vec<(usize, ParamKind, ParamDefinition)>> =
+            HashMap::new();
         for sub_element in &sub_mix.elements {
             let element = descriptors
                 .element(sub_element.audio_element_id)
@@ -182,28 +184,30 @@ impl PresentationDecoder {
             for param in &element.params {
                 match param {
                     ElementParam::Demixing { base, .. } => {
-                        param_index.insert(
-                            base.parameter_id,
-                            (slot_index, ParamKind::Demixing, base.clone()),
-                        );
+                        param_index.entry(base.parameter_id).or_default().push((
+                            slot_index,
+                            ParamKind::Demixing,
+                            base.clone(),
+                        ));
                     }
                     ElementParam::ReconGain(base) => {
-                        param_index.insert(
-                            base.parameter_id,
-                            (slot_index, ParamKind::ReconGain, base.clone()),
-                        );
+                        param_index.entry(base.parameter_id).or_default().push((
+                            slot_index,
+                            ParamKind::ReconGain,
+                            base.clone(),
+                        ));
                     }
                     ElementParam::Unknown { .. } => {}
                 }
             }
-            param_index.insert(
-                sub_element.element_mix_gain.base.parameter_id,
-                (
+            param_index
+                .entry(sub_element.element_mix_gain.base.parameter_id)
+                .or_default()
+                .push((
                     slot_index,
                     ParamKind::ElementMixGain,
                     sub_element.element_mix_gain.base.clone(),
-                ),
-            );
+                ));
             slots.push(ElementSlot {
                 element: element.clone(),
                 decoder,
@@ -211,18 +215,18 @@ impl PresentationDecoder {
                 gain: q78_db_to_linear(sub_element.element_mix_gain.default_mix_gain),
                 gain_rate: sub_element.element_mix_gain.base.parameter_rate,
                 gain_blocks: Vec::new(),
-                current: FrameParams::default(),
-                frame_params: Vec::new(),
+                dmx_blocks: Vec::new(),
+                recon_blocks: Vec::new(),
             });
         }
-        param_index.insert(
-            sub_mix.output_mix_gain.base.parameter_id,
-            (
+        param_index
+            .entry(sub_mix.output_mix_gain.base.parameter_id)
+            .or_default()
+            .push((
                 0,
                 ParamKind::OutputMixGain,
                 sub_mix.output_mix_gain.base.clone(),
-            ),
-        );
+            ));
         Ok(PresentationDecoder {
             slots,
             output_gain: q78_db_to_linear(sub_mix.output_mix_gain.default_mix_gain),
@@ -251,57 +255,45 @@ impl PresentationDecoder {
     fn process_parameter_block(&mut self, payload: &[u8]) -> Result<bool, DecodeError> {
         let id = ParameterBlock::peek_parameter_id(payload)
             .map_err(|e| DecodeError::CorruptPacket(e.to_string()))?;
-        let Some((slot_index, kind, definition)) = self.param_index.get(&id).cloned() else {
-            // Mix-gain and unknown parameters are not applied yet.
+        let Some(targets) = self.param_index.get(&id).cloned() else {
             return Ok(false);
         };
-        let slot = &mut self.slots[slot_index];
-        let context = match kind {
-            ParamKind::Demixing => ParamContext::Demixing,
-            ParamKind::ElementMixGain | ParamKind::OutputMixGain => ParamContext::MixGain,
-            ParamKind::ReconGain => {
-                let iamf_obu::descriptors::AudioElementConfig::ChannelBased { layers } =
-                    &slot.element.config
-                else {
-                    return Ok(false);
-                };
-                ParamContext::ReconGain(layers)
+        let mut consumed = false;
+        for (slot_index, kind, definition) in targets {
+            let slot = &mut self.slots[slot_index];
+            let context = match kind {
+                ParamKind::Demixing => ParamContext::Demixing,
+                ParamKind::ElementMixGain | ParamKind::OutputMixGain => ParamContext::MixGain,
+                ParamKind::ReconGain => {
+                    let iamf_obu::descriptors::AudioElementConfig::ChannelBased { layers } =
+                        &slot.element.config
+                    else {
+                        continue;
+                    };
+                    ParamContext::ReconGain(layers)
+                }
+            };
+            let block = ParameterBlock::parse(payload, &definition, &context)
+                .map_err(|e| DecodeError::CorruptPacket(e.to_string()))?;
+            match kind {
+                ParamKind::ElementMixGain => slot.gain_blocks.push(block),
+                ParamKind::OutputMixGain => self.output_gain_blocks.push(block),
+                ParamKind::Demixing => {
+                    slot.dmx_blocks.push((block, definition.parameter_rate));
+                }
+                ParamKind::ReconGain => {
+                    slot.recon_blocks.push((block, definition.parameter_rate));
+                }
             }
-        };
-        let block = ParameterBlock::parse(payload, &definition, &context)
-            .map_err(|e| DecodeError::CorruptPacket(e.to_string()))?;
-        match kind {
-            ParamKind::ElementMixGain => {
-                slot.gain_blocks.push(block);
-                return Ok(true);
-            }
-            ParamKind::OutputMixGain => {
-                self.output_gain_blocks.push(block);
-                return Ok(true);
-            }
-            _ => {}
+            consumed = true;
         }
-        // Frame-aligned parameter blocks carry one subblock; when there are
-        // several, the first is applied for the whole unit.
-        match block.subblocks.first().map(|s| &s.data) {
-            Some(SubblockData::Demixing { dmixp_mode }) => {
-                slot.current.dmx_mode = Some(*dmixp_mode);
-            }
-            Some(SubblockData::ReconGain(layers)) => {
-                slot.current.recon = Some(layers.clone());
-            }
-            _ => {}
-        }
-        Ok(true)
+        Ok(consumed)
     }
 
     /// Routes one audio frame to the element that owns its substream.
     /// Returns whether any element consumed it.
     pub fn decode_frame(&mut self, frame: &AudioFrame<'_>) -> Result<bool, DecodeError> {
         for slot in &mut self.slots {
-            if slot.decoder.is_first_substream(frame) {
-                slot.frame_params.push(slot.current.clone());
-            }
             if slot.decoder.decode_frame(frame)? {
                 return Ok(true);
             }
@@ -516,13 +508,47 @@ fn reconstruct_slot(
     let ElementSlot {
         element,
         decoder,
-        frame_params,
+        dmx_blocks,
+        recon_blocks,
         ..
     } = slot;
     match &element.config {
         AudioElementConfig::ChannelBased { layers } => {
             let substreams = decoder.finish_frames();
             let sample_rate = substreams.first().map(|s| s.sample_rate).unwrap_or(0);
+
+            // Subblock timelines over the sample clock; a block spanning
+            // several temporal units applies each subblock to the units it
+            // covers (libiamf scales durations by (rate + 0.1) / param_rate).
+            let scale = |parameter_rate: u32| {
+                if sample_rate == 0 {
+                    1.0
+                } else {
+                    (f64::from(sample_rate) + 0.1) / f64::from(parameter_rate.max(1))
+                }
+            };
+            let mut dmx_cursor = crate::params::ParamCursor::default();
+            for (block, rate) in &dmx_blocks {
+                for sb in &block.subblocks {
+                    if let crate::params::SubblockData::Demixing { dmixp_mode } = &sb.data {
+                        dmx_cursor.push(
+                            *dmixp_mode,
+                            (f64::from(sb.duration) * scale(*rate)) as usize,
+                        );
+                    }
+                }
+            }
+            let mut recon_cursor = crate::params::ParamCursor::default();
+            for (block, rate) in &recon_blocks {
+                for sb in &block.subblocks {
+                    if let crate::params::SubblockData::ReconGain(gains) = &sb.data {
+                        recon_cursor.push(
+                            gains.clone(),
+                            (f64::from(sb.duration) * scale(*rate)) as usize,
+                        );
+                    }
+                }
+            }
             let unit_count = substreams.iter().map(|s| s.frames.len()).min().unwrap_or(0);
             let frame_size = substreams
                 .first()
@@ -545,13 +571,13 @@ fn reconstruct_slot(
 
             let mut planar: Vec<Vec<f32>> = Vec::new();
             for k in 0..unit_count {
-                if let Some(params) = frame_params.get(k) {
-                    if let Some(mode) = params.dmx_mode {
-                        rec.set_demixing_mode(mode)?;
-                    }
-                    if let Some(recon) = &params.recon {
-                        rec.set_recon_gains(recon);
-                    }
+                let unit_len = substreams[0].frames[k].samples.len()
+                    / usize::from(substreams[0].channels.max(1));
+                if let Some(mode) = dmx_cursor.take_for_unit(unit_len) {
+                    rec.set_demixing_mode(mode)?;
+                }
+                if let Some(recon) = recon_cursor.take_for_unit(unit_len) {
+                    rec.set_recon_gains(&recon);
                 }
                 let mut planes = Vec::new();
                 for sub in &substreams {

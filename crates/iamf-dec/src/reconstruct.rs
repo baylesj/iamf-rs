@@ -336,6 +336,49 @@ mod tests {
     }
 
     #[test]
+    fn projection_applies_q15_matrix() {
+        // FOA from 3 substreams (1 coupled + 2 mono = 4 decoded channels).
+        // Matrix rows are decoded channels, columns ACN outputs, Q1.15.
+        let q = |x: f32| (x * 32768.0) as i16;
+        #[rustfmt::skip]
+        let matrix = vec![
+            // decoded 0 -> W only; decoded 1 -> Y; 2 -> Z; 3 -> X + half W.
+            q(0.5), q(0.0), q(0.0),  q(0.0),
+            q(0.0), q(0.9), q(0.0),  q(0.0),
+            q(0.0), q(0.0), q(-0.5), q(0.0),
+            q(0.25), q(0.0), q(0.0), q(0.99),
+        ];
+        let config = AudioElementConfig::AmbisonicsProjection {
+            output_channel_count: 4,
+            substream_count: 3,
+            coupled_substream_count: 1,
+            demixing_matrix: matrix,
+        };
+        let decoded = vec![vec![1.0f32], vec![0.5], vec![-1.0], vec![0.8]];
+        let out = ambisonics_from_planes(&config, decoded).unwrap();
+        let Reconstructed::Hoa { order, planar } = out else {
+            panic!("expected hoa");
+        };
+        assert_eq!(order, HoaOrder::Foa);
+        let tol = 1.0 / 32768.0;
+        assert!((planar[0][0] - (0.5 + 0.25 * 0.8)).abs() <= tol, "W");
+        assert!((planar[1][0] - 0.45).abs() <= tol, "Y");
+        assert!((planar[2][0] - 0.5).abs() <= tol, "Z");
+        assert!((planar[3][0] - 0.99 * 0.8).abs() <= tol * 2.0, "X");
+    }
+
+    #[test]
+    fn projection_rejects_wrong_matrix_size() {
+        let config = AudioElementConfig::AmbisonicsProjection {
+            output_channel_count: 4,
+            substream_count: 3,
+            coupled_substream_count: 1,
+            demixing_matrix: vec![0; 12], // needs 4x4 = 16
+        };
+        assert!(ambisonics_from_planes(&config, vec![vec![0.0]; 4]).is_err());
+    }
+
+    #[test]
     fn single_layer_stereo_passthrough() {
         let layers = [layer(1, 1, 1)];
         let mut rec = ChannelReconstructor::new(&layers, SoundSystem::A, 2).unwrap();

@@ -28,6 +28,9 @@ fuzz_target!(|data: &[u8]| {
         layout,
         sample_type: None,
         channel_ordering: ordering,
+        requested_profiles: iamf_dec::profile::ProfileSet::from_bits(u32::from(data[1] >> 1 & 7)),
+        enable_limiter: data[1] & 0x10 != 0,
+        loudness_target_db: (data[1] & 0x20 != 0).then_some(-24.0),
         ..StreamSettings::default()
     };
     let payload = &data[2..];

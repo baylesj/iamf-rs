@@ -17,6 +17,7 @@ pub mod matrices;
 pub mod params;
 pub mod post;
 pub mod presentation;
+pub mod profile;
 pub mod reconstruct;
 pub mod render;
 pub mod stream;
@@ -62,7 +63,10 @@ pub enum DecodeError {
     CorruptPacket(String),
     /// Descriptors are inconsistent (e.g. substream counts disagree).
     InvalidDescriptors(String),
-    /// Pipeline stage not yet implemented in this milestone.
+    /// The stream needs a profile outside the requested/known set
+    /// (iamf-tools `ProfileFilter` semantics; see [`profile`]).
+    UnsupportedProfile(String),
+    /// Pipeline stage not yet implemented.
     Unimplemented(&'static str),
 }
 
@@ -72,14 +76,10 @@ impl core::fmt::Display for DecodeError {
             DecodeError::UnsupportedCodec => write!(f, "unsupported codec"),
             DecodeError::CorruptPacket(msg) => write!(f, "corrupt packet: {msg}"),
             DecodeError::InvalidDescriptors(msg) => write!(f, "invalid descriptors: {msg}"),
+            DecodeError::UnsupportedProfile(msg) => write!(f, "unsupported profile: {msg}"),
             DecodeError::Unimplemented(what) => write!(f, "not yet implemented: {what}"),
         }
     }
 }
 
 impl std::error::Error for DecodeError {}
-
-// TODO(milestone 4): element reconstructor (demixing, recon gain), renderer
-// (channel layouts first, ambisonics after), mixer, loudness normalization,
-// peak limiter — see libiamf/code/src/iamf_dec/{iamf_element_reconstructor,
-// iamf_renderer,iamf_post_processor,audio_effect_peak_limiter}.c.

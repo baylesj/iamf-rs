@@ -21,11 +21,15 @@ bytes → OBU parser → descriptors/params → codec decode (per substream)
   `render` applies gain matrices extracted from libiamf v1.1.0
   (`matrices.rs`, generated — do not edit); `binaural/` is a native port
   of google/obr (SH encoder → HOA bed → partitioned FFT convolution with
-  embedded SH-HRIR filters → limiter); `params` evaluates animated gains;
-  `post` holds the optional loudness/limiter stage. Two drivers share
-  this machinery: `presentation` (batch) and `stream` (incremental,
-  partial-OBU input — the integration surface). Fuzzed end-to-end
-  (`fuzz/decode_stream`).
+  embedded SH-HRIR filters → limiter); `params` evaluates animated gains
+  and carries the subblock-granular parameter timelines (`ParamCursor`);
+  `profile` ports iamf-tools' `ProfileFilter` (requested-profile
+  enforcement, per-mix capability limits); `post` holds the optional
+  loudness/limiter stage — the streaming driver applies it when its
+  settings enable it; batch callers (the CLI) apply it themselves. Two
+  drivers share this machinery: `presentation` (batch) and `stream`
+  (incremental, partial-OBU input — the integration surface, including
+  in-place mix switching). Fuzzed end-to-end (`fuzz/decode_stream`).
 - **`iamf-codecs`** — `SubstreamDecoder` adapters, all feature-gated:
   LPCM (native), Opus (pure-Rust `opus-decoder`, or libopus via
   `opus-ffi`), FLAC and AAC-LC (symphonia). Integrators can inject their

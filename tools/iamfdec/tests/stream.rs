@@ -2,18 +2,16 @@
 //! presentation pipeline, including when the bitstream arrives in awkward
 //! partial-OBU chunks (Chromium feeds arbitrary buffer sizes).
 
-use std::path::PathBuf;
+mod common;
 
 use iamf_codecs::DefaultFactory;
 use iamf_dec::layout::SoundSystem;
 use iamf_dec::presentation::{Descriptors, PresentationDecoder};
-use iamf_dec::stream::{OutputSampleType, StreamDecoder, StreamSettings};
+use iamf_dec::stream::{MixSelection, OutputSampleType, StreamDecoder, StreamSettings};
 use iamf_obu::ObuIter;
 
 fn vector(name: &str) -> Option<Vec<u8>> {
-    let path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("../../tests/vectors/{name}.iamf"));
-    std::fs::read(path).ok()
+    std::fs::read(common::vectors_dir().join(format!("{name}.iamf"))).ok()
 }
 
 /// Batch decode to s16le bytes (reference behavior, conformance-tested).
@@ -63,10 +61,7 @@ fn stream_decode(data: &[u8], sound_system: u8, chunks: &[usize]) -> Vec<u8> {
 }
 
 fn equivalence_case(name: &str, sound_system: u8) {
-    let Some(data) = vector(name) else {
-        eprintln!("{name}: vector missing; run tools/fetch_vectors.sh");
-        return;
-    };
+    let data = require_vectors!(vector(name), format_args!("{name}"));
     let batch = batch_decode(&data, sound_system);
     for chunks in [&[usize::MAX][..], &[1024, 7, 3][..], &[1][..]] {
         // Single-byte feeding is slow; only use it for small vectors.
@@ -117,10 +112,146 @@ fn stream_matches_batch_animated_gains() {
 }
 
 #[test]
-fn stream_reset_allows_redecode() {
-    let Some(data) = vector("test_000002") else {
-        return;
+fn stream_matches_batch_projection() {
+    equivalence_case("test_000048", 0);
+}
+
+/// Vectors marked `is_valid_to_decode: false` must be rejected, not
+/// decoded on a best-effort basis: 000007 has a non-lowercase ia_code,
+/// 000025 an Opus version of 16 (§3.6.1 requires 1).
+#[test]
+fn invalid_vectors_rejected() {
+    for name in ["test_000007", "test_000025"] {
+        let data = require_vectors!(vector(name), format_args!("{name}"));
+        assert!(
+            StreamDecoder::new_from_descriptors(&data, StreamSettings::default(), &DefaultFactory)
+                .is_err(),
+            "{name}: invalid stream was accepted"
+        );
+    }
+}
+
+/// In-place mix/layout switch (iamf-tools ResetWithNewMix): after
+/// reconfiguring, the decoder must produce exactly what a fresh decoder
+/// with those settings produces.
+#[test]
+fn reset_with_new_mix_matches_fresh_decoder() {
+    let data = require_vectors!(vector("test_000070"), format_args!("test_000070"));
+    let fresh = |sound_system: u8| {
+        let settings = StreamSettings {
+            layout: SoundSystem::from_u8(sound_system).unwrap(),
+            ..StreamSettings::default()
+        };
+        let mut decoder =
+            StreamDecoder::new_from_descriptors(&data, settings, &DefaultFactory).unwrap();
+        decoder.decode(&data).unwrap();
+        let mut out = Vec::new();
+        while decoder.is_temporal_unit_available() {
+            out.extend(decoder.get_output_temporal_unit().unwrap().unwrap());
+        }
+        out
     };
+
+    let mut decoder =
+        StreamDecoder::new_from_descriptors(&data, StreamSettings::default(), &DefaultFactory)
+            .unwrap();
+    decoder.decode(&data[..data.len() / 2]).unwrap();
+    let (mix_id, layout) = decoder
+        .reset_with_new_mix(
+            MixSelection::Auto,
+            Some(SoundSystem::from_u8(9).unwrap()),
+            &DefaultFactory,
+        )
+        .unwrap();
+    assert_eq!(layout, SoundSystem::from_u8(9).unwrap());
+    assert_eq!(decoder.num_output_channels(), 12);
+    assert_eq!(decoder.selected_mix(), (mix_id, layout));
+    decoder.decode(&data).unwrap();
+    let mut switched = Vec::new();
+    while decoder.is_temporal_unit_available() {
+        switched.extend(decoder.get_output_temporal_unit().unwrap().unwrap());
+    }
+    assert_eq!(switched, fresh(9), "7.1.4 after switch");
+
+    // And back to stereo on the same handle.
+    decoder
+        .reset_with_new_mix(MixSelection::Auto, Some(SoundSystem::A), &DefaultFactory)
+        .unwrap();
+    decoder.decode(&data).unwrap();
+    let mut back = Vec::new();
+    while decoder.is_temporal_unit_available() {
+        back.extend(decoder.get_output_temporal_unit().unwrap().unwrap());
+    }
+    assert_eq!(back, fresh(0), "stereo after switching back");
+}
+
+/// A quiet signal passes the limiter untouched (gain 1.0, delay
+/// compensated), so enabling it must not change this vector's output.
+#[test]
+fn limiter_passthrough_below_threshold() {
+    let data = require_vectors!(vector("test_000002"), format_args!("test_000002"));
+    let decode = |enable_limiter: bool| {
+        let settings = StreamSettings {
+            enable_limiter,
+            ..StreamSettings::default()
+        };
+        let mut decoder =
+            StreamDecoder::new_from_descriptors(&data, settings, &DefaultFactory).unwrap();
+        decoder.decode(&data).unwrap();
+        let mut out = Vec::new();
+        while decoder.is_temporal_unit_available() {
+            out.extend(decoder.get_output_temporal_unit().unwrap().unwrap());
+        }
+        out
+    };
+    assert_eq!(decode(false), decode(true));
+}
+
+/// Loudness normalization applies a constant gain of target - content;
+/// a target equal to the stream's integrated loudness is a no-op, and a
+/// -6 dB offset scales samples by 10^(-6/20).
+#[test]
+fn loudness_normalization_gain() {
+    let data = require_vectors!(vector("test_000002"), format_args!("test_000002"));
+    let descriptors = Descriptors::collect(&data).unwrap();
+    let content_db = f32::from(
+        descriptors.mix_presentations[0].sub_mixes[0].layouts[0]
+            .1
+            .integrated_loudness,
+    ) / 256.0;
+    let decode = |target: Option<f32>| {
+        let settings = StreamSettings {
+            loudness_target_db: target,
+            sample_type: Some(OutputSampleType::Int32LittleEndian),
+            ..StreamSettings::default()
+        };
+        let mut decoder =
+            StreamDecoder::new_from_descriptors(&data, settings, &DefaultFactory).unwrap();
+        decoder.decode(&data).unwrap();
+        let mut out = Vec::new();
+        while decoder.is_temporal_unit_available() {
+            out.extend(decoder.get_output_temporal_unit().unwrap().unwrap());
+        }
+        out.chunks_exact(4)
+            .map(|b| i32::from_le_bytes(b.try_into().unwrap()))
+            .collect::<Vec<i32>>()
+    };
+    assert_eq!(decode(None), decode(Some(content_db)), "no-op target");
+    let plain = decode(None);
+    let attenuated = decode(Some(content_db - 6.0));
+    let gain = 10f32.powf(-6.0 / 20.0);
+    for (&a, &p) in attenuated.iter().zip(&plain) {
+        let expected = (f64::from(p) * f64::from(gain)).round() as i64;
+        assert!(
+            (i64::from(a) - expected).abs() <= 1,
+            "sample {a} vs expected {expected}"
+        );
+    }
+}
+
+#[test]
+fn stream_reset_allows_redecode() {
+    let data = require_vectors!(vector("test_000002"), format_args!("test_000002"));
     let settings = StreamSettings::default();
     let mut decoder =
         StreamDecoder::new_from_descriptors(&data, settings, &DefaultFactory).unwrap();
@@ -142,9 +273,7 @@ fn stream_reset_allows_redecode() {
 /// rears before sides).
 #[test]
 fn android_channel_ordering() {
-    let Some(data) = vector("test_000070") else {
-        return;
-    };
+    let data = require_vectors!(vector("test_000070"), format_args!("test_000070"));
     let decode = |ordering| {
         let settings = StreamSettings {
             layout: SoundSystem::from_u8(9).unwrap(),

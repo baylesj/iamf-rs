@@ -4,6 +4,8 @@
 //! fetched vectors; the same variants are recreated here by patching
 //! `headphones_rendering_mode` to 1 in the mix presentation OBU.
 
+mod common;
+
 use std::path::PathBuf;
 
 use iamf_codecs::DefaultFactory;
@@ -12,9 +14,7 @@ use iamf_dec::presentation::{Descriptors, PresentationDecoder};
 use iamf_dec::stream::{StreamDecoder, StreamSettings};
 use iamf_obu::{ByteReader, Obu, ObuIter, ObuType};
 
-fn vectors_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/vectors")
-}
+use common::vectors_dir;
 
 fn data_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/data")
@@ -92,10 +92,10 @@ fn decode_binaural(data: &[u8]) -> Vec<i16> {
 }
 
 fn hrtf_case(vector: &str, reference: &str, tolerance: i32) {
-    let Ok(mut data) = std::fs::read(vectors_dir().join(format!("{vector}.iamf"))) else {
-        eprintln!("{vector}: vector missing; run tools/fetch_vectors.sh");
-        return;
-    };
+    let mut data = require_vectors!(
+        std::fs::read(vectors_dir().join(format!("{vector}.iamf"))).ok(),
+        format_args!("{vector}")
+    );
     set_binaural_mode(&mut data);
     let ours = decode_binaural(&data);
     let reference = read_wav_s16(&data_dir().join(reference));
@@ -125,9 +125,10 @@ fn hrtf_foa_matches_obr() {
 /// Streaming binaural must match the batch pipeline byte-for-byte.
 #[test]
 fn hrtf_stream_matches_batch() {
-    let Ok(mut data) = std::fs::read(vectors_dir().join("test_000070.iamf")) else {
-        return;
-    };
+    let mut data = require_vectors!(
+        std::fs::read(vectors_dir().join("test_000070.iamf")).ok(),
+        "test_000070"
+    );
     set_binaural_mode(&mut data);
     let batch: Vec<u8> = decode_binaural(&data)
         .iter()
