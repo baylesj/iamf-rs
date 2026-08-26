@@ -232,10 +232,8 @@ mod tests {
     fn decode(layout: SoundSystem) -> Vec<u8> {
         let stream = generate();
         let split = crate::descriptor_split(&stream).expect("valid demo stream");
-        let settings = StreamSettings {
-            layout,
-            ..StreamSettings::default()
-        };
+        let mut settings = StreamSettings::default();
+        settings.layout = layout;
         let mut dec =
             StreamDecoder::new_from_descriptors(&stream[..split], settings, &DefaultFactory)
                 .expect("demo descriptors accepted");

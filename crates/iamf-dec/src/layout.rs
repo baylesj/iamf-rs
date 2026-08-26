@@ -13,6 +13,7 @@ use crate::matrices::MatrixLayout;
 /// feature is off — render through the stereo gain matrices, matching
 /// libiamf built without its binauralizer libraries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SoundSystem {
     A,
     B,
@@ -29,6 +30,14 @@ pub enum SoundSystem {
     Mono,
     Ext916,
     Binaural,
+}
+
+impl TryFrom<u8> for SoundSystem {
+    type Error = ();
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        SoundSystem::from_u8(value).ok_or(())
+    }
 }
 
 impl SoundSystem {

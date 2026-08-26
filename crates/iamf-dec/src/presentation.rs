@@ -626,7 +626,7 @@ fn reconstruct_slot(
             }
             Ok((
                 SlotOutput::Planar(Reconstructed::Channels {
-                    matrix: rec.matrix,
+                    matrix: rec.matrix(),
                     planar,
                 }),
                 sample_rate,

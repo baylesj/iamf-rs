@@ -24,15 +24,14 @@ fuzz_target!(|data: &[u8]| {
     } else {
         iamf_dec::stream::ChannelOrdering::Android
     };
-    let settings = StreamSettings {
-        layout,
-        sample_type: None,
-        channel_ordering: ordering,
-        requested_profiles: iamf_dec::profile::ProfileSet::from_bits(u32::from(data[1] >> 1 & 7)),
-        enable_limiter: data[1] & 0x10 != 0,
-        loudness_target_db: (data[1] & 0x20 != 0).then_some(-24.0),
-        ..StreamSettings::default()
-    };
+    let mut settings = StreamSettings::default();
+    settings.layout = layout;
+    settings.sample_type = None;
+    settings.channel_ordering = ordering;
+    settings.requested_profiles =
+        iamf_dec::profile::ProfileSet::from_bits(u32::from(data[1] >> 1 & 7));
+    settings.enable_limiter = data[1] & 0x10 != 0;
+    settings.loudness_target_db = (data[1] & 0x20 != 0).then_some(-24.0);
     let payload = &data[2..];
     let Ok(mut decoder) = StreamDecoder::new_from_descriptors(payload, settings, &DefaultFactory)
     else {

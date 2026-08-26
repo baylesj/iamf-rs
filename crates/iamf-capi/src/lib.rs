@@ -34,6 +34,8 @@ fn status_of(err: &DecodeError) -> c_int {
         DecodeError::CorruptPacket(_) | DecodeError::InvalidDescriptors(_) => {
             IAMFRS_ERR_CORRUPT_DATA
         }
+        // DecodeError is non-exhaustive; map future variants conservatively.
+        _ => IAMFRS_ERR_INTERNAL,
     }
 }
 
@@ -122,20 +124,18 @@ pub unsafe extern "C" fn iamfrs_decoder_create_from_descriptors(
             Err(_) => return IAMFRS_ERR_INVALID_ARG,
         }
     };
-    let settings = StreamSettings {
-        layout,
-        sample_type,
-        mix_selection,
-        channel_ordering,
-        trimming: iamf_dec::stream::TrimmingSettings {
-            trim_beginning: c_settings.disable_trim_start == 0,
-            trim_end: c_settings.disable_trim_end == 0,
-        },
-        requested_profiles: iamf_dec::profile::ProfileSet::from_bits(c_settings.requested_profiles),
-        loudness_target_db: (c_settings.enable_loudness_normalization != 0)
-            .then_some(c_settings.loudness_target_db),
-        enable_limiter: c_settings.enable_limiter != 0,
-    };
+    let mut settings = StreamSettings::default();
+    settings.layout = layout;
+    settings.sample_type = sample_type;
+    settings.mix_selection = mix_selection;
+    settings.channel_ordering = channel_ordering;
+    settings.trimming.trim_beginning = c_settings.disable_trim_start == 0;
+    settings.trimming.trim_end = c_settings.disable_trim_end == 0;
+    settings.requested_profiles =
+        iamf_dec::profile::ProfileSet::from_bits(c_settings.requested_profiles);
+    settings.loudness_target_db =
+        (c_settings.enable_loudness_normalization != 0).then_some(c_settings.loudness_target_db);
+    settings.enable_limiter = c_settings.enable_limiter != 0;
     match StreamDecoder::new_from_descriptors(data, settings, &DefaultFactory) {
         Ok(inner) => {
             let handle = Box::new(IamfrsDecoder {
@@ -282,7 +282,8 @@ getter!(
 getter!(iamfrs_decoder_get_sample_type, u32, |d: &StreamDecoder| {
     match d.sample_type() {
         OutputSampleType::Int16LittleEndian => 1,
-        OutputSampleType::Int32LittleEndian => 2,
+        // Int32 today; future formats would need their own constant.
+        _ => 2,
     }
 });
 

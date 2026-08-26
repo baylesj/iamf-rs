@@ -3,6 +3,7 @@ use core::fmt;
 /// Parse errors. All variants are recoverable; the parser never panics on
 /// malformed input (enforced by the fuzz targets in `fuzz/`).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Error {
     /// Input ended before a complete syntax element was read.
     UnexpectedEof {

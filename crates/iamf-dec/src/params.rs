@@ -10,6 +10,7 @@ use iamf_obu::{ByteReader, Error};
 
 /// What kind of parameter a block's ID resolves to, plus the context needed
 /// to parse its payload.
+#[non_exhaustive]
 pub enum ParamContext<'a> {
     MixGain,
     Demixing,
@@ -20,6 +21,7 @@ pub enum ParamContext<'a> {
 
 /// §3.10.2 animated mix gain over one subblock. Values are Q7.8 dB.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MixGainAnimation {
     Step {
         start: i16,
@@ -92,6 +94,7 @@ impl MixGainAnimation {
 pub type ReconGainLayers = Vec<Option<(u32, Vec<u8>)>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SubblockData {
     MixGain(MixGainAnimation),
     Demixing { dmixp_mode: u8 },

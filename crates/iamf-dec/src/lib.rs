@@ -9,11 +9,11 @@
 
 #[cfg(feature = "binaural")]
 pub mod binaural;
-pub mod channels;
-pub mod demixer;
+pub(crate) mod channels;
+pub(crate) mod demixer;
 pub mod element;
 pub mod layout;
-pub mod matrices;
+pub(crate) mod matrices;
 pub mod params;
 pub mod post;
 pub mod presentation;
@@ -23,6 +23,8 @@ pub mod render;
 pub mod stream;
 
 use iamf_obu::descriptors::CodecConfig;
+
+pub use matrices::{HoaOrder, MatrixLayout};
 
 /// PCM output of one substream for one frame: interleaved f32 in [-1, 1].
 #[derive(Debug, Clone, Default)]
@@ -56,6 +58,7 @@ pub trait CodecFactory {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DecodeError {
     /// No registered factory supports the stream's codec config.
     UnsupportedCodec,

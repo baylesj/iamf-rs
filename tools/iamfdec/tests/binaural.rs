@@ -135,10 +135,8 @@ fn hrtf_stream_matches_batch() {
         .flat_map(|s| s.to_le_bytes())
         .collect();
 
-    let settings = StreamSettings {
-        layout: SoundSystem::Binaural,
-        ..StreamSettings::default()
-    };
+    let mut settings = StreamSettings::default();
+    settings.layout = SoundSystem::Binaural;
     let mut decoder =
         StreamDecoder::new_from_descriptors(&data, settings, &DefaultFactory).unwrap();
     let mut streamed = Vec::new();

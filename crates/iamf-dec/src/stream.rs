@@ -22,6 +22,7 @@ use crate::{CodecFactory, DecodeError, DecodedFrame, SubstreamDecoder};
 
 /// Output PCM encoding (iamf-tools `OutputSampleType`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum OutputSampleType {
     Int16LittleEndian,
     Int32LittleEndian,
@@ -38,6 +39,7 @@ impl OutputSampleType {
 
 /// Output channel ordering (iamf-tools `ChannelOrdering`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ChannelOrdering {
     /// IAMF rendering order, as the sound systems define it.
     #[default]
@@ -49,7 +51,9 @@ pub enum ChannelOrdering {
 
 /// Frame trimming control (iamf-tools `TrimmingSettings`): disable when an
 /// outer layer (e.g. an MP4 demuxer honoring edts/elst) trims instead.
+/// Non-exhaustive: construct via `Default` and set fields.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct TrimmingSettings {
     pub trim_beginning: bool,
     pub trim_end: bool,
@@ -64,7 +68,10 @@ impl Default for TrimmingSettings {
     }
 }
 
+/// Non-exhaustive so future knobs are not breaking: construct via
+/// [`StreamSettings::default`] and set the fields you need.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct StreamSettings {
     pub layout: SoundSystem,
     /// `None` selects s16le or s32le from the stream's bit depth.
@@ -91,6 +98,7 @@ pub struct StreamSettings {
 
 /// Mix presentation selection (iamf-tools `RequestedMix` shape).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MixSelection {
     /// Prefer a mix presentation that declares a layout matching the
     /// requested output layout; fall back to the first supported.
@@ -839,7 +847,7 @@ impl StreamDecoder {
                         )?
                     } else {
                         let reconstructed = crate::reconstruct::Reconstructed::Channels {
-                            matrix: rec.matrix,
+                            matrix: rec.matrix(),
                             planar,
                         };
                         render(&reconstructed, target_matrix)?
@@ -847,7 +855,7 @@ impl StreamDecoder {
                     #[cfg(not(feature = "binaural"))]
                     let rendered = {
                         let reconstructed = crate::reconstruct::Reconstructed::Channels {
-                            matrix: rec.matrix,
+                            matrix: rec.matrix(),
                             planar,
                         };
                         render(&reconstructed, target_matrix)?

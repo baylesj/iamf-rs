@@ -34,12 +34,10 @@ fn batch_decode(data: &[u8], sound_system: u8) -> Vec<u8> {
 /// Streaming decode with a rotating pattern of chunk sizes, pulling units
 /// as they become available.
 fn stream_decode(data: &[u8], sound_system: u8, chunks: &[usize]) -> Vec<u8> {
-    let settings = StreamSettings {
-        layout: SoundSystem::from_u8(sound_system).unwrap(),
-        sample_type: Some(OutputSampleType::Int16LittleEndian),
-        mix_selection: iamf_dec::stream::MixSelection::ByIndex(0),
-        ..StreamSettings::default()
-    };
+    let mut settings = StreamSettings::default();
+    settings.layout = SoundSystem::from_u8(sound_system).unwrap();
+    settings.sample_type = Some(OutputSampleType::Int16LittleEndian);
+    settings.mix_selection = MixSelection::ByIndex(0);
     let mut decoder = StreamDecoder::new_from_descriptors(data, settings, &DefaultFactory).unwrap();
     let mut out = Vec::new();
     let mut pos = 0usize;
@@ -138,10 +136,8 @@ fn invalid_vectors_rejected() {
 fn reset_with_new_mix_matches_fresh_decoder() {
     let data = require_vectors!(vector("test_000070"), format_args!("test_000070"));
     let fresh = |sound_system: u8| {
-        let settings = StreamSettings {
-            layout: SoundSystem::from_u8(sound_system).unwrap(),
-            ..StreamSettings::default()
-        };
+        let mut settings = StreamSettings::default();
+        settings.layout = SoundSystem::from_u8(sound_system).unwrap();
         let mut decoder =
             StreamDecoder::new_from_descriptors(&data, settings, &DefaultFactory).unwrap();
         decoder.decode(&data).unwrap();
@@ -191,10 +187,8 @@ fn reset_with_new_mix_matches_fresh_decoder() {
 fn limiter_passthrough_below_threshold() {
     let data = require_vectors!(vector("test_000002"), format_args!("test_000002"));
     let decode = |enable_limiter: bool| {
-        let settings = StreamSettings {
-            enable_limiter,
-            ..StreamSettings::default()
-        };
+        let mut settings = StreamSettings::default();
+        settings.enable_limiter = enable_limiter;
         let mut decoder =
             StreamDecoder::new_from_descriptors(&data, settings, &DefaultFactory).unwrap();
         decoder.decode(&data).unwrap();
@@ -220,11 +214,9 @@ fn loudness_normalization_gain() {
             .integrated_loudness,
     ) / 256.0;
     let decode = |target: Option<f32>| {
-        let settings = StreamSettings {
-            loudness_target_db: target,
-            sample_type: Some(OutputSampleType::Int32LittleEndian),
-            ..StreamSettings::default()
-        };
+        let mut settings = StreamSettings::default();
+        settings.loudness_target_db = target;
+        settings.sample_type = Some(OutputSampleType::Int32LittleEndian);
         let mut decoder =
             StreamDecoder::new_from_descriptors(&data, settings, &DefaultFactory).unwrap();
         decoder.decode(&data).unwrap();
@@ -275,12 +267,9 @@ fn stream_reset_allows_redecode() {
 fn android_channel_ordering() {
     let data = require_vectors!(vector("test_000070"), format_args!("test_000070"));
     let decode = |ordering| {
-        let settings = StreamSettings {
-            layout: SoundSystem::from_u8(9).unwrap(),
-            sample_type: Some(OutputSampleType::Int16LittleEndian),
-            channel_ordering: ordering,
-            ..StreamSettings::default()
-        };
+        let mut settings = StreamSettings::default();
+        settings.layout = SoundSystem::from_u8(9).unwrap();
+        settings.channel_ordering = ordering;
         let mut decoder =
             StreamDecoder::new_from_descriptors(&data, settings, &DefaultFactory).unwrap();
         decoder.decode(&data).unwrap();

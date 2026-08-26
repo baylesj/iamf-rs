@@ -1,7 +1,10 @@
 use crate::{ByteReader, Error, Result};
 
 /// OBU types per IAMF §3.2 (obu_type).
+///
+/// Non-exhaustive: post-v1.1 spec revisions add OBU types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ObuType {
     CodecConfig,
     AudioElement,

@@ -181,10 +181,8 @@ fn scalable_unit_frames(unit: usize) -> [Vec<i16>; 4] {
 }
 
 fn decode_all(data: &[u8], layout: SoundSystem) -> Result<Vec<u8>, DecodeError> {
-    let settings = StreamSettings {
-        layout,
-        ..StreamSettings::default()
-    };
+    let mut settings = StreamSettings::default();
+    settings.layout = layout;
     let mut decoder = StreamDecoder::new_from_descriptors(data, settings, &DefaultFactory)?;
     decoder.decode(data)?;
     let mut out = Vec::new();

@@ -72,12 +72,10 @@ fn predecode(
     layout: SoundSystem,
     mix: MixSelection,
 ) -> Result<Render, String> {
-    let settings = StreamSettings {
-        layout,
-        sample_type: None,
-        mix_selection: mix,
-        ..StreamSettings::default()
-    };
+    let mut settings = StreamSettings::default();
+    settings.layout = layout;
+    settings.sample_type = None;
+    settings.mix_selection = mix;
     let start = Instant::now();
     let mut decoder = StreamDecoder::new_from_descriptors(descriptors, settings, &DefaultFactory)
         .map_err(|e| format!("decoder init ({layout:?}): {e:?}"))?;

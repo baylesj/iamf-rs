@@ -20,6 +20,7 @@ use crate::matrices::{HoaOrder, MatrixLayout};
 use crate::params::ReconGainLayers;
 
 /// Planar element audio, one `Vec<f32>` per channel.
+#[non_exhaustive]
 pub enum Reconstructed {
     Channels {
         matrix: MatrixLayout,
@@ -55,7 +56,7 @@ pub struct ChannelReconstructor {
     layout: u8,
     /// Total decoded channels for layers 0..=layer, in decode order.
     input_channels: usize,
-    pub matrix: MatrixLayout,
+    matrix: MatrixLayout,
 }
 
 impl ChannelReconstructor {
@@ -171,6 +172,12 @@ impl ChannelReconstructor {
 
     pub fn input_channels(&self) -> usize {
         self.input_channels
+    }
+
+    /// Input-side key into the rendering matrix tables for the selected
+    /// layer.
+    pub fn matrix(&self) -> MatrixLayout {
+        self.matrix
     }
 
     /// Loudspeaker layout of the selected layer.
