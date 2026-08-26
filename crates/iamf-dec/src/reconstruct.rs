@@ -17,7 +17,7 @@ use crate::demixer::Demixer;
 use crate::element::SubstreamPcm;
 use crate::layout::{SoundSystem, loudspeaker_info, loudspeaker_sound_system};
 use crate::matrices::{HoaOrder, MatrixLayout};
-use crate::params::ReconGainLayers;
+use crate::params::{ReconGainLayers, q78_db_to_linear};
 
 /// Planar element audio, one `Vec<f32>` per channel.
 #[non_exhaustive]
@@ -40,11 +40,6 @@ impl Reconstructed {
     }
 }
 
-/// Q7.8 dB → linear.
-fn q78_db_to_linear(q: i16) -> f32 {
-    10f32.powf(f32::from(q) / 256.0 / 20.0)
-}
-
 /// Frame-based reconstruction of a channel-based element up to the layer
 /// selected for the playback layout (libiamf `iamf_stream_set_output_layout`
 /// + `iamf_stream_scale_demixer_configure`).
@@ -60,12 +55,8 @@ pub struct ChannelReconstructor {
 }
 
 impl ChannelReconstructor {
-    pub fn new(
-        layers: &[ChannelAudioLayer],
-        target: SoundSystem,
-        frame_size: usize,
-    ) -> Result<Self, DecodeError> {
-        Self::with_layer_selection(layers, target, frame_size, false)
+    pub fn new(layers: &[ChannelAudioLayer], target: SoundSystem) -> Result<Self, DecodeError> {
+        Self::with_layer_selection(layers, target, false)
     }
 
     /// `force_highest` selects the top layer regardless of the target —
@@ -74,7 +65,6 @@ impl ChannelReconstructor {
     pub fn with_layer_selection(
         layers: &[ChannelAudioLayer],
         target: SoundSystem,
-        frame_size: usize,
         force_highest: bool,
     ) -> Result<Self, DecodeError> {
         if layers.is_empty() {
@@ -98,26 +88,22 @@ impl ChannelReconstructor {
             target
         };
         let mut selected = layers.len() - 1;
-        let mut matched = force_highest;
-        for (i, layer) in layers.iter().enumerate() {
-            if matched {
-                break;
-            }
-            if loudspeaker_sound_system(layer.loudspeaker_layout) == Some(selection_target) {
+        if !force_highest {
+            let exact = layers.iter().position(|l| {
+                loudspeaker_sound_system(l.loudspeaker_layout) == Some(selection_target)
+            });
+            if let Some(i) = exact {
                 selected = i;
-                matched = true;
-                break;
-            }
-        }
-        if !matched && layers.len() > 1 {
-            let playback_channels = target.channels();
-            for (i, layer) in layers.iter().enumerate() {
-                let channels = rendering_channels(layer.loudspeaker_layout)
-                    .map(<[Channel]>::len)
-                    .unwrap_or(0);
-                if channels > playback_channels {
+            } else if layers.len() > 1 {
+                let playback_channels = target.channels();
+                let bigger = layers.iter().position(|l| {
+                    rendering_channels(l.loudspeaker_layout)
+                        .map(<[Channel]>::len)
+                        .unwrap_or(0)
+                        > playback_channels
+                });
+                if let Some(i) = bigger {
                     selected = i;
-                    break;
                 }
             }
         }
@@ -150,7 +136,7 @@ impl ChannelReconstructor {
             .ok_or(DecodeError::InvalidDescriptors("bad layout".into()))?
             .matrix;
         let input_channels = channels_in.len();
-        let mut demixer = Demixer::new(frame_size, channels_in, channels_out, output_gains);
+        let mut demixer = Demixer::new(channels_in, channels_out, output_gains);
 
         // Default recon gains: 1.0 for the channels reconstructed between
         // the first layer and the selected layer.
@@ -228,6 +214,12 @@ pub fn deinterleave(samples: &[f32], channels: usize) -> Vec<Vec<f32>> {
     (0..channels)
         .map(|c| samples.iter().skip(c).step_by(channels).copied().collect())
         .collect()
+}
+
+/// ACN channel count → ambisonics order (√n − 1), saturating on empty
+/// input so hostile plane lists cannot underflow.
+pub(crate) fn hoa_order_index(channels: usize) -> usize {
+    channels.isqrt().saturating_sub(1)
 }
 
 pub fn hoa_order(channels: u8) -> Result<HoaOrder, DecodeError> {
@@ -388,7 +380,7 @@ mod tests {
     #[test]
     fn single_layer_stereo_passthrough() {
         let layers = [layer(1, 1, 1)];
-        let mut rec = ChannelReconstructor::new(&layers, SoundSystem::A, 2).unwrap();
+        let mut rec = ChannelReconstructor::new(&layers, SoundSystem::A).unwrap();
         assert_eq!(rec.input_channels(), 2);
         let out = rec
             .process_frame(&[vec![1.0, 2.0], vec![-1.0, -2.0]])
@@ -401,7 +393,7 @@ mod tests {
     fn single_layer_51_reorders_to_rendering() {
         // Decode order: L/R, Ls/Rs, C, LFE -> rendering L,R,C,LFE,Ls,Rs.
         let layers = [layer(2, 4, 2)];
-        let mut rec = ChannelReconstructor::new(&layers, SoundSystem::B, 1).unwrap();
+        let mut rec = ChannelReconstructor::new(&layers, SoundSystem::B).unwrap();
         let planes: Vec<Vec<f32>> = [1.0, 2.0, 5.0, 6.0, 3.0, 4.0]
             .iter()
             .map(|&v| vec![v])
@@ -415,7 +407,7 @@ mod tests {
     fn scalable_selects_matching_layer() {
         // Stereo + 5.1 rendered to stereo: only the stereo layer is used.
         let layers = [layer(1, 1, 1), layer(2, 3, 1)];
-        let mut rec = ChannelReconstructor::new(&layers, SoundSystem::A, 1).unwrap();
+        let mut rec = ChannelReconstructor::new(&layers, SoundSystem::A).unwrap();
         assert_eq!(rec.input_channels(), 2);
         assert_eq!(rec.matrix, MatrixLayout::Stereo);
         let out = rec.process_frame(&[vec![0.5], vec![0.25]]).unwrap();
@@ -427,7 +419,7 @@ mod tests {
     fn scalable_demixes_higher_layer() {
         // Stereo + 5.1 rendered to 5.1: Ls/Rs are demixed.
         let layers = [layer(1, 1, 1), layer(2, 3, 1)];
-        let mut rec = ChannelReconstructor::new(&layers, SoundSystem::B, 1).unwrap();
+        let mut rec = ChannelReconstructor::new(&layers, SoundSystem::B).unwrap();
         assert_eq!(rec.input_channels(), 6);
         // channels_in: L2, R2, L5, R5, C, LFE.
         let ls = 0.4f32;

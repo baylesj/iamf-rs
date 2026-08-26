@@ -5,11 +5,9 @@
 //! always decoded at 48 kHz regardless of the encoder's input rate.
 
 use iamf_dec::{CodecFactory, DecodeError, DecodedFrame, SubstreamDecoder};
-use iamf_obu::descriptors::{CodecConfig, CodecId, DecoderConfig};
+use iamf_obu::descriptors::CodecConfig;
 
-const SAMPLE_RATE: u32 = 48_000;
-/// Largest possible Opus frame: 120 ms at 48 kHz.
-const MAX_FRAME_SAMPLES: usize = 5760;
+use crate::opus_common::{MAX_FRAME_SAMPLES, SAMPLE_RATE};
 
 pub struct OpusSubstreamDecoder {
     decoder: opus_decoder::OpusDecoder,
@@ -19,6 +17,7 @@ pub struct OpusSubstreamDecoder {
 
 impl OpusSubstreamDecoder {
     pub fn new(channels: u8) -> Result<Self, DecodeError> {
+        crate::opus_common::validate_channels(channels)?;
         let decoder = opus_decoder::OpusDecoder::new(SAMPLE_RATE, channels.into())
             .map_err(|e| DecodeError::CorruptPacket(format!("opus init: {e:?}")))?;
         Ok(Self {
@@ -35,11 +34,7 @@ impl SubstreamDecoder for OpusSubstreamDecoder {
             .decoder
             .decode_float(packet, &mut self.buffer, false)
             .map_err(|e| DecodeError::CorruptPacket(format!("opus: {e:?}")))?;
-        let len = samples_per_channel * usize::from(self.channels);
-        out.samples.clear();
-        out.samples.extend_from_slice(&self.buffer[..len]);
-        out.channels = self.channels;
-        out.sample_rate = SAMPLE_RATE;
+        crate::opus_common::emit(&self.buffer, samples_per_channel, self.channels, out);
         Ok(())
     }
 
@@ -56,8 +51,7 @@ pub struct OpusFactory;
 
 impl CodecFactory for OpusFactory {
     fn supports(&self, config: &CodecConfig) -> bool {
-        config.codec_id == CodecId::Opus
-            && matches!(&config.decoder_config, DecoderConfig::Opus { version, .. } if *version <= 15)
+        crate::opus_common::supports(config)
     }
 
     fn create(
@@ -65,7 +59,7 @@ impl CodecFactory for OpusFactory {
         config: &CodecConfig,
         channels: u8,
     ) -> Result<Box<dyn SubstreamDecoder>, DecodeError> {
-        if !self.supports(config) || !(1..=2).contains(&channels) {
+        if !self.supports(config) {
             return Err(DecodeError::UnsupportedCodec);
         }
         Ok(Box::new(OpusSubstreamDecoder::new(channels)?))

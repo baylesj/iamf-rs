@@ -7,16 +7,17 @@
 //! mix gains are applied per sample, including step/linear/bezier
 //! animations.
 
-use std::collections::HashMap;
-
 use iamf_obu::descriptors::{
-    self, AudioElement, CodecConfig, Descriptor, ElementParam, MixPresentation, ParamDefinition,
+    self, AudioElement, CodecConfig, Descriptor, ElementParam, MixPresentation,
 };
 use iamf_obu::{AudioFrame, Obu, ObuIter, ObuType};
 
 use crate::element::ElementDecoder;
 use crate::layout::SoundSystem;
-use crate::params::{ParamContext, ParameterBlock, SubblockData};
+use crate::params::{
+    ParamContext, ParamIndex, ParamKind, ParameterBlock, SubblockData, build_param_index,
+    q78_db_to_linear,
+};
 use crate::reconstruct::{
     ChannelReconstructor, Reconstructed, deinterleave, reconstruct_ambisonics,
 };
@@ -85,11 +86,6 @@ impl Descriptors {
     }
 }
 
-/// Q7.8 dB → linear gain.
-fn q78_db_to_linear(q: i16) -> f32 {
-    10f32.powf(f32::from(q) / 256.0 / 20.0)
-}
-
 /// Final rendered output of one sub mix.
 pub struct RenderedMix {
     pub channels: usize,
@@ -116,16 +112,6 @@ struct ElementSlot {
     recon_blocks: Vec<(ParameterBlock, u32)>,
 }
 
-#[derive(Clone, Copy)]
-enum ParamKind {
-    Demixing,
-    ReconGain,
-    /// Mix gain of the slot's element.
-    ElementMixGain,
-    /// Output mix gain of the sub mix (slot index unused).
-    OutputMixGain,
-}
-
 /// Decodes and renders the first sub mix of one mix presentation to a
 /// target sound system.
 pub struct PresentationDecoder {
@@ -134,9 +120,8 @@ pub struct PresentationDecoder {
     output_gain_rate: u32,
     output_gain_blocks: Vec<ParameterBlock>,
     target: SoundSystem,
-    /// parameter_id → every consumer of that id (IAMF requires unique ids;
-    /// a multimap keeps duplicate-id streams from dropping consumers).
-    param_index: HashMap<u32, Vec<(usize, ParamKind, ParamDefinition)>>,
+    /// See [`ParamIndex`].
+    param_index: ParamIndex,
 }
 
 impl PresentationDecoder {
@@ -160,8 +145,6 @@ impl PresentationDecoder {
         };
 
         let mut slots = Vec::new();
-        let mut param_index: HashMap<u32, Vec<(usize, ParamKind, ParamDefinition)>> =
-            HashMap::new();
         for sub_element in &sub_mix.elements {
             let element = descriptors
                 .element(sub_element.audio_element_id)
@@ -180,34 +163,6 @@ impl PresentationDecoder {
                     ))
                 })?;
             let decoder = ElementDecoder::new(element, codec_config, factory)?;
-            let slot_index = slots.len();
-            for param in &element.params {
-                match param {
-                    ElementParam::Demixing { base, .. } => {
-                        param_index.entry(base.parameter_id).or_default().push((
-                            slot_index,
-                            ParamKind::Demixing,
-                            base.clone(),
-                        ));
-                    }
-                    ElementParam::ReconGain(base) => {
-                        param_index.entry(base.parameter_id).or_default().push((
-                            slot_index,
-                            ParamKind::ReconGain,
-                            base.clone(),
-                        ));
-                    }
-                    ElementParam::Unknown { .. } => {}
-                }
-            }
-            param_index
-                .entry(sub_element.element_mix_gain.base.parameter_id)
-                .or_default()
-                .push((
-                    slot_index,
-                    ParamKind::ElementMixGain,
-                    sub_element.element_mix_gain.base.clone(),
-                ));
             slots.push(ElementSlot {
                 element: element.clone(),
                 decoder,
@@ -219,14 +174,7 @@ impl PresentationDecoder {
                 recon_blocks: Vec::new(),
             });
         }
-        param_index
-            .entry(sub_mix.output_mix_gain.base.parameter_id)
-            .or_default()
-            .push((
-                0,
-                ParamKind::OutputMixGain,
-                sub_mix.output_mix_gain.base.clone(),
-            ));
+        let param_index = build_param_index(sub_mix, &descriptors.audio_elements)?;
         Ok(PresentationDecoder {
             slots,
             output_gain: q78_db_to_linear(sub_mix.output_mix_gain.default_mix_gain),
@@ -307,7 +255,7 @@ impl PresentationDecoder {
         let target_matrix = target.matrix_layout();
         let mut mixed: Vec<Vec<f32>> = Vec::new();
         let mut sample_rate = 0;
-        let mut first_trim_map: Option<Vec<(usize, usize, usize)>> = None;
+        let mut first_trim_map: Option<TrimMap> = None;
 
         for slot in self.slots {
             let gain = slot.gain;
@@ -384,16 +332,16 @@ impl PresentationDecoder {
 }
 
 /// Evaluates an animated mix-gain timeline over the untrimmed sample
-/// timeline described by `trim_map` (per temporal unit: untrimmed length,
-/// start trim, end trim), returning gains aligned with the trimmed output.
+/// timeline described by `trim_map`, returning gains aligned with the
+/// trimmed output.
 fn evaluate_gain_track(
     blocks: &[ParameterBlock],
     default_gain: f32,
     parameter_rate: u32,
     sample_rate: u32,
-    trim_map: &[(usize, usize, usize)],
+    trim_map: &[UnitTrim],
 ) -> Vec<f32> {
-    let total: usize = trim_map.iter().map(|&(len, _, _)| len).sum();
+    let total: usize = trim_map.iter().map(|t| t.len).sum();
     // libiamf scales parameter durations by (rate + 0.1) / parameter_rate.
     let ratio = (f64::from(sample_rate) + 0.1) / f64::from(parameter_rate.max(1));
     let mut gains = vec![default_gain; total];
@@ -415,17 +363,24 @@ fn evaluate_gain_track(
     }
     let mut track = Vec::with_capacity(total);
     let mut off = 0usize;
-    for &(len, start, end) in trim_map {
-        track.extend_from_slice(&gains[off + start..off + len - end]);
-        off += len;
+    for t in trim_map {
+        track.extend_from_slice(&gains[off + t.start..off + t.len - t.end]);
+        off += t.len;
     }
     track
 }
 
-/// Reconstructs one element: frame-based demixing for channel-based,
-/// whole-buffer conversion for ambisonics. Returns the planar audio and
-/// its sample rate.
-type TrimMap = Vec<(usize, usize, usize)>;
+/// Per-temporal-unit trim: the unit's untrimmed length and the leading /
+/// trailing sample counts cut from it.
+#[derive(Clone, Copy)]
+struct UnitTrim {
+    len: usize,
+    start: usize,
+    end: usize,
+}
+
+/// One [`UnitTrim`] per temporal unit of an element, in decode order.
+type TrimMap = Vec<UnitTrim>;
 
 /// Reconstructed element audio: planar (to be matrix-rendered) or already
 /// binauralized stereo.
@@ -473,11 +428,11 @@ fn apply_trim_map(planes: Vec<Vec<f32>>, trim_map: &TrimMap) -> Vec<Vec<f32>> {
         .map(|plane| {
             let mut out = Vec::with_capacity(plane.len());
             let mut off = 0usize;
-            for &(len, start, end) in trim_map {
-                let upper = (off + len - end).min(plane.len());
-                let lower = (off + start).min(upper);
+            for t in trim_map {
+                let upper = (off + t.len - t.end).min(plane.len());
+                let lower = (off + t.start).min(upper);
                 out.extend_from_slice(&plane[lower..upper]);
-                off += len;
+                off += t.len;
             }
             out
         })
@@ -489,13 +444,19 @@ fn trim_map_of(frames: &[crate::element::FramePcm], channels: usize) -> TrimMap 
         .iter()
         .map(|f| {
             let count = f.samples.len() / channels.max(1);
-            let start = (f.trim_start as usize).min(count);
-            let end = (f.trim_end as usize).min(count - start);
-            (count, start, end)
+            let kept = f.kept_range(channels);
+            UnitTrim {
+                len: count,
+                start: kept.start,
+                end: count - kept.end,
+            }
         })
         .collect()
 }
 
+/// Reconstructs one element: frame-based demixing for channel-based,
+/// whole-buffer conversion for ambisonics. Returns the rendered-or-planar
+/// audio, its sample rate, and the per-unit trim map.
 fn reconstruct_slot(
     slot: ElementSlot,
     target: SoundSystem,
@@ -556,8 +517,7 @@ fn reconstruct_slot(
                 .map(|f| f.samples.len() / usize::from(substreams[0].channels.max(1)))
                 .unwrap_or(0);
 
-            let mut rec =
-                ChannelReconstructor::with_layer_selection(layers, target, frame_size, hrtf)?;
+            let mut rec = ChannelReconstructor::with_layer_selection(layers, target, hrtf)?;
             for param in &element.params {
                 if let ElementParam::Demixing {
                     default_demixing_mode,
@@ -592,19 +552,19 @@ fn reconstruct_slot(
                 // For the HRTF path the untrimmed timeline is kept and
                 // trimmed after convolution; otherwise trim per unit
                 // (frame-level trims are identical across substreams).
-                let trim = &substreams[0].frames[k];
                 let count = out.first().map(Vec::len).unwrap_or(0);
-                let (start, end) = if hrtf {
-                    (0, 0)
+                let kept = if hrtf {
+                    0..count
                 } else {
-                    let start = (trim.trim_start as usize).min(count);
-                    (start, (trim.trim_end as usize).min(count - start))
+                    let r = substreams[0].frames[k]
+                        .kept_range(usize::from(substreams[0].channels.max(1)));
+                    r.start.min(count)..r.end.min(count)
                 };
                 if planar.is_empty() {
                     planar = vec![Vec::new(); out.len()];
                 }
                 for (acc, plane) in planar.iter_mut().zip(&out) {
-                    acc.extend_from_slice(&plane[start..count - end]);
+                    acc.extend_from_slice(&plane[kept.clone()]);
                 }
             }
             let trim_map = substreams
@@ -659,8 +619,8 @@ fn reconstruct_slot(
                 }
                 let reconstructed = reconstruct_ambisonics(&element, &untrimmed)?;
                 let planes = reconstructed.planar();
-                let order = (planes.len() as f32).sqrt() as usize - 1;
-                let frame_size = trim_map.first().map(|&(len, _, _)| len).unwrap_or(0);
+                let order = crate::reconstruct::hoa_order_index(planes.len());
+                let frame_size = trim_map.first().map(|t| t.len).unwrap_or(0);
                 let stereo = binauralize(
                     planes,
                     crate::binaural::BinauralInput::Hoa { order },

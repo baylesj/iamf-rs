@@ -24,7 +24,7 @@ TOKEN_MAP = {
     "BS2051_G": "Bs2051G", "BS2051_H": "Bs2051H", "BS2051_I": "Bs2051I",
     "BS2051_J": "Bs2051J",
     "IAMF_ZOA": "Zoa", "IAMF_FOA": "Foa", "IAMF_SOA": "Soa", "IAMF_TOA": "Toa",
-    "IAMF_H4A": "H4a", "BS2051_M": "Bs2051M",
+    "IAMF_H4A": "H4a",
 }
 
 def strip_comments(text):
@@ -103,7 +103,7 @@ pub enum MatrixLayout {
     Mono, Stereo, Iamf312, Iamf51, Iamf512, Iamf514, Iamf71, Iamf712,
     Iamf714, Iamf916, Binaural,
     Bs2051A, Bs2051B, Bs2051C, Bs2051D, Bs2051E, Bs2051F, Bs2051G,
-    Bs2051H, Bs2051I, Bs2051J, Bs2051M,
+    Bs2051H, Bs2051I, Bs2051J,
 }
 
 /// Ambisonics order of a scene-based input.

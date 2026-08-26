@@ -40,6 +40,17 @@ pub struct FramePcm {
     pub trim_end: u32,
 }
 
+impl FramePcm {
+    /// Frame-index range kept after start/end trimming, with both trims
+    /// clamped to the frame length (§3.9).
+    pub fn kept_range(&self, channels: usize) -> std::ops::Range<usize> {
+        let count = self.samples.len() / channels.max(1);
+        let start = (self.trim_start as usize).min(count);
+        let end = (self.trim_end as usize).min(count - start);
+        start..count - end
+    }
+}
+
 /// Decoded PCM of one substream.
 #[derive(Debug, Clone, Default)]
 pub struct SubstreamPcm {
@@ -65,10 +76,8 @@ impl SubstreamFrames {
         let channels = usize::from(self.channels.max(1));
         let mut samples = Vec::new();
         for frame in &self.frames {
-            let count = frame.samples.len() / channels;
-            let start = (frame.trim_start as usize).min(count);
-            let end = (frame.trim_end as usize).min(count - start);
-            samples.extend_from_slice(&frame.samples[start * channels..(count - end) * channels]);
+            let kept = frame.kept_range(channels);
+            samples.extend_from_slice(&frame.samples[kept.start * channels..kept.end * channels]);
         }
         SubstreamPcm {
             substream_id: self.substream_id,
@@ -127,12 +136,6 @@ impl ElementDecoder {
             outputs,
             scratch: DecodedFrame::default(),
         })
-    }
-
-    /// Whether this frame belongs to the element's first substream (used to
-    /// snapshot per-temporal-unit parameters).
-    pub fn is_first_substream(&self, frame: &AudioFrame<'_>) -> bool {
-        self.substream_ids.first() == Some(&frame.substream_id)
     }
 
     /// Decodes one audio frame if it belongs to this element. Returns

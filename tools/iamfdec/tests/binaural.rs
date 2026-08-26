@@ -87,7 +87,7 @@ fn decode_binaural(data: &[u8]) -> Vec<i16> {
     let mix = decoder.finish().unwrap();
     mix.interleaved
         .iter()
-        .map(|&s| (s * 32768.0).clamp(-32768.0, 32767.0).round_ties_even() as i16)
+        .map(|&s| iamf_dec::post::quantize_s16(s))
         .collect()
 }
 

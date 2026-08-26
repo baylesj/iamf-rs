@@ -11,6 +11,21 @@ pub const LIMITER_ATTACK_SEC: f32 = 0.001;
 pub const LIMITER_RELEASE_SEC: f32 = 0.200;
 pub const LIMITER_LOOKAHEAD: usize = 240;
 
+/// f32 sample → s16, matching libiamf's `FLOAT2INT16` (round half to
+/// even after clamping).
+pub fn quantize_s16(sample: f32) -> i16 {
+    (sample * 32768.0)
+        .clamp(-32768.0, 32767.0)
+        .round_ties_even() as i16
+}
+
+/// f32 sample → s32 (f64 intermediate so the scale factor is exact).
+pub fn quantize_s32(sample: f32) -> i32 {
+    (f64::from(sample) * 2_147_483_648.0)
+        .clamp(-2_147_483_648.0, 2_147_483_647.0)
+        .round_ties_even() as i32
+}
+
 /// Loudness normalization: constant gain of `target_db - content_db`
 /// (iamf_loudness_process). `content_db` is the mix presentation's
 /// integrated loudness for the rendered layout, Q7.8 → dB.

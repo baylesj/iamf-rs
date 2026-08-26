@@ -29,7 +29,6 @@ const WIDX2W: [f32; 11] = [
 ];
 
 pub struct Demixer {
-    frame_size: usize,
     /// Transmitted channels in substream decode order.
     channels_in: Vec<Channel>,
     /// Target layer channels in rendering order.
@@ -73,13 +72,11 @@ impl<'a> ChannelData<'a> {
 
 impl Demixer {
     pub fn new(
-        frame_size: usize,
         channels_in: Vec<Channel>,
         channels_out: Vec<Channel>,
         output_gains: Vec<(Channel, f32)>,
     ) -> Self {
         Demixer {
-            frame_size,
             channels_in,
             channels_out,
             output_gains,
@@ -184,7 +181,7 @@ impl Demixer {
             return Ok(());
         }
         match ch {
-            Channel::R2 => self.dmx_s2(data),
+            Channel::R2 => Self::dmx_s2(data),
             Channel::L3 | Channel::R3 => self.dmx_s3(data),
             Channel::Sl5 | Channel::Sr5 => self.dmx_s5(data),
             Channel::Bl7 | Channel::Br7 => self.dmx_s7(data),
@@ -203,7 +200,7 @@ impl Demixer {
     }
 
     /// R2 = 2 x Mono - L2
-    fn dmx_s2(&self, data: &mut ChannelData) -> Result<(), DecodeError> {
+    fn dmx_s2(data: &mut ChannelData) -> Result<(), DecodeError> {
         if data.has(Channel::R2) {
             return Ok(());
         }
@@ -221,7 +218,7 @@ impl Demixer {
         if data.has(Channel::R3) {
             return Ok(());
         }
-        self.dmx_s2(data).or_else(|_| {
+        Self::dmx_s2(data).or_else(|_| {
             // L2/R2 may be transmitted directly without a mono layer.
             if data.has(Channel::R2) {
                 Ok(())
@@ -367,7 +364,6 @@ impl Demixer {
             }
             self.last_sfavg[ch.index()] = sfavg;
         }
-        let _ = self.frame_size;
     }
 }
 
@@ -380,7 +376,6 @@ mod tests {
     #[test]
     fn stereo_plus_51_demix() {
         let mut dmx = Demixer::new(
-            2,
             vec![L2, R2, L5, R5, C, Lfe],
             vec![L5, R5, C, Lfe, Sl5, Sr5],
             vec![],
@@ -411,7 +406,7 @@ mod tests {
     /// Recon gain scales reconstructed channels with EMA smoothing.
     #[test]
     fn recon_gain_smoothing() {
-        let mut dmx = Demixer::new(1, vec![Mono, L2], vec![L2, R2], vec![]);
+        let mut dmx = Demixer::new(vec![Mono, L2], vec![L2, R2], vec![]);
         dmx.set_recon_gains(0b101, vec![(R2, 0.5)]);
         let out = dmx.demix(&[vec![1.0], vec![0.6]]).unwrap();
         // R2 raw = 2*1.0 - 0.6 = 1.4; first-frame sfavg =
@@ -422,7 +417,7 @@ mod tests {
     /// Output gain is applied to transmitted channels before demixing.
     #[test]
     fn output_gain_up() {
-        let mut dmx = Demixer::new(1, vec![Mono, L2], vec![L2, R2], vec![(L2, 2.0)]);
+        let mut dmx = Demixer::new(vec![Mono, L2], vec![L2, R2], vec![(L2, 2.0)]);
         let out = dmx.demix(&[vec![1.0], vec![0.5]]).unwrap();
         assert_eq!(out[0][0], 1.0); // L2 scaled: 0.5*2.0
         assert_eq!(out[1][0], 2.0 * 1.0 - 1.0); // R2 from scaled L2

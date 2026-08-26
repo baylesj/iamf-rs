@@ -44,6 +44,9 @@ impl CodecFactory for AacFactory {
         config: &CodecConfig,
         channels: u8,
     ) -> Result<Box<dyn SubstreamDecoder>, DecodeError> {
+        if !(1..=2).contains(&channels) {
+            return Err(DecodeError::UnsupportedCodec);
+        }
         let DecoderConfig::AacLc {
             audio_specific_config,
         } = &config.decoder_config

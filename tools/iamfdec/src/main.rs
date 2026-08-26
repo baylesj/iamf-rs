@@ -221,11 +221,8 @@ fn write_wav_s16(
     wav.extend(16u16.to_le_bytes()); // bits per sample
     wav.extend(b"data");
     wav.extend(data_len.to_le_bytes());
-    // Matches libiamf's FLOAT2INT16: scale by 32768, clamp, round to
-    // nearest with ties-to-even (lrintf).
     for &sample in samples {
-        let scaled = (sample * 32768.0).clamp(-32768.0, 32767.0);
-        wav.extend((scaled.round_ties_even() as i16).to_le_bytes());
+        wav.extend(iamf_dec::post::quantize_s16(sample).to_le_bytes());
     }
     std::fs::write(path, wav)
 }

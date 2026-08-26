@@ -22,6 +22,9 @@ impl CodecFactory for FlacFactory {
         config: &CodecConfig,
         channels: u8,
     ) -> Result<Box<dyn SubstreamDecoder>, DecodeError> {
+        if !(1..=2).contains(&channels) {
+            return Err(DecodeError::UnsupportedCodec);
+        }
         let DecoderConfig::Flac {
             sample_rate,
             streaminfo,

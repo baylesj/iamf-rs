@@ -349,6 +349,13 @@ pub fn default_recon_flags(first_layout: u8, target_layout: u8) -> u32 {
 mod tests {
     use super::*;
 
+    /// `CHANNEL_COUNT` sizes fixed per-channel arrays indexed by
+    /// `Channel::index()`; it must track the variant count.
+    #[test]
+    fn channel_count_matches_last_variant() {
+        assert_eq!(Channel::Lfe.index() + 1, CHANNEL_COUNT);
+    }
+
     #[test]
     fn stereo_to_51_new_channels() {
         assert_eq!(new_channels(Some(1), 2), vec![L5, R5, C, Lfe]);

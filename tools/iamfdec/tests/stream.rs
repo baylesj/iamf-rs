@@ -25,8 +25,7 @@ fn batch_decode(data: &[u8], sound_system: u8) -> Vec<u8> {
     let mix = decoder.finish().unwrap();
     let mut bytes = Vec::with_capacity(mix.interleaved.len() * 2);
     for &sample in &mix.interleaved {
-        let scaled = (sample * 32768.0).clamp(-32768.0, 32767.0);
-        bytes.extend((scaled.round_ties_even() as i16).to_le_bytes());
+        bytes.extend(iamf_dec::post::quantize_s16(sample).to_le_bytes());
     }
     bytes
 }

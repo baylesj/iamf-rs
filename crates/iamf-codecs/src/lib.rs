@@ -10,6 +10,8 @@ pub mod aac;
 pub mod flac;
 #[cfg(feature = "opus")]
 pub mod opus;
+#[cfg(any(feature = "opus", feature = "opus-ffi"))]
+mod opus_common;
 #[cfg(feature = "opus-ffi")]
 pub mod opus_ffi;
 #[cfg(feature = "pcm")]

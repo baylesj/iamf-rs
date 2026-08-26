@@ -42,10 +42,7 @@ fn read_wav_s16(path: &std::path::Path) -> Option<(u16, Vec<i16>)> {
     None
 }
 
-/// Matches libiamf's FLOAT2INT16.
-fn quantize(x: f32) -> i16 {
-    (x * 32768.0).clamp(-32768.0, 32767.0).round_ties_even() as i16
-}
+use iamf_dec::post::quantize_s16 as quantize;
 
 fn render_case(vector: &str, layout_index: usize, sound_system: u8, tolerance: i32) {
     let dir = vectors_dir();

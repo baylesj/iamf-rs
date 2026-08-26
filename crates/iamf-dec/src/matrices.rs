@@ -33,7 +33,6 @@ pub enum MatrixLayout {
     Bs2051H,
     Bs2051I,
     Bs2051J,
-    Bs2051M,
 }
 
 /// Ambisonics order of a scene-based input.

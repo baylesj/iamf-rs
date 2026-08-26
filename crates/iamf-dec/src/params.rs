@@ -5,8 +5,87 @@
 //! declared the parameter ID, which is why this lives in `iamf-dec` rather
 //! than `iamf-obu`.
 
-use iamf_obu::descriptors::{ChannelAudioLayer, ParamDefinition};
+use std::collections::HashMap;
+
+use iamf_obu::descriptors::{
+    AudioElement, ChannelAudioLayer, ElementParam, ParamDefinition, SubMix,
+};
 use iamf_obu::{ByteReader, Error};
+
+use crate::DecodeError;
+
+/// Which kind of parameter a definition declares (shared by the batch and
+/// streaming drivers).
+#[derive(Clone, Copy)]
+pub(crate) enum ParamKind {
+    Demixing,
+    ReconGain,
+    ElementMixGain,
+    OutputMixGain,
+}
+
+/// parameter_id → every consumer of that id. IAMF requires unique
+/// parameter ids, but a multimap keeps duplicate-id streams from silently
+/// dropping one consumer's updates.
+pub(crate) type ParamIndex = HashMap<u32, Vec<(usize, ParamKind, ParamDefinition)>>;
+
+/// Builds the parameter index for one sub mix: demixing/recon-gain
+/// definitions of each element, per-element mix gains, and the output mix
+/// gain (registered under slot 0). Slot indices follow `sub_mix.elements`
+/// order.
+pub(crate) fn build_param_index(
+    sub_mix: &SubMix,
+    elements: &[AudioElement],
+) -> Result<ParamIndex, DecodeError> {
+    let mut index = ParamIndex::new();
+    for (slot, sub_element) in sub_mix.elements.iter().enumerate() {
+        let element = elements
+            .iter()
+            .find(|e| e.audio_element_id == sub_element.audio_element_id)
+            .ok_or_else(|| {
+                DecodeError::InvalidDescriptors(format!(
+                    "mix references unknown element {}",
+                    sub_element.audio_element_id
+                ))
+            })?;
+        for param in &element.params {
+            match param {
+                ElementParam::Demixing { base, .. } => {
+                    index.entry(base.parameter_id).or_default().push((
+                        slot,
+                        ParamKind::Demixing,
+                        base.clone(),
+                    ));
+                }
+                ElementParam::ReconGain(base) => {
+                    index.entry(base.parameter_id).or_default().push((
+                        slot,
+                        ParamKind::ReconGain,
+                        base.clone(),
+                    ));
+                }
+                ElementParam::Unknown { .. } => {}
+            }
+        }
+        index
+            .entry(sub_element.element_mix_gain.base.parameter_id)
+            .or_default()
+            .push((
+                slot,
+                ParamKind::ElementMixGain,
+                sub_element.element_mix_gain.base.clone(),
+            ));
+    }
+    index
+        .entry(sub_mix.output_mix_gain.base.parameter_id)
+        .or_default()
+        .push((
+            0,
+            ParamKind::OutputMixGain,
+            sub_mix.output_mix_gain.base.clone(),
+        ));
+    Ok(index)
+}
 
 /// What kind of parameter a block's ID resolves to, plus the context needed
 /// to parse its payload.
@@ -62,6 +141,10 @@ impl MixGainAnimation {
                 control,
                 control_relative_time,
             } => {
+                if duration == 0 {
+                    // Degenerate subblock: avoid the 0/0 below (NaN).
+                    return q78_db_to_linear(start);
+                }
                 let s = f64::from(q78_db_to_linear(start));
                 let e = f64::from(q78_db_to_linear(end));
                 let c = f64::from(q78_db_to_linear(control));

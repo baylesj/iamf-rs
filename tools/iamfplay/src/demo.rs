@@ -213,7 +213,7 @@ pub fn generate() -> Vec<u8> {
             payload.clear();
             for i in 0..FRAME {
                 let x = plane.get(frame_start + i).copied().unwrap_or(0.0);
-                let q = (x * 32768.0).round().clamp(-32768.0, 32767.0) as i16;
+                let q = iamf_dec::post::quantize_s16(x);
                 payload.extend_from_slice(&q.to_le_bytes());
             }
             obu(&mut stream, 6 + substream as u8, &payload);

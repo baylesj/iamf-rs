@@ -3,16 +3,17 @@
 //! descriptor blob, push arbitrary byte chunks (whole or partial OBUs),
 //! and pull decoded temporal units as interleaved little-endian PCM.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 
-use iamf_obu::descriptors::{
-    AudioElement, AudioElementConfig, CodecConfig, ElementParam, ParamDefinition, SubMix,
-};
+use iamf_obu::descriptors::{AudioElement, AudioElementConfig, CodecConfig, ElementParam, SubMix};
 use iamf_obu::{AudioFrame, ByteReader, Error, Obu, ObuType};
 
 use crate::element::{FramePcm, substream_channels};
 use crate::layout::SoundSystem;
-use crate::params::{ParamContext, ParamCursor, ParameterBlock, ReconGainLayers, SubblockData};
+use crate::params::{
+    ParamContext, ParamCursor, ParamIndex, ParamKind, ParameterBlock, ReconGainLayers,
+    SubblockData, build_param_index,
+};
 use crate::post::{LIMITER_LOOKAHEAD, LIMITER_THRESHOLD_DB, PeakLimiter};
 use crate::presentation::Descriptors;
 use crate::profile::{ProfileSet, filter_profiles_for_mix};
@@ -273,14 +274,6 @@ impl SlotState {
     }
 }
 
-#[derive(Clone, Copy)]
-enum ParamKind {
-    Demixing,
-    ReconGain,
-    ElementMixGain,
-    OutputMixGain,
-}
-
 /// Feeds one temporal unit's planes through a slot's stateful binaural
 /// renderer (created on first use with this unit's frame length).
 #[cfg(feature = "binaural")]
@@ -336,10 +329,8 @@ fn content_loudness_db(sub_mix: &SubMix, target: SoundSystem) -> Option<f32> {
 /// Streaming IAMF decoder for one mix presentation and output layout.
 pub struct StreamDecoder {
     slots: Vec<SlotState>,
-    /// parameter_id → every consumer of that id. IAMF requires unique
-    /// parameter ids, but a multimap keeps duplicate-id streams from
-    /// silently dropping one consumer's updates.
-    param_index: HashMap<u32, Vec<(usize, ParamKind, ParamDefinition)>>,
+    /// See [`ParamIndex`].
+    param_index: ParamIndex,
     target: SoundSystem,
     sample_type: OutputSampleType,
     /// Output channel permutation: slot i of the interleaved output takes
@@ -429,8 +420,6 @@ impl StreamDecoder {
         };
 
         let mut slots = Vec::new();
-        let mut param_index: HashMap<u32, Vec<(usize, ParamKind, ParamDefinition)>> =
-            HashMap::new();
         let mut frame_size = 0u32;
         for sub_element in &sub_mix.elements {
             let element = parsed
@@ -482,35 +471,6 @@ impl StreamDecoder {
                     .collect::<Result<Vec<_>, _>>()?,
             };
 
-            let slot_index = slots.len();
-            for param in &element.params {
-                match param {
-                    ElementParam::Demixing { base, .. } => {
-                        param_index.entry(base.parameter_id).or_default().push((
-                            slot_index,
-                            ParamKind::Demixing,
-                            base.clone(),
-                        ));
-                    }
-                    ElementParam::ReconGain(base) => {
-                        param_index.entry(base.parameter_id).or_default().push((
-                            slot_index,
-                            ParamKind::ReconGain,
-                            base.clone(),
-                        ));
-                    }
-                    ElementParam::Unknown { .. } => {}
-                }
-            }
-            param_index
-                .entry(sub_element.element_mix_gain.base.parameter_id)
-                .or_default()
-                .push((
-                    slot_index,
-                    ParamKind::ElementMixGain,
-                    sub_element.element_mix_gain.base.clone(),
-                ));
-
             let queues = vec![VecDeque::new(); channels.len()];
             slots.push(SlotState {
                 element: element.clone(),
@@ -532,14 +492,7 @@ impl StreamDecoder {
                 sample_rate: 0,
             });
         }
-        param_index
-            .entry(sub_mix.output_mix_gain.base.parameter_id)
-            .or_default()
-            .push((
-                0,
-                ParamKind::OutputMixGain,
-                sub_mix.output_mix_gain.base.clone(),
-            ));
+        let param_index = build_param_index(sub_mix, &parsed.audio_elements)?;
 
         // Auto sample type: s32le when any codec carries more than 16
         // bits, else s16le.
@@ -804,12 +757,8 @@ impl StreamDecoder {
             let rendered = match &slot.element.config {
                 AudioElementConfig::ChannelBased { layers } => {
                     if slot.reconstructor.is_none() {
-                        let mut rec = ChannelReconstructor::with_layer_selection(
-                            layers,
-                            self.target,
-                            frame_len,
-                            hrtf,
-                        )?;
+                        let mut rec =
+                            ChannelReconstructor::with_layer_selection(layers, self.target, hrtf)?;
                         for param in &slot.element.params {
                             if let ElementParam::Demixing {
                                 default_demixing_mode,
@@ -867,7 +816,7 @@ impl StreamDecoder {
                     #[cfg(feature = "binaural")]
                     let rendered = if hrtf {
                         let hoa = reconstructed.planar();
-                        let order = (hoa.len() as f32).sqrt() as usize - 1;
+                        let order = crate::reconstruct::hoa_order_index(hoa.len());
                         binauralize_unit(
                             &mut slot.binaural,
                             crate::binaural::BinauralInput::Hoa { order },
@@ -954,13 +903,10 @@ impl StreamDecoder {
         for &sample in &samples {
             match self.sample_type {
                 OutputSampleType::Int16LittleEndian => {
-                    let scaled = (sample * 32768.0).clamp(-32768.0, 32767.0);
-                    bytes.extend((scaled.round_ties_even() as i16).to_le_bytes());
+                    bytes.extend(crate::post::quantize_s16(sample).to_le_bytes());
                 }
                 OutputSampleType::Int32LittleEndian => {
-                    let scaled =
-                        (f64::from(sample) * 2147483648.0).clamp(-2147483648.0, 2147483647.0);
-                    bytes.extend((scaled.round_ties_even() as i32).to_le_bytes());
+                    bytes.extend(crate::post::quantize_s32(sample).to_le_bytes());
                 }
             }
         }
