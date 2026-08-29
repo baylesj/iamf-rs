@@ -34,7 +34,7 @@ fn main() -> ExitCode {
         match arg.as_str() {
             "-o" => {
                 if let Some(out) = args.next() {
-                    wav_out = Some(out)
+                    wav_out = Some(out);
                 } else {
                     eprintln!("error: -o expects an output path");
                     return ExitCode::FAILURE;
@@ -42,7 +42,7 @@ fn main() -> ExitCode {
             }
             "-s" => {
                 if let Some(s) = args.next().and_then(|v| v.parse().ok()) {
-                    opts.sound_system = s
+                    opts.sound_system = s;
                 } else {
                     eprintln!("error: -s expects a sound system number (0..=14)");
                     return ExitCode::FAILURE;
@@ -51,7 +51,7 @@ fn main() -> ExitCode {
             "--limiter" => opts.limiter = true,
             "--loudness" => {
                 if let Some(db) = args.next().and_then(|v| v.parse().ok()) {
-                    opts.loudness = Some(db)
+                    opts.loudness = Some(db);
                 } else {
                     eprintln!("error: --loudness expects a dB value (e.g. -24)");
                     return ExitCode::FAILURE;
