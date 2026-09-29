@@ -7,7 +7,9 @@ mod common;
 use iamf_codecs::DefaultFactory;
 use iamf_dec::layout::SoundSystem;
 use iamf_dec::presentation::{Descriptors, PresentationDecoder};
-use iamf_dec::stream::{MixSelection, OutputSampleType, StreamDecoder, StreamSettings};
+use iamf_dec::stream::{
+    MixSelection, OutputSampleType, StreamDecoder, StreamSettings, TrimmingSettings,
+};
 use iamf_obu::ObuIter;
 
 fn vector(name: &str) -> Option<Vec<u8>> {
@@ -16,9 +18,15 @@ fn vector(name: &str) -> Option<Vec<u8>> {
 
 /// Batch decode to s16le bytes (reference behavior, conformance-tested).
 fn batch_decode(data: &[u8], sound_system: u8) -> Vec<u8> {
+    batch_decode_with(data, sound_system, TrimmingSettings::default())
+}
+
+fn batch_decode_with(data: &[u8], sound_system: u8, trimming: TrimmingSettings) -> Vec<u8> {
     let descriptors = Descriptors::collect(data).unwrap();
     let target = SoundSystem::from_u8(sound_system).unwrap();
-    let mut decoder = PresentationDecoder::new(&descriptors, 0, target, &DefaultFactory).unwrap();
+    let mut decoder = PresentationDecoder::new(&descriptors, 0, target, &DefaultFactory)
+        .unwrap()
+        .with_trimming(trimming);
     for obu in ObuIter::new(data).map(Result::unwrap) {
         decoder.process_obu(&obu).unwrap();
     }
@@ -33,10 +41,20 @@ fn batch_decode(data: &[u8], sound_system: u8) -> Vec<u8> {
 /// Streaming decode with a rotating pattern of chunk sizes, pulling units
 /// as they become available.
 fn stream_decode(data: &[u8], sound_system: u8, chunks: &[usize]) -> Vec<u8> {
+    stream_decode_with(data, sound_system, chunks, TrimmingSettings::default())
+}
+
+fn stream_decode_with(
+    data: &[u8],
+    sound_system: u8,
+    chunks: &[usize],
+    trimming: TrimmingSettings,
+) -> Vec<u8> {
     let mut settings = StreamSettings::default();
     settings.layout = SoundSystem::from_u8(sound_system).unwrap();
     settings.sample_type = Some(OutputSampleType::Int16LittleEndian);
     settings.mix_selection = MixSelection::ByIndex(0);
+    settings.trimming = trimming;
     let mut decoder = StreamDecoder::new_from_descriptors(data, settings, &DefaultFactory).unwrap();
     let mut out = Vec::new();
     let mut pos = 0usize;
@@ -86,6 +104,36 @@ fn stream_matches_batch_lpcm_stereo() {
 #[test]
 fn stream_matches_batch_opus() {
     equivalence_case("test_000026", 0);
+}
+
+/// iamf-tools `TrimmingSettings`: each flag independently disables the
+/// audio frames' start / end trims, identically in both drivers.
+/// test_000026 is 26 Opus frames of 960 samples with 312 samples trimmed
+/// at the start and 648 at the end.
+#[test]
+fn trimming_settings_in_both_drivers() {
+    let data = require_vectors!(vector("test_000026"), "test_000026");
+    for (trim_beginning, trim_end, frames) in [
+        (true, true, 24000),
+        (false, true, 24000 + 312),
+        (true, false, 24000 + 648),
+        (false, false, 26 * 960),
+    ] {
+        let mut trimming = TrimmingSettings::default();
+        trimming.trim_beginning = trim_beginning;
+        trimming.trim_end = trim_end;
+        let batch = batch_decode_with(&data, 0, trimming);
+        assert_eq!(
+            batch.len(),
+            frames * 2 * 2,
+            "batch trim_beginning={trim_beginning} trim_end={trim_end}"
+        );
+        let streamed = stream_decode_with(&data, 0, &[1024, 7, 3], trimming);
+        assert!(
+            streamed == batch,
+            "stream/batch mismatch trim_beginning={trim_beginning} trim_end={trim_end}"
+        );
+    }
 }
 
 #[test]

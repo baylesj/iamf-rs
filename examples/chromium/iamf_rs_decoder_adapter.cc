@@ -21,6 +21,7 @@ using ::iamf_tools::api::OutputSampleType;
 using ::iamf_tools::api::ProfileVersion;
 using ::iamf_tools::api::RequestedMix;
 using ::iamf_tools::api::SelectedMix;
+using ::iamf_tools::api::TrimmingSettings;
 
 IamfStatus StatusOf(int code, const char* what) {
   if (code == IAMFRS_OK) {
@@ -31,7 +32,68 @@ IamfStatus StatusOf(int code, const char* what) {
 }
 
 /* OutputLayout and iamfrs_settings.output_layout share the IAMF
- * sound-system numbering (0 = stereo ... 13 = 9.1.6, 14 = binaural). */
+ * sound-system numbering (0 = stereo ... 13 = 9.1.6, 14 = binaural), so
+ * values are forwarded by cast. Pin every value, including
+ * kIAMF_Binaural (iamf-tools v3.0.0), at compile time. */
+constexpr bool LayoutMatches(OutputLayout layout, int value) {
+  return static_cast<int>(layout) == value;
+}
+static_assert(LayoutMatches(OutputLayout::kItu2051_SoundSystemA_0_2_0,
+                            IAMFRS_LAYOUT_SOUND_SYSTEM_A_0_2_0),
+              "");
+static_assert(LayoutMatches(OutputLayout::kItu2051_SoundSystemB_0_5_0,
+                            IAMFRS_LAYOUT_SOUND_SYSTEM_B_0_5_0),
+              "");
+static_assert(LayoutMatches(OutputLayout::kItu2051_SoundSystemC_2_5_0,
+                            IAMFRS_LAYOUT_SOUND_SYSTEM_C_2_5_0),
+              "");
+static_assert(LayoutMatches(OutputLayout::kItu2051_SoundSystemD_4_5_0,
+                            IAMFRS_LAYOUT_SOUND_SYSTEM_D_4_5_0),
+              "");
+static_assert(LayoutMatches(OutputLayout::kItu2051_SoundSystemE_4_5_1,
+                            IAMFRS_LAYOUT_SOUND_SYSTEM_E_4_5_1),
+              "");
+static_assert(LayoutMatches(OutputLayout::kItu2051_SoundSystemF_3_7_0,
+                            IAMFRS_LAYOUT_SOUND_SYSTEM_F_3_7_0),
+              "");
+static_assert(LayoutMatches(OutputLayout::kItu2051_SoundSystemG_4_9_0,
+                            IAMFRS_LAYOUT_SOUND_SYSTEM_G_4_9_0),
+              "");
+static_assert(LayoutMatches(OutputLayout::kItu2051_SoundSystemH_9_10_3,
+                            IAMFRS_LAYOUT_SOUND_SYSTEM_H_9_10_3),
+              "");
+static_assert(LayoutMatches(OutputLayout::kItu2051_SoundSystemI_0_7_0,
+                            IAMFRS_LAYOUT_SOUND_SYSTEM_I_0_7_0),
+              "");
+static_assert(LayoutMatches(OutputLayout::kItu2051_SoundSystemJ_4_7_0,
+                            IAMFRS_LAYOUT_SOUND_SYSTEM_J_4_7_0),
+              "");
+static_assert(LayoutMatches(OutputLayout::kIAMF_SoundSystemExtension_2_7_0,
+                            IAMFRS_LAYOUT_EXTENSION_2_7_0),
+              "");
+static_assert(LayoutMatches(OutputLayout::kIAMF_SoundSystemExtension_2_3_0,
+                            IAMFRS_LAYOUT_EXTENSION_2_3_0),
+              "");
+static_assert(LayoutMatches(OutputLayout::kIAMF_SoundSystemExtension_0_1_0,
+                            IAMFRS_LAYOUT_EXTENSION_0_1_0),
+              "");
+static_assert(LayoutMatches(OutputLayout::kIAMF_SoundSystemExtension_6_9_0,
+                            IAMFRS_LAYOUT_EXTENSION_6_9_0),
+              "");
+static_assert(LayoutMatches(OutputLayout::kIAMF_Binaural,
+                            IAMFRS_LAYOUT_BINAURAL),
+              "kIAMF_Binaural must map to IAMFRS_LAYOUT_BINAURAL");
+static_assert(static_cast<int>(OutputSampleType::kInt16LittleEndian) ==
+                      IAMFRS_SAMPLE_INT16_LE &&
+                  static_cast<int>(OutputSampleType::kInt32LittleEndian) ==
+                      IAMFRS_SAMPLE_INT32_LE,
+              "OutputSampleType must match iamfrs_sample_type");
+static_assert(static_cast<int>(ChannelOrdering::kIamfOrdering) ==
+                      IAMFRS_ORDERING_IAMF &&
+                  static_cast<int>(ChannelOrdering::kOrderingForAndroid) ==
+                      IAMFRS_ORDERING_ANDROID,
+              "ChannelOrdering must match iamfrs_channel_ordering");
+
 iamfrs_settings SettingsToC(
     const iamf_tools::api::IamfDecoderFactory::Settings& settings) {
   iamfrs_settings c_settings = {};
@@ -47,9 +109,11 @@ iamfrs_settings SettingsToC(
           : -1;
   c_settings.channel_ordering =
       static_cast<int32_t>(settings.channel_ordering);
-  c_settings.disable_trim_start =
-      settings.trimming_settings.trim_beginning ? 0 : 1;
-  c_settings.disable_trim_end = settings.trimming_settings.trim_end ? 0 : 1;
+  /* TrimmingSettings (iamf-tools v3.0.0): the C ABI stores the inverse so
+   * that zero-initialized settings keep trimming on, like the defaults. */
+  const TrimmingSettings& trimming = settings.trimming_settings;
+  c_settings.disable_trim_start = trimming.trim_beginning ? 0 : 1;
+  c_settings.disable_trim_end = trimming.trim_end ? 0 : 1;
   /* ProfileVersion values are the profile numbers (simple=0, base=1,
    * base-enhanced=2), which are the iamfrs_profile bit positions. */
   c_settings.requested_profiles = 0;

@@ -34,6 +34,43 @@ pub const IAMFRS_ERR_NO_TEMPORAL_UNIT: c_int = -5;
 /// An error that fits no other status.
 pub const IAMFRS_ERR_INTERNAL: c_int = -6;
 
+// Values for `IamfrsSettings::output_layout` and the `output_layout`
+// argument of `iamfrs_decoder_reset_with_new_mix`, numbered exactly like
+// iamf-tools `OutputLayout` (and the IAMF sound_system values 0..=13).
+
+/// ITU-R BS.2051 sound system A (0+2+0), stereo (`kItu2051_SoundSystemA_0_2_0`).
+pub const IAMFRS_LAYOUT_SOUND_SYSTEM_A_0_2_0: i32 = 0;
+/// Sound system B (0+5+0), 5.1 (`kItu2051_SoundSystemB_0_5_0`).
+pub const IAMFRS_LAYOUT_SOUND_SYSTEM_B_0_5_0: i32 = 1;
+/// Sound system C (2+5+0), 5.1.2 (`kItu2051_SoundSystemC_2_5_0`).
+pub const IAMFRS_LAYOUT_SOUND_SYSTEM_C_2_5_0: i32 = 2;
+/// Sound system D (4+5+0), 5.1.4 (`kItu2051_SoundSystemD_4_5_0`).
+pub const IAMFRS_LAYOUT_SOUND_SYSTEM_D_4_5_0: i32 = 3;
+/// Sound system E (4+5+1) (`kItu2051_SoundSystemE_4_5_1`).
+pub const IAMFRS_LAYOUT_SOUND_SYSTEM_E_4_5_1: i32 = 4;
+/// Sound system F (3+7+0) (`kItu2051_SoundSystemF_3_7_0`).
+pub const IAMFRS_LAYOUT_SOUND_SYSTEM_F_3_7_0: i32 = 5;
+/// Sound system G (4+9+0) (`kItu2051_SoundSystemG_4_9_0`).
+pub const IAMFRS_LAYOUT_SOUND_SYSTEM_G_4_9_0: i32 = 6;
+/// Sound system H (9+10+3), 22.2 (`kItu2051_SoundSystemH_9_10_3`).
+pub const IAMFRS_LAYOUT_SOUND_SYSTEM_H_9_10_3: i32 = 7;
+/// Sound system I (0+7+0), 7.1 (`kItu2051_SoundSystemI_0_7_0`).
+pub const IAMFRS_LAYOUT_SOUND_SYSTEM_I_0_7_0: i32 = 8;
+/// Sound system J (4+7+0), 7.1.4 (`kItu2051_SoundSystemJ_4_7_0`).
+pub const IAMFRS_LAYOUT_SOUND_SYSTEM_J_4_7_0: i32 = 9;
+/// IAMF extension 7.1.2 (`kIAMF_SoundSystemExtension_2_7_0`).
+pub const IAMFRS_LAYOUT_EXTENSION_2_7_0: i32 = 10;
+/// IAMF extension 3.1.2 (`kIAMF_SoundSystemExtension_2_3_0`).
+pub const IAMFRS_LAYOUT_EXTENSION_2_3_0: i32 = 11;
+/// IAMF extension mono (`kIAMF_SoundSystemExtension_0_1_0`).
+pub const IAMFRS_LAYOUT_EXTENSION_0_1_0: i32 = 12;
+/// IAMF extension 9.1.6 (`kIAMF_SoundSystemExtension_6_9_0`).
+pub const IAMFRS_LAYOUT_EXTENSION_6_9_0: i32 = 13;
+/// Binaural, channels ordered L, R (`kIAMF_Binaural`, iamf-tools v3.0.0): HRTF
+/// rendering for elements with `headphones_rendering_mode == 1` (with the
+/// `binaural` feature), the stereo gain matrices otherwise.
+pub const IAMFRS_LAYOUT_BINAURAL: i32 = 14;
+
 fn status_of(err: &DecodeError) -> c_int {
     match err {
         DecodeError::UnsupportedCodec
@@ -59,8 +96,9 @@ pub struct IamfrsDecoder {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct IamfrsSettings {
-    /// IAMF sound system numbering shared with iamf-tools `OutputLayout`
-    /// (0 = stereo ... 13 = 9.1.6, 14 = binaural).
+    /// One of the `IAMFRS_LAYOUT_*` constants: IAMF sound system numbering
+    /// shared with iamf-tools `OutputLayout` (0 = stereo ... 13 = 9.1.6,
+    /// [`IAMFRS_LAYOUT_BINAURAL`] = 14).
     pub output_layout: i32,
     /// 0 = auto (from the stream's bit depth), 1 = s16le, 2 = s32le.
     pub sample_type: i32,
@@ -70,11 +108,13 @@ pub struct IamfrsSettings {
     /// 0 = IAMF rendering order, 1 = Android/WAVE order (iamf-tools
     /// `ChannelOrdering`).
     pub channel_ordering: i32,
-    /// Nonzero disables trimming of num_samples_to_trim_at_start /
-    /// num_samples_to_trim_at_end (for callers whose demuxer trims via
-    /// edts/elst).
+    /// Nonzero disables trimming of num_samples_to_trim_at_start
+    /// (iamf-tools `TrimmingSettings::trim_beginning = false`), for callers
+    /// whose demuxer trims via edts/elst. Zero (trim) is the iamf-tools
+    /// default, so zero-initialized settings match it.
     pub disable_trim_start: u8,
-    /// Nonzero disables end trimming (see `disable_trim_start`).
+    /// Nonzero disables trimming of num_samples_to_trim_at_end (iamf-tools
+    /// `TrimmingSettings::trim_end = false`); see `disable_trim_start`.
     pub disable_trim_end: u8,
     /// Bitmask of supported profiles (iamf-tools
     /// `requested_profile_versions`): bit 0 = simple, bit 1 = base,
@@ -550,7 +590,10 @@ mod tests {
             ("IAMFRS_ERR_BUFFER_TOO_SMALL", IAMFRS_ERR_BUFFER_TOO_SMALL),
             ("IAMFRS_ERR_NO_TEMPORAL_UNIT", IAMFRS_ERR_NO_TEMPORAL_UNIT),
             ("IAMFRS_ERR_INTERNAL", IAMFRS_ERR_INTERNAL),
-        ] {
+        ]
+        .into_iter()
+        .chain(LAYOUTS)
+        {
             let needle = format!("{name} = {value},");
             assert!(header.contains(&needle), "header disagrees on {name}");
         }
@@ -565,6 +608,288 @@ mod tests {
             "IAMFRS_PROFILE_BASE_ENHANCED = 1 << 2,",
         ] {
             assert!(header.contains(needle), "header missing `{needle}`");
+        }
+    }
+
+    /// Every `IAMFRS_LAYOUT_*` constant, in iamf-tools `OutputLayout` order.
+    const LAYOUTS: [(&str, i32); 15] = [
+        (
+            "IAMFRS_LAYOUT_SOUND_SYSTEM_A_0_2_0",
+            IAMFRS_LAYOUT_SOUND_SYSTEM_A_0_2_0,
+        ),
+        (
+            "IAMFRS_LAYOUT_SOUND_SYSTEM_B_0_5_0",
+            IAMFRS_LAYOUT_SOUND_SYSTEM_B_0_5_0,
+        ),
+        (
+            "IAMFRS_LAYOUT_SOUND_SYSTEM_C_2_5_0",
+            IAMFRS_LAYOUT_SOUND_SYSTEM_C_2_5_0,
+        ),
+        (
+            "IAMFRS_LAYOUT_SOUND_SYSTEM_D_4_5_0",
+            IAMFRS_LAYOUT_SOUND_SYSTEM_D_4_5_0,
+        ),
+        (
+            "IAMFRS_LAYOUT_SOUND_SYSTEM_E_4_5_1",
+            IAMFRS_LAYOUT_SOUND_SYSTEM_E_4_5_1,
+        ),
+        (
+            "IAMFRS_LAYOUT_SOUND_SYSTEM_F_3_7_0",
+            IAMFRS_LAYOUT_SOUND_SYSTEM_F_3_7_0,
+        ),
+        (
+            "IAMFRS_LAYOUT_SOUND_SYSTEM_G_4_9_0",
+            IAMFRS_LAYOUT_SOUND_SYSTEM_G_4_9_0,
+        ),
+        (
+            "IAMFRS_LAYOUT_SOUND_SYSTEM_H_9_10_3",
+            IAMFRS_LAYOUT_SOUND_SYSTEM_H_9_10_3,
+        ),
+        (
+            "IAMFRS_LAYOUT_SOUND_SYSTEM_I_0_7_0",
+            IAMFRS_LAYOUT_SOUND_SYSTEM_I_0_7_0,
+        ),
+        (
+            "IAMFRS_LAYOUT_SOUND_SYSTEM_J_4_7_0",
+            IAMFRS_LAYOUT_SOUND_SYSTEM_J_4_7_0,
+        ),
+        (
+            "IAMFRS_LAYOUT_EXTENSION_2_7_0",
+            IAMFRS_LAYOUT_EXTENSION_2_7_0,
+        ),
+        (
+            "IAMFRS_LAYOUT_EXTENSION_2_3_0",
+            IAMFRS_LAYOUT_EXTENSION_2_3_0,
+        ),
+        (
+            "IAMFRS_LAYOUT_EXTENSION_0_1_0",
+            IAMFRS_LAYOUT_EXTENSION_0_1_0,
+        ),
+        (
+            "IAMFRS_LAYOUT_EXTENSION_6_9_0",
+            IAMFRS_LAYOUT_EXTENSION_6_9_0,
+        ),
+        ("IAMFRS_LAYOUT_BINAURAL", IAMFRS_LAYOUT_BINAURAL),
+    ];
+
+    /// The layout constants are exactly the values the ABI accepts, with
+    /// binaural last at 14 (iamf-tools `kIAMF_Binaural`).
+    #[test]
+    fn layout_constants_match_sound_systems() {
+        for (index, (name, value)) in LAYOUTS.iter().enumerate() {
+            assert_eq!(*value, index as i32, "{name} out of OutputLayout order");
+            let sound_system = SoundSystem::from_u8(*value as u8)
+                .unwrap_or_else(|| panic!("{name} not accepted by the decoder"));
+            assert_eq!(sound_system as i32, *value, "{name} round trip");
+        }
+        assert_eq!(
+            SoundSystem::from_u8(IAMFRS_LAYOUT_BINAURAL as u8),
+            Some(SoundSystem::Binaural)
+        );
+        assert_eq!(SoundSystem::from_u8(LAYOUTS.len() as u8), None);
+    }
+
+    /// `iamfrs_settings` is passed by pointer without a size/version field,
+    /// so its layout is ABI: a caller built against an older header passes
+    /// a smaller struct. Any change here must be deliberate (and versioned).
+    #[test]
+    fn settings_struct_layout_is_frozen() {
+        use std::mem::{align_of, offset_of, size_of};
+        assert_eq!(size_of::<IamfrsSettings>(), 40);
+        assert_eq!(align_of::<IamfrsSettings>(), 8);
+        assert_eq!(offset_of!(IamfrsSettings, output_layout), 0);
+        assert_eq!(offset_of!(IamfrsSettings, sample_type), 4);
+        assert_eq!(offset_of!(IamfrsSettings, mix_presentation_id), 8);
+        assert_eq!(offset_of!(IamfrsSettings, channel_ordering), 16);
+        assert_eq!(offset_of!(IamfrsSettings, disable_trim_start), 20);
+        assert_eq!(offset_of!(IamfrsSettings, disable_trim_end), 21);
+        assert_eq!(offset_of!(IamfrsSettings, requested_profiles), 24);
+        assert_eq!(offset_of!(IamfrsSettings, enable_limiter), 28);
+        assert_eq!(
+            offset_of!(IamfrsSettings, enable_loudness_normalization),
+            29
+        );
+        assert_eq!(offset_of!(IamfrsSettings, loudness_target_db), 32);
+    }
+
+    /// Reads a conformance vector; `None` means "skip" (only when
+    /// IAMF_VECTORS_OPTIONAL is set), otherwise a missing vector panics.
+    fn named_vector(name: &str) -> Option<Vec<u8>> {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("../../tests/vectors/{name}.iamf"));
+        match std::fs::read(path) {
+            Ok(data) => Some(data),
+            Err(_) if std::env::var_os("IAMF_VECTORS_OPTIONAL").is_some() => {
+                eprintln!("SKIPPED: {name} missing; run tools/fetch_vectors.sh");
+                None
+            }
+            Err(_) => panic!(
+                "{name} missing; run tools/fetch_vectors.sh \
+                 (or set IAMF_VECTORS_OPTIONAL=1 to skip vector tests)"
+            ),
+        }
+    }
+
+    /// Zero-initialized settings (what a C caller gets from `= {0}`) with
+    /// the given layout and automatic mix selection.
+    fn settings_for(output_layout: i32) -> IamfrsSettings {
+        IamfrsSettings {
+            output_layout,
+            sample_type: 0,
+            mix_presentation_id: -1,
+            channel_ordering: 0,
+            disable_trim_start: 0,
+            disable_trim_end: 0,
+            requested_profiles: 0,
+            enable_limiter: 0,
+            enable_loudness_normalization: 0,
+            loudness_target_db: 0.0,
+        }
+    }
+
+    /// Decodes a whole standalone stream through the C ABI, returning the
+    /// PCM bytes, output channel count, and selected layout.
+    fn decode_via_c_api(data: &[u8], settings: &IamfrsSettings) -> (Vec<u8>, u32, u32) {
+        let mut decoder: *mut IamfrsDecoder = std::ptr::null_mut();
+        // SAFETY: valid pointers throughout; the handle is destroyed once.
+        unsafe {
+            assert_eq!(
+                iamfrs_decoder_create_from_descriptors(
+                    data.as_ptr(),
+                    data.len(),
+                    settings,
+                    &mut decoder
+                ),
+                IAMFRS_OK
+            );
+            let (mut channels, mut layout) = (0u32, u32::MAX);
+            assert_eq!(
+                iamfrs_decoder_get_num_output_channels(decoder, &mut channels),
+                IAMFRS_OK
+            );
+            assert_eq!(
+                iamfrs_decoder_get_selected_layout(decoder, &mut layout),
+                IAMFRS_OK
+            );
+            assert_eq!(
+                iamfrs_decoder_decode(decoder, data.as_ptr(), data.len()),
+                IAMFRS_OK
+            );
+            assert_eq!(iamfrs_decoder_signal_end_of_decoding(decoder), IAMFRS_OK);
+            let mut pcm = Vec::new();
+            let mut scratch = vec![0u8; 1 << 16];
+            while iamfrs_decoder_is_temporal_unit_available(decoder) == 1 {
+                let mut written = 0usize;
+                assert_eq!(
+                    iamfrs_decoder_get_output_temporal_unit(
+                        decoder,
+                        scratch.as_mut_ptr(),
+                        scratch.len(),
+                        &mut written
+                    ),
+                    IAMFRS_OK
+                );
+                pcm.extend_from_slice(&scratch[..written]);
+            }
+            iamfrs_decoder_destroy(decoder);
+            (pcm, channels, layout)
+        }
+    }
+
+    /// `disable_trim_start` / `disable_trim_end` (iamf-tools
+    /// `TrimmingSettings`) independently control the audio frames' trims.
+    /// test_000026 is 26 Opus frames of 960 samples, trimming 312 samples
+    /// at the start and 648 at the end.
+    #[cfg(any(feature = "opus", feature = "opus-ffi"))]
+    #[test]
+    fn c_api_trimming_settings() {
+        let Some(data) = named_vector("test_000026") else {
+            return;
+        };
+        for (disable_start, disable_end, frames) in [
+            (0u8, 0u8, 24000usize),
+            (1, 0, 24000 + 312),
+            (0, 1, 24000 + 648),
+            (1, 1, 26 * 960),
+        ] {
+            let mut settings = settings_for(IAMFRS_LAYOUT_SOUND_SYSTEM_A_0_2_0);
+            settings.disable_trim_start = disable_start;
+            settings.disable_trim_end = disable_end;
+            let (pcm, channels, _) = decode_via_c_api(&data, &settings);
+            assert_eq!(channels, 2);
+            // Auto sample type resolves to s16le for Opus.
+            assert_eq!(
+                pcm.len(),
+                frames * 2 * 2,
+                "disable_trim_start={disable_start} disable_trim_end={disable_end}"
+            );
+        }
+    }
+
+    /// `IAMFRS_LAYOUT_BINAURAL` selects two-channel binaural output, is
+    /// reported back by `get_selected_layout`, and is accepted by
+    /// `reset_with_new_mix`. test_000002's element uses
+    /// headphones_rendering_mode 0, so binaural renders through the stereo
+    /// matrices and must match stereo output exactly.
+    #[test]
+    fn c_api_binaural_layout() {
+        let Some(data) = named_vector("test_000002") else {
+            return;
+        };
+        let (binaural, channels, layout) =
+            decode_via_c_api(&data, &settings_for(IAMFRS_LAYOUT_BINAURAL));
+        assert_eq!(channels, 2);
+        assert_eq!(layout, IAMFRS_LAYOUT_BINAURAL as u32);
+        let (stereo, _, stereo_layout) =
+            decode_via_c_api(&data, &settings_for(IAMFRS_LAYOUT_SOUND_SYSTEM_A_0_2_0));
+        assert_eq!(stereo_layout, IAMFRS_LAYOUT_SOUND_SYSTEM_A_0_2_0 as u32);
+        assert_eq!(binaural.len(), 8000 * 2 * 2);
+        assert!(binaural == stereo, "mode-0 binaural must equal stereo");
+
+        let mut decoder: *mut IamfrsDecoder = std::ptr::null_mut();
+        // SAFETY: valid pointers throughout; the handle is destroyed once.
+        unsafe {
+            assert_eq!(
+                iamfrs_decoder_create_from_descriptors(
+                    data.as_ptr(),
+                    data.len(),
+                    &settings_for(IAMFRS_LAYOUT_EXTENSION_0_1_0),
+                    &mut decoder
+                ),
+                IAMFRS_OK
+            );
+            assert_eq!(
+                iamfrs_decoder_reset_with_new_mix(decoder, -1, IAMFRS_LAYOUT_BINAURAL),
+                IAMFRS_OK
+            );
+            let (mut layout, mut channels) = (u32::MAX, 0u32);
+            assert_eq!(
+                iamfrs_decoder_get_selected_layout(decoder, &mut layout),
+                IAMFRS_OK
+            );
+            assert_eq!(
+                iamfrs_decoder_get_num_output_channels(decoder, &mut channels),
+                IAMFRS_OK
+            );
+            assert_eq!((layout, channels), (IAMFRS_LAYOUT_BINAURAL as u32, 2));
+            // One past binaural is not a layout.
+            assert_eq!(
+                iamfrs_decoder_reset_with_new_mix(decoder, -1, IAMFRS_LAYOUT_BINAURAL + 1),
+                IAMFRS_ERR_INVALID_ARG
+            );
+            iamfrs_decoder_destroy(decoder);
+
+            let mut rejected: *mut IamfrsDecoder = std::ptr::null_mut();
+            assert_eq!(
+                iamfrs_decoder_create_from_descriptors(
+                    data.as_ptr(),
+                    data.len(),
+                    &settings_for(IAMFRS_LAYOUT_BINAURAL + 1),
+                    &mut rejected
+                ),
+                IAMFRS_ERR_INVALID_ARG
+            );
+            assert!(rejected.is_null());
         }
     }
 
