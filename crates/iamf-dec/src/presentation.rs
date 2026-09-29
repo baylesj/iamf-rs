@@ -13,15 +13,17 @@ use iamf_obu::descriptors::{
 use iamf_obu::{AudioFrame, Obu, ObuIter, ObuType};
 
 use crate::element::ElementDecoder;
-use crate::layout::SoundSystem;
+use crate::layout::{SoundSystem, element_renders_to};
 use crate::params::{
     ParamContext, ParamIndex, ParamKind, ParameterBlock, SubblockData, build_param_index,
     q78_db_to_linear,
 };
+use crate::profile::{ProfileSet, filter_profiles_for_mix};
 use crate::reconstruct::{
     ChannelReconstructor, Reconstructed, deinterleave, reconstruct_ambisonics,
 };
 use crate::render::render;
+use crate::stream::{MixSelection, select_mix_index};
 use crate::{CodecFactory, DecodeError};
 
 /// All descriptor OBUs of an IA sequence, first copy wins for redundant
@@ -88,6 +90,51 @@ impl Descriptors {
 
     fn codec_config(&self, id: u32) -> Option<&CodecConfig> {
         self.codec_configs.iter().find(|c| c.codec_config_id == id)
+    }
+
+    /// Resolves `selection` to a mix presentation index for rendering to
+    /// `layout`, using the creator-preferred selection of IAMF §7.4.1 (the
+    /// same rules [`StreamDecoder`](crate::stream::StreamDecoder) applies;
+    /// see [`MixSelection`]). Only mixes within some profile of
+    /// `requested_profiles`, and whose audio elements can be rendered to
+    /// `layout`, are selectable: binaural-input elements only pass through
+    /// to binaural or stereo output. Pass the result to
+    /// [`PresentationDecoder::new`].
+    pub fn select_mix_presentation(
+        &self,
+        selection: MixSelection,
+        layout: SoundSystem,
+        requested_profiles: ProfileSet,
+    ) -> Result<usize, DecodeError> {
+        let supported: Vec<bool> = self
+            .mix_presentations
+            .iter()
+            .map(|mix| {
+                !filter_profiles_for_mix(
+                    mix,
+                    &self.audio_elements,
+                    &self.codec_configs,
+                    requested_profiles,
+                )
+                .is_empty()
+                    && mix
+                        .sub_mixes
+                        .iter()
+                        .flat_map(|sub_mix| &sub_mix.elements)
+                        .all(|sub_element| {
+                            // Unknown elements are reported when decoding.
+                            self.element(sub_element.audio_element_id)
+                                .is_none_or(|e| element_renders_to(&e.config, layout))
+                        })
+            })
+            .collect();
+        select_mix_index(
+            &self.mix_presentations,
+            &self.audio_elements,
+            &supported,
+            selection,
+            layout,
+        )
     }
 }
 
@@ -298,7 +345,6 @@ impl PresentationDecoder {
                 .then(|| evaluate_gain_track(&gain_blocks, gain, gain_rate, rate, &trim_map));
             let rendered = match slot_output {
                 SlotOutput::Planar(reconstructed) => render(&reconstructed, target_matrix)?,
-                #[cfg(feature = "binaural")]
                 SlotOutput::Stereo(stereo) => stereo,
             };
             if mixed.is_empty() {
@@ -409,11 +455,10 @@ struct UnitTrim {
 /// One [`UnitTrim`] per temporal unit of an element, in decode order.
 type TrimMap = Vec<UnitTrim>;
 
-/// Reconstructed element audio: planar (to be matrix-rendered) or already
-/// binauralized stereo.
+/// Reconstructed element audio: planar (to be matrix-rendered) or final
+/// two-channel output (binauralized, or passed-through binaural input).
 enum SlotOutput {
     Planar(Reconstructed),
-    #[cfg(feature = "binaural")]
     Stereo(Vec<Vec<f32>>),
 }
 
@@ -492,9 +537,11 @@ fn reconstruct_slot(
 ) -> Result<(SlotOutput, u32, TrimMap), DecodeError> {
     use iamf_obu::descriptors::AudioElementConfig;
 
+    // Binaural input is already headphone audio: never HRTF it.
     let hrtf = cfg!(feature = "binaural")
         && target == SoundSystem::Binaural
-        && slot.headphones_rendering_mode == 1;
+        && slot.headphones_rendering_mode == 1
+        && !crate::layout::is_binaural_input(&slot.element.config);
     let ElementSlot {
         element,
         decoder,
@@ -614,6 +661,10 @@ fn reconstruct_slot(
                 )?;
                 let stereo = apply_trim_map(stereo, &trim_map);
                 return Ok((SlotOutput::Stereo(stereo), sample_rate, trim_map));
+            }
+            if rec.is_binaural_input() {
+                // Passthrough (target is binaural or stereo).
+                return Ok((SlotOutput::Stereo(planar), sample_rate, trim_map));
             }
             Ok((
                 SlotOutput::Planar(Reconstructed::Channels {

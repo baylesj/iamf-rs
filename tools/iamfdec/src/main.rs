@@ -8,6 +8,8 @@ use std::process::ExitCode;
 use iamf_codecs::DefaultFactory;
 use iamf_dec::layout::SoundSystem;
 use iamf_dec::presentation::{Descriptors, PresentationDecoder};
+use iamf_dec::profile::ProfileSet;
+use iamf_dec::stream::MixSelection;
 use iamf_obu::ObuIter;
 use iamf_obu::descriptors::{self, AudioElementConfig, Descriptor, Layout};
 
@@ -115,8 +117,9 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Decodes the first mix presentation and renders it to the target sound
-/// system, writing 16-bit WAV.
+/// Decodes the mix presentation §7.4.1 selects for the target sound system
+/// (the same selection as the streaming decoder) and renders it, writing
+/// 16-bit WAV.
 fn decode_to_wav(data: &[u8], out_path: &str, opts: &Options) -> ExitCode {
     let sound_system = opts.sound_system;
     let Some(target) = SoundSystem::from_u8(sound_system) else {
@@ -130,13 +133,22 @@ fn decode_to_wav(data: &[u8], out_path: &str, opts: &Options) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mut decoder = match PresentationDecoder::new(&descriptors, 0, target, &DefaultFactory) {
-        Ok(d) => d,
-        Err(err) => {
-            eprintln!("error: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let mix_index =
+        match descriptors.select_mix_presentation(MixSelection::Auto, target, ProfileSet::all()) {
+            Ok(i) => i,
+            Err(err) => {
+                eprintln!("error: {err}");
+                return ExitCode::FAILURE;
+            }
+        };
+    let mut decoder =
+        match PresentationDecoder::new(&descriptors, mix_index, target, &DefaultFactory) {
+            Ok(d) => d,
+            Err(err) => {
+                eprintln!("error: {err}");
+                return ExitCode::FAILURE;
+            }
+        };
 
     let mut frames = 0usize;
     for result in ObuIter::new(data) {
@@ -168,7 +180,7 @@ fn decode_to_wav(data: &[u8], out_path: &str, opts: &Options) -> ExitCode {
         // the rendered layout (Q7.8 dB), 0 dB when not declared.
         let content_db = descriptors
             .mix_presentations
-            .first()
+            .get(mix_index)
             .and_then(|mp| mp.sub_mixes.first())
             .and_then(|sm| {
                 sm.layouts

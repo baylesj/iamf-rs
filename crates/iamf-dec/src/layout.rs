@@ -11,7 +11,10 @@ use crate::matrices::MatrixLayout;
 /// is 1 go through the native obr-style HRTF renderer (see
 /// `crate::binaural`); mode-0 elements — and every element when the
 /// feature is off — render through the stereo gain matrices, matching
-/// libiamf built without its binauralizer libraries.
+/// libiamf built without its binauralizer libraries. Binaural-input
+/// elements (loudspeaker_layout BINAURAL) pass through unchanged to
+/// binaural and stereo output, and cannot be rendered to other layouts
+/// (iamf-tools behavior).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SoundSystem {
@@ -146,8 +149,40 @@ pub fn loudspeaker_sound_system(loudspeaker_layout: u8) -> Option<SoundSystem> {
     })
 }
 
-/// Loudspeaker layouts 0..=8 (binaural and expanded are not yet supported
-/// as inputs).
+/// §3.7.4 `loudspeaker_layout` of a stereo channel layer.
+pub(crate) const LOUDSPEAKER_LAYOUT_STEREO: u8 = 1;
+
+/// §3.7.4 `loudspeaker_layout` of a BINAURAL channel layer: pre-rendered
+/// headphone L/R signals.
+pub(crate) const LOUDSPEAKER_LAYOUT_BINAURAL: u8 = 9;
+
+/// Whether `config` is a scalable channel config carrying binaural input
+/// (any layer with loudspeaker_layout BINAURAL; §3.7.4 requires it to be
+/// the only layer).
+pub(crate) fn is_binaural_input(config: &iamf_obu::descriptors::AudioElementConfig) -> bool {
+    matches!(
+        config,
+        iamf_obu::descriptors::AudioElementConfig::ChannelBased { layers }
+            if layers.iter().any(|l| l.loudspeaker_layout == LOUDSPEAKER_LAYOUT_BINAURAL)
+    )
+}
+
+/// Whether an element with `config` can be rendered to `target`. Binaural
+/// input only passes through, to binaural or stereo (sound system A)
+/// output, like iamf-tools `AudioElementRendererPassThrough`; iamf-tools
+/// has no downmix for it to other loudspeaker layouts, so neither do we.
+/// Other elements are not restricted here (expanded layouts, still
+/// unimplemented, fail at render time).
+pub(crate) fn element_renders_to(
+    config: &iamf_obu::descriptors::AudioElementConfig,
+    target: SoundSystem,
+) -> bool {
+    !is_binaural_input(config) || matches!(target, SoundSystem::A | SoundSystem::Binaural)
+}
+
+/// Loudspeaker layouts 0..=8 (expanded layouts are not yet supported as
+/// inputs; binaural input is reconstructed like stereo and passed through,
+/// see [`crate::reconstruct::ChannelReconstructor`]).
 pub fn loudspeaker_info(loudspeaker_layout: u8) -> Option<&'static LoudspeakerInfo> {
     static INFOS: [LoudspeakerInfo; 9] = [
         // 0: Mono
