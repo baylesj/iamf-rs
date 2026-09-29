@@ -34,6 +34,16 @@ conformance suite is byte-identical).
 - CLI polish: `iamfdec` rejects unknown flags and parses args linearly;
   `iamfplay` prints `Display` errors.
 
+Descriptor-handling fixes ported from iamf-tools (conformant streams
+decode unchanged):
+
+- Mix presentation tag restrictions (iamf-tools 25a3dbb3b and the
+  existing `content_language` rule): `MixPresentation::tags` drops a
+  `content_language` whose value is not a three-character ISO 639-2
+  code, and any `content_language` / `content_type` beyond the first
+  valid instance (§3.7.5), instead of keeping every tag. Violations are
+  ignored, not errors, matching iamf-tools' permissive decoding.
+
 ## 0.2.0 — 2026-08-25
 
 Spec-conformance and Chromium-integration hardening. The C ABI settings

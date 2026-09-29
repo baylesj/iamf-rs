@@ -11,8 +11,8 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 iamf-obu = { path = "../crates/iamf-obu" }
 iamf-dec = { path = "../crates/iamf-dec" }
-iamf-codecs = { path = "../crates/iamf-codecs", features = ["pcm", "opus", "flac", "aac"] }
-iamf-capi = { path = "../crates/iamf-capi" }
+iamf-codecs = { path = "../crates/iamf-codecs", features = ["pcm", "opus-ffi", "flac", "aac"] }
+iamf-capi = { path = "../crates/iamf-capi", features = ["opus-ffi"] }
 
 [[bin]]
 name = "parse_obu"

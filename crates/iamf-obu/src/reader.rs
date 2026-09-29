@@ -73,6 +73,12 @@ impl<'a> ByteReader<'a> {
     /// the terminator (IAMF annotations; libiamf's string128). Invalid UTF-8
     /// is replaced rather than rejected.
     pub fn read_string(&mut self) -> Result<String> {
+        self.read_string_with_len().map(|(s, _)| s)
+    }
+
+    /// Like [`Self::read_string`], but also returns the raw byte length of
+    /// the string before lossy UTF-8 conversion (which can change it).
+    pub fn read_string_with_len(&mut self) -> Result<(String, usize)> {
         const MAX: usize = 128;
         let start = self.pos;
         let limit = (self.data.len() - start).min(MAX);
@@ -84,7 +90,7 @@ impl<'a> ByteReader<'a> {
                 offset: start + limit,
             })?;
         self.pos = start + len + 1;
-        Ok(String::from_utf8_lossy(&window[..len]).into_owned())
+        Ok((String::from_utf8_lossy(&window[..len]).into_owned(), len))
     }
 
     /// Skips `len` bytes.
