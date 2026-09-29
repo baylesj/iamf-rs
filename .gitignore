@@ -1,5 +1,6 @@
 /target
 fuzz/target
+crates/iamf-roar/target
 fuzz/corpus
 fuzz/artifacts
 fuzz/coverage

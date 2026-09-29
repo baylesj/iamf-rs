@@ -77,6 +77,11 @@ pure-Rust Opus decoder. That decoder is slow on real content (see
 - **Binaural rendering:** Headphone output (layout 14) at any supported sample
   rate. This renderer is a native port of
   [google/obr](https://github.com/google/obr).
+- **Custom renderers:** The streaming decoder can hand the render step to
+  an external renderer through a small hook. The separate `iamf-roar` crate
+  uses it to render through [ROAR](https://github.com/AOMediaCodec/roar),
+  AOM's Rust Open Audio Renderer. For how ROAR compares to the builtin
+  renderer, see [ARCHITECTURE.md](ARCHITECTURE.md).
 - **Parameters:** Animated mix gains (step, linear, and bezier). Demixing and
   recon gain timelines work at subblock granularity, and a parameter block can
   span temporal units.
@@ -152,6 +157,7 @@ matters, enable `opus-ffi`.
 | `tools/iamfdec`  | CLI that inspects `.iamf` files and decodes them to WAV.   |
 | `tools/iamfplay` | Terminal player with a stereo and binaural toggle.         |
 | `fuzz`           | cargo-fuzz targets for the parser, decoder, and C ABI.     |
+| `iamf-roar`      | Optional ROAR renderer and its CLI. Not in the workspace.  |
 
 `iamf-obu` has no dependencies. `iamf-dec` loads codecs through the
 `SubstreamDecoder` and `CodecFactory` traits, so an embedder can supply its
@@ -182,6 +188,28 @@ This build uses only the crates in this repository, so there are no
 external Rust dependencies to vendor. Turning off `binaural` also removes the
 FFT code and about 1.8 MB of embedded HRIR filters. Binaural output then falls
 back to stereo. CI checks these feature sets.
+
+## ROAR renderer
+
+The ROAR renderer lives in its own crate, `crates/iamf-roar`. That crate is
+not a workspace member and is not published. Its `RoarRendererFactory` plugs
+into `StreamDecoder::new_from_descriptors_with_renderer`. Some notes on this
+crate:
+
+- ROAR is not on crates.io. It is a git dependency pinned to a commit.
+  Keeping it out of the workspace means that the other crates build offline
+  and publish without it.
+- ROAR needs Rust 1.97.1. The workspace keeps the 1.85 MSRV.
+- ROAR defines unmangled C symbols (`roar_*`), which end up in any C library
+  that links it. For this reason, `iamf-capi` does not use ROAR. The C ABI
+  and the batch decoder always use the builtin renderer.
+
+The crate includes `iamfdec-roar`, a CLI that decodes a file to WAV through
+ROAR. It takes the same decode options as `iamfdec`:
+
+```sh
+cargo +1.97.1 run --release --manifest-path crates/iamf-roar/Cargo.toml -- file.iamf -s 3 -o out.wav
+```
 
 ## Use in Chromium
 
@@ -229,3 +257,8 @@ The BSD 3-Clause Clear License grants no patent rights. The upstream projects
 publish separate patent licenses (AOM Patent License 1.0 and OBR Patent
 License 1.0) that cover the derived portions. This section is a good-faith
 summary, not legal advice. Get a legal review before you redistribute.
+
+The optional `iamf-roar` crate also links
+[ROAR](https://github.com/AOMediaCodec/roar). ROAR uses its own BSD-3-Clause
+license plus the AOM Patent License 1.0 (see the `LICENSE` and `PATENTS`
+files of ROAR). The workspace crates never include ROAR.

@@ -21,6 +21,7 @@ pub mod presentation;
 pub mod profile;
 pub mod reconstruct;
 pub mod render;
+pub mod renderer;
 pub mod stream;
 
 use iamf_obu::descriptors::CodecConfig;
@@ -78,6 +79,9 @@ pub enum DecodeError {
     UnsupportedProfile(String),
     /// Pipeline stage not yet implemented.
     Unimplemented(&'static str),
+    /// An external renderer (see [`renderer`]) refused the selected mix
+    /// or output layout, or failed while rendering.
+    UnsupportedRenderer(String),
 }
 
 impl core::fmt::Display for DecodeError {
@@ -88,6 +92,7 @@ impl core::fmt::Display for DecodeError {
             DecodeError::InvalidDescriptors(msg) => write!(f, "invalid descriptors: {msg}"),
             DecodeError::UnsupportedProfile(msg) => write!(f, "unsupported profile: {msg}"),
             DecodeError::Unimplemented(what) => write!(f, "not yet implemented: {what}"),
+            DecodeError::UnsupportedRenderer(msg) => write!(f, "unsupported renderer: {msg}"),
         }
     }
 }
