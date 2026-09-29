@@ -48,9 +48,37 @@ enum iamfrs_profile {
   IAMFRS_PROFILE_BASE_ENHANCED = 1 << 2,
 };
 
-/* Decoder configuration, mirroring iamf_tools IamfDecoderFactory::Settings. */
+/* Values for iamfrs_settings.output_layout and the output_layout argument
+ * of iamfrs_decoder_reset_with_new_mix. Numbered exactly like iamf_tools
+ * OutputLayout (and the IAMF sound_system values 0..13); channel order
+ * follows the corresponding ITU-R BS.2051 / IAMF layout. */
+enum iamfrs_output_layout {
+  IAMFRS_LAYOUT_SOUND_SYSTEM_A_0_2_0 = 0,  /* stereo */
+  IAMFRS_LAYOUT_SOUND_SYSTEM_B_0_5_0 = 1,  /* 5.1 */
+  IAMFRS_LAYOUT_SOUND_SYSTEM_C_2_5_0 = 2,  /* 5.1.2 */
+  IAMFRS_LAYOUT_SOUND_SYSTEM_D_4_5_0 = 3,  /* 5.1.4 */
+  IAMFRS_LAYOUT_SOUND_SYSTEM_E_4_5_1 = 4,
+  IAMFRS_LAYOUT_SOUND_SYSTEM_F_3_7_0 = 5,
+  IAMFRS_LAYOUT_SOUND_SYSTEM_G_4_9_0 = 6,
+  IAMFRS_LAYOUT_SOUND_SYSTEM_H_9_10_3 = 7, /* 22.2 */
+  IAMFRS_LAYOUT_SOUND_SYSTEM_I_0_7_0 = 8,  /* 7.1 */
+  IAMFRS_LAYOUT_SOUND_SYSTEM_J_4_7_0 = 9,  /* 7.1.4 */
+  IAMFRS_LAYOUT_EXTENSION_2_7_0 = 10,      /* 7.1.2 */
+  IAMFRS_LAYOUT_EXTENSION_2_3_0 = 11,      /* 3.1.2 */
+  IAMFRS_LAYOUT_EXTENSION_0_1_0 = 12,      /* mono */
+  IAMFRS_LAYOUT_EXTENSION_6_9_0 = 13,      /* 9.1.6 */
+  /* iamf_tools kIAMF_Binaural (v3.0.0), channels [L, R]: HRTF rendering for
+   * elements with headphones_rendering_mode == 1 (binaural feature), the
+   * stereo matrices otherwise, matching iamf-tools/obr. */
+  IAMFRS_LAYOUT_BINAURAL = 14,
+};
+
+/* Decoder configuration, mirroring iamf_tools IamfDecoderFactory::Settings.
+ * Zero-initialization (= {0}, then set output_layout etc.) yields the
+ * iamf_tools defaults for the flag fields (trimming on, limiter and
+ * loudness normalization off). */
 typedef struct IamfrsSettings {
-  /* IAMF sound-system numbering shared with iamf_tools OutputLayout:
+  /* enum iamfrs_output_layout (iamf_tools OutputLayout numbering):
    * 0=stereo(A) 1=5.1(B) 2=5.1.2(C) 3=5.1.4(D) 4=E 5=F 6=G 7=H(22.2)
    * 8=7.1(I) 9=7.1.4(J) 10=7.1.2 11=3.1.2 12=mono 13=9.1.6
    * 14=binaural (HRTF for elements with headphones_rendering_mode == 1,
@@ -63,8 +91,11 @@ typedef struct IamfrsSettings {
   int64_t mix_presentation_id;
   /* enum iamfrs_channel_ordering. */
   int32_t channel_ordering;
-  /* Nonzero disables trimming at stream start / end (for callers whose
-   * demuxer trims via edts/elst). */
+  /* iamf_tools TrimmingSettings, inverted so that zero keeps the default
+   * (trim): nonzero disable_trim_start ignores the audio frames'
+   * num_samples_to_trim_at_start (trim_beginning = false), nonzero
+   * disable_trim_end ignores num_samples_to_trim_at_end (trim_end =
+   * false). For callers whose demuxer trims via edts/elst. */
   uint8_t disable_trim_start;
   uint8_t disable_trim_end;
   /* Bitmask of enum iamfrs_profile (iamf_tools requested_profile_versions).
@@ -113,9 +144,10 @@ int iamfrs_decoder_get_frame_size(const iamfrs_decoder *decoder,
 int iamfrs_decoder_get_selected_mix_presentation_id(
     const iamfrs_decoder *decoder, uint32_t *out);
 
-/* The layout actually rendered, in the sound-system numbering documented
- * on iamfrs_settings.output_layout (may differ from the request, e.g.
- * binaural falling back to stereo). */
+/* The layout actually rendered, as an enum iamfrs_output_layout value. The
+ * decoder renders to any requested layout, so this is the requested one;
+ * IAMFRS_LAYOUT_BINAURAL is reported as such even when the mix's elements
+ * use headphones_rendering_mode 0 (stereo matrices), as iamf_tools does. */
 int iamfrs_decoder_get_selected_layout(const iamfrs_decoder *decoder,
                                        uint32_t *out);
 

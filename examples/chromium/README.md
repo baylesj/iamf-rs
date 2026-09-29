@@ -36,3 +36,10 @@ Notes:
 - Loudness normalization and a libiamf-style peak limiter are available
   via `iamfrs_settings` but default off, matching the iamf-tools
   decoder's unprocessed output.
+- Matches the iamf-tools v3.0.0 `IamfDecoderInterface`:
+  `Settings::trimming_settings` (`TrimmingSettings`) is forwarded as
+  `iamfrs_settings.disable_trim_start` / `disable_trim_end` (inverted so
+  zero-initialized C settings keep the default of trimming), and
+  `OutputLayout::kIAMF_Binaural` maps to `IAMFRS_LAYOUT_BINAURAL` (14). All
+  `OutputLayout`, `OutputSampleType`, and `ChannelOrdering` values are
+  pinned to the C constants with `static_assert`s.
