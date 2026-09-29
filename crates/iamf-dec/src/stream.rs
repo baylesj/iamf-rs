@@ -17,8 +17,11 @@ use crate::params::{
 use crate::post::{LIMITER_LOOKAHEAD, LIMITER_THRESHOLD_DB, PeakLimiter};
 use crate::presentation::Descriptors;
 use crate::profile::{ProfileSet, filter_profiles_for_mix};
-use crate::reconstruct::{ChannelReconstructor, ambisonics_from_planes, deinterleave};
+use crate::reconstruct::{
+    ChannelReconstructor, Reconstructed, ambisonics_from_planes, deinterleave,
+};
 use crate::render::render;
+use crate::renderer::RendererBackend;
 use crate::{CodecFactory, DecodeError, DecodedFrame, SubstreamDecoder};
 
 /// Output PCM encoding (iamf-tools `OutputSampleType`).
@@ -103,6 +106,10 @@ pub struct StreamSettings {
     /// the iamf-tools decoder (Chromium's reference) emits unlimited
     /// rendered PCM, while libiamf limits by default — integrators choose.
     pub enable_limiter: bool,
+    /// Rendering engine (see [`crate::renderer`]). Defaults to the builtin
+    /// libiamf-matrix renderer; [`RendererBackend::Roar`] needs the `roar`
+    /// feature.
+    pub renderer: RendererBackend,
 }
 
 /// Mix presentation selection (iamf-tools `RequestedMix` shape).
@@ -132,6 +139,51 @@ impl Default for StreamSettings {
             requested_profiles: ProfileSet::all(),
             loudness_target_db: None,
             enable_limiter: false,
+            renderer: RendererBackend::default(),
+        }
+    }
+}
+
+/// Per-decoder rendering state for the selected [`RendererBackend`]. The
+/// builtin renderer keeps its (binaural) state per element slot; ROAR is
+/// one instance for the whole mix, created at the first temporal unit
+/// (it needs the frame length, sample rate and reconstructed layers).
+enum Backend {
+    Builtin,
+    #[cfg(feature = "roar")]
+    Roar(Option<Box<crate::roar::RoarMix>>),
+}
+
+impl Backend {
+    fn new(renderer: RendererBackend, sub_mixes: usize) -> Result<Self, DecodeError> {
+        match renderer {
+            RendererBackend::Builtin => Ok(Backend::Builtin),
+            #[cfg(feature = "roar")]
+            RendererBackend::Roar => {
+                if sub_mixes > crate::roar::MAX_GROUPS {
+                    return Err(DecodeError::UnsupportedRenderer(format!(
+                        "ROAR supports at most {} sub-mixes (audio groups), mix has {sub_mixes}",
+                        crate::roar::MAX_GROUPS
+                    )));
+                }
+                Ok(Backend::Roar(None))
+            }
+            #[cfg(not(feature = "roar"))]
+            RendererBackend::Roar => {
+                let _ = sub_mixes;
+                Err(DecodeError::UnsupportedRenderer(
+                    "the ROAR renderer requires iamf-dec's `roar` feature".into(),
+                ))
+            }
+        }
+    }
+
+    /// Drops renderer state (seek/discontinuity).
+    fn reset(&mut self) {
+        match self {
+            Backend::Builtin => {}
+            #[cfg(feature = "roar")]
+            Backend::Roar(mix) => *mix = None,
         }
     }
 }
@@ -317,6 +369,32 @@ fn binauralize_unit(
     ])
 }
 
+/// The slot's channel reconstructor, created on first use with the
+/// element's default demixing info.
+fn slot_reconstructor<'a>(
+    reconstructor: &'a mut Option<ChannelReconstructor>,
+    element: &AudioElement,
+    layers: &[iamf_obu::descriptors::ChannelAudioLayer],
+    target: SoundSystem,
+    force_highest: bool,
+) -> Result<&'a mut ChannelReconstructor, DecodeError> {
+    if reconstructor.is_none() {
+        let mut rec = ChannelReconstructor::with_layer_selection(layers, target, force_highest)?;
+        for param in &element.params {
+            if let ElementParam::Demixing {
+                default_demixing_mode,
+                default_weight_index,
+                ..
+            } = param
+            {
+                rec.set_default_demixing(*default_demixing_mode, *default_weight_index)?;
+            }
+        }
+        *reconstructor = Some(rec);
+    }
+    Ok(reconstructor.as_mut().expect("created above"))
+}
+
 /// The selected layout's `loudness_info` integrated loudness, in dB
 /// (Q7.8 → dB). Falls back to the first measured layout when none matches.
 fn content_loudness_db(sub_mix: &SubMix, target: SoundSystem) -> Option<f32> {
@@ -371,6 +449,8 @@ pub struct StreamDecoder {
     ended: bool,
     /// Parsed descriptors, retained for [`StreamDecoder::reset_with_new_mix`].
     parsed: Descriptors,
+    /// Rendering engine state.
+    backend: Backend,
 }
 
 impl StreamDecoder {
@@ -432,6 +512,7 @@ impl StreamDecoder {
             settings.layout,
         )?;
         let mix = &parsed.mix_presentations[mix_index];
+        let backend = Backend::new(settings.renderer, mix.sub_mixes.len())?;
         let [sub_mix] = mix.sub_mixes.as_slice() else {
             // Guaranteed by the profile filter; kept as a defensive check.
             return Err(DecodeError::InvalidDescriptors(
@@ -558,6 +639,7 @@ impl StreamDecoder {
             frame_size,
             ended: false,
             parsed,
+            backend,
         })
     }
 
@@ -741,6 +823,8 @@ impl StreamDecoder {
         let mut mixed: Vec<Vec<f32>> = vec![Vec::new(); out_channels];
         let mut trim: Option<(u32, u32)> = None;
         let mut unit_len: Option<usize> = None;
+        #[cfg(feature = "roar")]
+        let mut roar_inputs: Vec<crate::roar::ElementInput> = Vec::new();
 
         for slot in &mut self.slots {
             let frames: Vec<FramePcm> = slot
@@ -784,30 +868,17 @@ impl StreamDecoder {
             let hrtf = cfg!(feature = "binaural")
                 && self.target == SoundSystem::Binaural
                 && slot.headphones_rendering_mode == 1;
-            // Not if-let-else: the ambisonics arm is a peer case, not a
-            // fallback.
-            #[allow(clippy::single_match_else)]
-            let rendered = match &slot.element.config {
+            // Reconstruction (shared by all backends): demixing/recon gain
+            // for channel-based elements, ACN planes for scene-based ones.
+            let reconstructed = match &slot.element.config {
                 AudioElementConfig::ChannelBased { layers } => {
-                    if slot.reconstructor.is_none() {
-                        let mut rec =
-                            ChannelReconstructor::with_layer_selection(layers, self.target, hrtf)?;
-                        for param in &slot.element.params {
-                            if let ElementParam::Demixing {
-                                default_demixing_mode,
-                                default_weight_index,
-                                ..
-                            } = param
-                            {
-                                rec.set_default_demixing(
-                                    *default_demixing_mode,
-                                    *default_weight_index,
-                                )?;
-                            }
-                        }
-                        slot.reconstructor = Some(rec);
-                    }
-                    let rec = slot.reconstructor.as_mut().unwrap();
+                    let rec = slot_reconstructor(
+                        &mut slot.reconstructor,
+                        &slot.element,
+                        layers,
+                        self.target,
+                        hrtf,
+                    )?;
                     if let Some(mode) = dmx_mode {
                         rec.set_demixing_mode(mode)?;
                     }
@@ -815,61 +886,82 @@ impl StreamDecoder {
                         rec.set_recon_gains(recon);
                     }
                     let planar = rec.process_frame(&planes)?;
-                    #[cfg(feature = "binaural")]
-                    let rendered = if hrtf {
-                        let layout = rec.layout();
-                        binauralize_unit(
-                            &mut slot.binaural,
-                            crate::binaural::BinauralInput::Speakers {
-                                loudspeaker_layout: layout,
-                            },
-                            &planar,
-                            frame_len,
-                            slot.sample_rate,
-                        )?
-                    } else {
-                        let reconstructed = crate::reconstruct::Reconstructed::Channels {
-                            matrix: rec.matrix(),
-                            planar,
-                        };
-                        render(&reconstructed, target_matrix)?
-                    };
-                    #[cfg(not(feature = "binaural"))]
-                    let rendered = {
-                        let reconstructed = crate::reconstruct::Reconstructed::Channels {
-                            matrix: rec.matrix(),
-                            planar,
-                        };
-                        render(&reconstructed, target_matrix)?
-                    };
-                    rendered
+                    Reconstructed::Channels {
+                        matrix: rec.matrix(),
+                        planar,
+                    }
                 }
-                _ => {
-                    let reconstructed = ambisonics_from_planes(&slot.element.config, planes)?;
-                    #[cfg(feature = "binaural")]
-                    let rendered = if hrtf {
-                        let hoa = reconstructed.planar();
-                        let order = crate::reconstruct::hoa_order_index(hoa.len());
-                        binauralize_unit(
-                            &mut slot.binaural,
-                            crate::binaural::BinauralInput::Hoa { order },
-                            hoa,
-                            frame_len,
-                            slot.sample_rate,
-                        )?
-                    } else {
-                        render(&reconstructed, target_matrix)?
-                    };
-                    #[cfg(not(feature = "binaural"))]
-                    let rendered = render(&reconstructed, target_matrix)?;
-                    rendered
-                }
+                _ => ambisonics_from_planes(&slot.element.config, planes)?,
             };
 
             // Per-sample element mix gain over the untrimmed unit.
             let gains: Vec<f32> = (0..frame_len)
                 .map(|_| slot.gain_cursor.next(slot.gain_default))
                 .collect();
+
+            #[cfg(feature = "roar")]
+            if let Backend::Roar(_) = &self.backend {
+                // ROAR renders the whole mix at once; the gain is applied
+                // to the element input (ROAR's renderers are linear).
+                let kind = match (&reconstructed, &slot.reconstructor) {
+                    (Reconstructed::Channels { .. }, Some(rec)) => {
+                        crate::roar::ElementKind::Channels {
+                            loudspeaker_layout: rec.layout(),
+                            default_dmixp_mode: slot.element.params.iter().find_map(|p| match p {
+                                ElementParam::Demixing {
+                                    default_demixing_mode,
+                                    ..
+                                } => Some(*default_demixing_mode),
+                                _ => None,
+                            }),
+                        }
+                    }
+                    _ => crate::roar::ElementKind::Hoa,
+                };
+                let mut planar = reconstructed.into_planar();
+                for plane in &mut planar {
+                    for (s, &g) in plane.iter_mut().zip(&gains) {
+                        *s *= g;
+                    }
+                }
+                roar_inputs.push(crate::roar::ElementInput {
+                    id: slot.element.audio_element_id,
+                    group: 0,
+                    kind,
+                    headphones_rendering_mode: slot.headphones_rendering_mode,
+                    dmixp_mode: dmx_mode,
+                    planar,
+                });
+                continue;
+            }
+
+            // Builtin backend: libiamf gain matrices, or the obr-style
+            // binaural renderer for headphones_rendering_mode 1.
+            #[cfg(feature = "binaural")]
+            let rendered = if hrtf {
+                let input = match &slot.reconstructor {
+                    Some(rec) if matches!(reconstructed, Reconstructed::Channels { .. }) => {
+                        crate::binaural::BinauralInput::Speakers {
+                            loudspeaker_layout: rec.layout(),
+                        }
+                    }
+                    _ => crate::binaural::BinauralInput::Hoa {
+                        order: crate::reconstruct::hoa_order_index(reconstructed.planar().len()),
+                    },
+                };
+                binauralize_unit(
+                    &mut slot.binaural,
+                    input,
+                    reconstructed.planar(),
+                    frame_len,
+                    slot.sample_rate,
+                )?
+            } else {
+                render(&reconstructed, target_matrix)?
+            };
+            #[cfg(not(feature = "binaural"))]
+            let rendered = render(&reconstructed, target_matrix)?;
+
             for (mix_plane, rendered_plane) in mixed.iter_mut().zip(&rendered) {
                 if mix_plane.len() < rendered_plane.len() {
                     mix_plane.resize(rendered_plane.len(), 0.0);
@@ -878,6 +970,21 @@ impl StreamDecoder {
                     *o += g * s;
                 }
             }
+        }
+
+        #[cfg(feature = "roar")]
+        let sample_rate = self.sample_rate();
+        #[cfg(feature = "roar")]
+        if let Backend::Roar(roar) = &mut self.backend {
+            if roar.is_none() {
+                *roar = Some(Box::new(crate::roar::RoarMix::new(
+                    self.target,
+                    unit_len.unwrap_or(0),
+                    sample_rate,
+                    &roar_inputs,
+                )?));
+            }
+            mixed = roar.as_mut().expect("created above").render(&roar_inputs)?;
         }
 
         // Output mix gain, then trimming, then loudness normalization and
@@ -1005,6 +1112,7 @@ impl StreamDecoder {
         self.ended = false;
         self.output_cursor = GainCursor::default();
         self.limiter = None;
+        self.backend.reset();
         for slot in &mut self.slots {
             for q in &mut slot.queues {
                 q.clear();

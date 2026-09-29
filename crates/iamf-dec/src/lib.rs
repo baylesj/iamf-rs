@@ -21,6 +21,9 @@ pub mod presentation;
 pub mod profile;
 pub mod reconstruct;
 pub mod render;
+pub mod renderer;
+#[cfg(feature = "roar")]
+pub(crate) mod roar;
 pub mod stream;
 
 use iamf_obu::descriptors::CodecConfig;
@@ -78,6 +81,10 @@ pub enum DecodeError {
     UnsupportedProfile(String),
     /// Pipeline stage not yet implemented.
     Unimplemented(&'static str),
+    /// The requested renderer backend is not compiled in, cannot express
+    /// the selected mix (e.g. more sub-mixes than ROAR has audio groups),
+    /// or failed (see [`renderer`]).
+    UnsupportedRenderer(String),
 }
 
 impl core::fmt::Display for DecodeError {
@@ -88,6 +95,7 @@ impl core::fmt::Display for DecodeError {
             DecodeError::InvalidDescriptors(msg) => write!(f, "invalid descriptors: {msg}"),
             DecodeError::UnsupportedProfile(msg) => write!(f, "unsupported profile: {msg}"),
             DecodeError::Unimplemented(what) => write!(f, "not yet implemented: {what}"),
+            DecodeError::UnsupportedRenderer(msg) => write!(f, "unsupported renderer: {msg}"),
         }
     }
 }

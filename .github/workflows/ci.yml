@@ -47,6 +47,11 @@ jobs:
           cargo check -p iamfplay --no-default-features
           # The Chromium-shaped minimal build.
           cargo check -p iamf-capi --no-default-features --features pcm,opus-ffi
+          # The optional ROAR renderer backend on its own (needs Rust
+          # >= 1.97.1, which `stable` satisfies; --all-features above
+          # already builds and tests it together with everything else).
+          cargo check -p iamf-dec --no-default-features --features roar
+          cargo check -p iamfdec --features roar
       - name: Compile-check reference Chromium adapter
         run: |
           c++ -std=c++17 -fsyntax-only \
@@ -66,7 +71,11 @@ jobs:
       - name: Install libopus and ALSA headers
         run: sudo apt-get update && sudo apt-get install -y libopus-dev libasound2-dev
       - name: Check with the minimum supported Rust version
-        run: cargo check --locked --workspace --all-features --all-targets
+        # Every feature except `roar`: the optional ROAR renderer backend
+        # requires Rust 1.97.1 and is covered by the stable job above.
+        run: >-
+          cargo check --locked --workspace --all-targets
+          --features iamf-codecs/opus-ffi,iamf-capi/opus-ffi,iamfdec/opus-ffi
 
   audit:
     runs-on: ubuntu-latest

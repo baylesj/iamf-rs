@@ -7,7 +7,9 @@ use std::process::ExitCode;
 
 use iamf_codecs::DefaultFactory;
 use iamf_dec::layout::SoundSystem;
-use iamf_dec::presentation::{Descriptors, PresentationDecoder};
+use iamf_dec::presentation::{Descriptors, PresentationDecoder, RenderedMix};
+use iamf_dec::renderer::RendererBackend;
+use iamf_dec::stream::{MixSelection, OutputSampleType, StreamDecoder, StreamSettings};
 use iamf_obu::ObuIter;
 use iamf_obu::descriptors::{self, AudioElementConfig, Descriptor, Layout};
 
@@ -16,10 +18,12 @@ struct Options {
     limiter: bool,
     /// Target loudness in dB for normalization, when set.
     loudness: Option<f32>,
+    /// Rendering engine.
+    renderer: RendererBackend,
 }
 
-const USAGE: &str =
-    "usage: iamfdec <file.iamf> [-o out.wav] [-s sound_system] [--limiter] [--loudness dB]";
+const USAGE: &str = "usage: iamfdec <file.iamf> [-o out.wav] [-s sound_system] [--limiter] \
+                     [--loudness dB] [--renderer builtin|roar]";
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
@@ -27,6 +31,7 @@ fn main() -> ExitCode {
         sound_system: 0,
         limiter: false,
         loudness: None,
+        renderer: RendererBackend::Builtin,
     };
     let mut wav_out = None;
     let mut path = None;
@@ -57,6 +62,22 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             }
+            "--renderer" => match args.next().as_deref() {
+                Some("builtin") => opts.renderer = RendererBackend::Builtin,
+                Some("roar") => {
+                    if !RendererBackend::Roar.is_available() {
+                        eprintln!(
+                            "error: --renderer roar needs iamfdec built with `--features roar`"
+                        );
+                        return ExitCode::FAILURE;
+                    }
+                    opts.renderer = RendererBackend::Roar;
+                }
+                _ => {
+                    eprintln!("error: --renderer expects `builtin` or `roar`");
+                    return ExitCode::FAILURE;
+                }
+            },
             flag if flag.starts_with('-') => {
                 eprintln!("error: unknown option {flag}\n{USAGE}");
                 return ExitCode::FAILURE;
@@ -130,34 +151,13 @@ fn decode_to_wav(data: &[u8], out_path: &str, opts: &Options) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mut decoder = match PresentationDecoder::new(&descriptors, 0, target, &DefaultFactory) {
-        Ok(d) => d,
-        Err(err) => {
-            eprintln!("error: {err}");
-            return ExitCode::FAILURE;
-        }
+    let decoded = if opts.renderer == RendererBackend::Builtin {
+        decode_batch(data, &descriptors, target)
+    } else {
+        decode_streaming(data, target, opts.renderer)
     };
-
-    let mut frames = 0usize;
-    for result in ObuIter::new(data) {
-        let obu = match result {
-            Ok(obu) => obu,
-            Err(err) => {
-                eprintln!("error: {err}");
-                return ExitCode::FAILURE;
-            }
-        };
-        match decoder.process_obu(&obu) {
-            Ok(consumed) => frames += usize::from(consumed && obu.header.obu_type.is_audio_frame()),
-            Err(err) => {
-                eprintln!("error: {:?}: {err}", obu.header.obu_type);
-                return ExitCode::FAILURE;
-            }
-        }
-    }
-
-    let mut mix = match decoder.finish() {
-        Ok(mix) => mix,
+    let (frames, mut mix) = match decoded {
+        Ok(decoded) => decoded,
         Err(err) => {
             eprintln!("error: {err}");
             return ExitCode::FAILURE;
@@ -209,6 +209,66 @@ fn decode_to_wav(data: &[u8], out_path: &str, opts: &Options) -> ExitCode {
         mix.channels, mix.sample_rate
     );
     ExitCode::SUCCESS
+}
+
+/// Builtin renderer: the batch presentation pipeline (conformance-tested).
+/// Returns the number of consumed audio frame OBUs and the mix.
+fn decode_batch(
+    data: &[u8],
+    descriptors: &Descriptors,
+    target: SoundSystem,
+) -> Result<(usize, RenderedMix), String> {
+    let mut decoder = PresentationDecoder::new(descriptors, 0, target, &DefaultFactory)
+        .map_err(|e| e.to_string())?;
+    let mut frames = 0usize;
+    for result in ObuIter::new(data) {
+        let obu = result.map_err(|e| e.to_string())?;
+        let consumed = decoder
+            .process_obu(&obu)
+            .map_err(|e| format!("{:?}: {e}", obu.header.obu_type))?;
+        frames += usize::from(consumed && obu.header.obu_type.is_audio_frame());
+    }
+    Ok((frames, decoder.finish().map_err(|e| e.to_string())?))
+}
+
+/// Other renderers: the streaming decoder (s32 output, converted back to
+/// f32 for the shared loudness/limiter/WAV stages). Returns the number of
+/// decoded temporal units and the mix.
+fn decode_streaming(
+    data: &[u8],
+    target: SoundSystem,
+    renderer: RendererBackend,
+) -> Result<(usize, RenderedMix), String> {
+    let mut settings = StreamSettings::default();
+    settings.layout = target;
+    settings.sample_type = Some(OutputSampleType::Int32LittleEndian);
+    settings.mix_selection = MixSelection::ByIndex(0);
+    settings.renderer = renderer;
+    let mut decoder = StreamDecoder::new_from_descriptors(data, settings, &DefaultFactory)
+        .map_err(|e| e.to_string())?;
+    decoder.decode(data).map_err(|e| e.to_string())?;
+    decoder.signal_end_of_decoding();
+    let mut units = 0usize;
+    let mut interleaved = Vec::new();
+    while let Some(bytes) = decoder
+        .get_output_temporal_unit()
+        .map_err(|e| e.to_string())?
+    {
+        units += 1;
+        interleaved.extend(
+            bytes
+                .chunks_exact(4)
+                .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f32 / 2_147_483_648.0),
+        );
+    }
+    Ok((
+        units,
+        RenderedMix {
+            channels: decoder.num_output_channels(),
+            sample_rate: decoder.sample_rate(),
+            interleaved,
+        },
+    ))
 }
 
 fn write_wav_s16(

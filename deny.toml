@@ -35,3 +35,6 @@ multiple-versions = "warn"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+# ROAR (AOM's Rust Open Audio Renderer) is not published on crates.io; the
+# optional `iamf-dec/roar` feature pins it to a commit of the upstream repo.
+allow-git = ["https://github.com/AOMediaCodec/roar"]

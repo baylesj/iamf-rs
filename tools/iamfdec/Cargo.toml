@@ -16,6 +16,8 @@ iamf-codecs = { path = "../../crates/iamf-codecs", features = ["pcm", "opus", "f
 [features]
 # Use libopus (FFI) instead of the pure-Rust Opus decoder.
 opus-ffi = ["iamf-codecs/opus-ffi"]
+# Enables `--renderer roar` (needs Rust 1.97.1; see iamf-dec's feature).
+roar = ["iamf-dec/roar"]
 
 [dev-dependencies]
 criterion = "0.5"
