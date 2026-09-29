@@ -113,6 +113,11 @@ fn stream_matches_batch_projection() {
     equivalence_case("test_000048", 0);
 }
 
+#[test]
+fn stream_matches_batch_redundant_sequence_header() {
+    equivalence_case("test_000079", 0);
+}
+
 /// Vectors marked `is_valid_to_decode: false` must be rejected, not
 /// decoded on a best-effort basis: 000007 has a non-lowercase ia_code,
 /// 000025 an Opus version of 16 (§3.6.1 requires 1).

@@ -1,11 +1,13 @@
 //! Hand-built LPCM streams exercising behaviors the fetched conformance
 //! vectors don't cover: parameter blocks whose subblocks span several
 //! temporal units, temporal-delimiter alignment checking, per-unit trim
-//! consistency, and duplicated parameter IDs.
+//! consistency, duplicated parameter IDs, and redundant sequence headers
+//! that disagree with the canonical one.
 
 use iamf_codecs::DefaultFactory;
 use iamf_dec::DecodeError;
 use iamf_dec::layout::SoundSystem;
+use iamf_dec::profile::ProfileSet;
 use iamf_dec::stream::{StreamDecoder, StreamSettings};
 
 const FRAME: usize = 64;
@@ -310,4 +312,41 @@ fn duplicate_parameter_id_applies_to_all_consumers() {
             "sample {g} vs expected {expected} (both gain stages must apply)"
         );
     }
+}
+
+/// A redundant IA sequence header injected ahead of the canonical one
+/// (test_000079 shape) must not override it: here the copy disagrees and
+/// declares base-enhanced only, while the canonical header declares
+/// simple. A simple-only decoder must follow the canonical header.
+#[test]
+fn canonical_sequence_header_overrides_redundant_copy() {
+    let redundant_copy = {
+        let mut out = vec![31 << 3 | 1 << 2]; // obu_redundant_copy = 1
+        out.extend(leb(6));
+        out.extend(b"iamf\x02\x02");
+        out
+    };
+    let mut canonical = obu(31, b"iamf\x00\x00");
+    canonical.extend(lpcm_codec_config());
+    canonical.extend(stereo_element());
+    canonical.extend(mix_presentation(100, 101));
+    let frames: Vec<i16> = (0..FRAME).flat_map(|k| [k as i16, -(k as i16)]).collect();
+    canonical.extend(frame_obu(0, &frames));
+    let mut injected = redundant_copy;
+    injected.extend_from_slice(&canonical);
+
+    let decode_simple = |data: &[u8]| -> Result<Vec<u8>, DecodeError> {
+        let mut settings = StreamSettings::default();
+        settings.requested_profiles = ProfileSet::SIMPLE;
+        let mut decoder = StreamDecoder::new_from_descriptors(data, settings, &DefaultFactory)?;
+        decoder.decode(data)?;
+        let mut out = Vec::new();
+        while let Some(unit) = decoder.get_output_temporal_unit()? {
+            out.extend(unit);
+        }
+        Ok(out)
+    };
+    let expected = decode_simple(&canonical).unwrap();
+    assert_eq!(expected.len(), FRAME * 2 * 2);
+    assert_eq!(decode_simple(&injected).unwrap(), expected);
 }
