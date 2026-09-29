@@ -15,20 +15,35 @@ use crate::matrices::MatrixLayout;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SoundSystem {
+    /// Sound system A: 2.0 stereo (BS.2051-A: L, R).
     A,
+    /// Sound system B: 5.1 surround (BS.2051-B: L, R, C, LFE, Ls, Rs).
     B,
+    /// Sound system C: 5.1.2 immersive (BS.2051-C).
     C,
+    /// Sound system D: 5.1.4 immersive (BS.2051-D).
     D,
+    /// Sound system E: 7.1.2 immersive (BS.2051-E).
     E,
+    /// Sound system F: 7.1.4 immersive (BS.2051-F).
     F,
+    /// Sound system G: 9.1.4 immersive (BS.2051-G).
     G,
+    /// Sound system H: 22.2 immersive (BS.2051-H).
     H,
+    /// Sound system I: 7.1 surround (BS.2051-I).
     I,
+    /// Sound system J: 7.1.4 immersive (BS.2051-J).
     J,
+    /// Extended 7.1.2 layout.
     Ext712,
+    /// Extended 3.1.2 layout.
     Ext312,
+    /// Single-channel mono.
     Mono,
+    /// Extended 9.1.6 layout.
     Ext916,
+    /// Binaural headphone rendering (layout 14).
     Binaural,
 }
 
@@ -41,6 +56,7 @@ impl TryFrom<u8> for SoundSystem {
 }
 
 impl SoundSystem {
+    /// Maps a raw layout integer ID (0..=14) to a [`SoundSystem`].
     pub fn from_u8(value: u8) -> Option<Self> {
         Some(match value {
             0 => SoundSystem::A,
@@ -62,6 +78,7 @@ impl SoundSystem {
         })
     }
 
+    /// Number of output audio channels for this sound system.
     pub fn channels(&self) -> usize {
         match self {
             SoundSystem::Mono => 1,
@@ -102,6 +119,7 @@ impl SoundSystem {
 /// Static info for a channel-based element's loudspeaker_layout (§3.7.4).
 #[derive(Debug)]
 pub struct LoudspeakerInfo {
+    /// Number of channels in the layout.
     pub channels: usize,
     /// Position in rendering (channel_layout) order of each channel in
     /// substream-decode order: coupled pairs first, then C, then LFE.

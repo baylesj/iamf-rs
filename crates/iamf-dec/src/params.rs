@@ -92,7 +92,9 @@ pub(crate) fn build_param_index(
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum ParamContext<'a> {
+    /// Mix gain parameter definition context.
     MixGain,
+    /// Demixing parameter definition context.
     Demixing,
     /// Channel layers of the owning element; recon gain data exists only
     /// for layers with `recon_gain_is_present`.
@@ -103,17 +105,27 @@ pub enum ParamContext<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum MixGainAnimation {
+    /// Step transition holding constant gain.
     Step {
+        /// Constant gain in Q7.8 dB.
         start: i16,
     },
+    /// Linear ramp between two gain values.
     Linear {
+        /// Starting gain in Q7.8 dB.
         start: i16,
+        /// Ending gain in Q7.8 dB.
         end: i16,
     },
+    /// Bezier curve transition.
     Bezier {
+        /// Starting gain in Q7.8 dB.
         start: i16,
+        /// Ending gain in Q7.8 dB.
         end: i16,
+        /// Control point gain in Q7.8 dB.
         control: i16,
+        /// Normalized time of control point (0..=255).
         control_relative_time: u8,
     },
 }
@@ -224,25 +236,40 @@ impl LinearAnimation {
 /// flag bit, in ascending bit order. `None` for layers without recon gain.
 pub type ReconGainLayers = Vec<Option<(u32, Vec<u8>)>>;
 
+/// Parameter payload data for one subblock.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SubblockData {
+    /// Mix gain animation data.
     MixGain(MixGainAnimation),
-    Demixing { dmixp_mode: u8 },
+    /// Demixing mode payload.
+    Demixing {
+        /// Demixing parameter mode (0..=3).
+        dmixp_mode: u8,
+    },
+    /// Recon gain layers payload.
     ReconGain(ReconGainLayers),
 }
 
+/// A single subblock within a parameter block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParameterSubblock {
+    /// Subblock duration in parameter ticks.
     pub duration: u32,
+    /// Parameter data for this subblock.
     pub data: SubblockData,
 }
 
+/// A parsed parameter block OBU payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParameterBlock {
+    /// Target parameter ID.
     pub parameter_id: u32,
+    /// Total duration of the block in parameter ticks.
     pub duration: u32,
+    /// Constant subblock duration, or 0 if durations vary.
     pub constant_subblock_duration: u32,
+    /// List of parameter subblocks in this block.
     pub subblocks: Vec<ParameterSubblock>,
 }
 
@@ -253,6 +280,7 @@ impl ParameterBlock {
         ByteReader::new(payload).read_leb128()
     }
 
+    /// Parses a parameter block payload against its parameter definition and context.
     pub fn parse(
         payload: &[u8],
         definition: &ParamDefinition,
@@ -402,6 +430,7 @@ impl<T> Default for ParamCursor<T> {
 }
 
 impl<T: Clone> ParamCursor<T> {
+    /// Appends a value with its sample duration to the timeline.
     pub fn push(&mut self, value: T, duration: usize) {
         if duration > 0 {
             self.queue.push_back((value, duration));
@@ -435,6 +464,7 @@ impl<T: Clone> ParamCursor<T> {
         value
     }
 
+    /// Clears all queued timeline values and reset state.
     pub fn clear(&mut self) {
         self.queue.clear();
         self.last = None;

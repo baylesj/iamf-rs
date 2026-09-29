@@ -23,17 +23,24 @@ use crate::params::{ReconGainLayers, q78_db_to_linear};
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Reconstructed {
+    /// Channel-based audio with its associated matrix layout.
     Channels {
+        /// Layout key for rendering matrices.
         matrix: MatrixLayout,
+        /// Planar channel sample buffers.
         planar: Vec<Vec<f32>>,
     },
+    /// Higher-Order Ambisonics audio with its ambisonics order.
     Hoa {
+        /// Ambisonics order.
         order: HoaOrder,
+        /// Planar channel sample buffers in ACN order.
         planar: Vec<Vec<f32>>,
     },
 }
 
 impl Reconstructed {
+    /// Returns a slice of the planar channel audio buffers.
     pub fn planar(&self) -> &[Vec<f32>] {
         match self {
             Reconstructed::Channels { planar, .. } | Reconstructed::Hoa { planar, .. } => planar,
@@ -57,6 +64,7 @@ pub struct ChannelReconstructor {
 }
 
 impl ChannelReconstructor {
+    /// Creates a reconstructor for the given layers and target sound system.
     pub fn new(layers: &[ChannelAudioLayer], target: SoundSystem) -> Result<Self, DecodeError> {
         Self::with_layer_selection(layers, target, false)
     }
@@ -156,6 +164,7 @@ impl ChannelReconstructor {
         })
     }
 
+    /// Number of decoded input channels required for the selected layer.
     pub fn input_channels(&self) -> usize {
         self.input_channels
     }
@@ -218,10 +227,12 @@ pub fn deinterleave(samples: &[f32], channels: usize) -> Vec<Vec<f32>> {
 
 /// ACN channel count → ambisonics order (√n − 1), saturating on empty
 /// input so hostile plane lists cannot underflow.
+#[cfg(feature = "binaural")]
 pub(crate) fn hoa_order_index(channels: usize) -> usize {
     channels.isqrt().saturating_sub(1)
 }
 
+/// Maps an ambisonics ACN channel count (1, 4, 9, 16, 25) to its [`HoaOrder`].
 pub fn hoa_order(channels: u8) -> Result<HoaOrder, DecodeError> {
     Ok(match channels {
         1 => HoaOrder::Zoa,

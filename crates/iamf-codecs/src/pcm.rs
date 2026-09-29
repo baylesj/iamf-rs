@@ -3,10 +3,14 @@
 use iamf_dec::{CodecFactory, DecodeError, DecodedFrame, SubstreamDecoder};
 use iamf_obu::descriptors::{CodecConfig, CodecId, DecoderConfig};
 
+/// Supported linear PCM sample formats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SampleFormat {
+    /// 16-bit signed integer PCM.
     S16,
+    /// 24-bit signed integer PCM.
     S24,
+    /// 32-bit signed integer PCM.
     S32,
 }
 
@@ -33,6 +37,7 @@ pub struct PcmDecoder {
 }
 
 impl PcmDecoder {
+    /// Creates a new LPCM decoder with the given format, endianness, channels, and sample rate.
     pub fn new(format: SampleFormat, little_endian: bool, channels: u8, sample_rate: u32) -> Self {
         Self {
             format,
@@ -82,6 +87,7 @@ impl SubstreamDecoder for PcmDecoder {
     fn reset(&mut self) {}
 }
 
+/// Constructs LPCM substream decoders.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PcmFactory;
 

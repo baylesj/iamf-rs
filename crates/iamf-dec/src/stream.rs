@@ -25,11 +25,14 @@ use crate::{CodecFactory, DecodeError, DecodedFrame, SubstreamDecoder};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum OutputSampleType {
+    /// 16-bit signed integer little-endian PCM.
     Int16LittleEndian,
+    /// 32-bit signed integer little-endian PCM.
     Int32LittleEndian,
 }
 
 impl OutputSampleType {
+    /// Number of bytes per audio sample for this encoding (2 for s16, 4 for s32).
     pub fn bytes_per_sample(self) -> usize {
         match self {
             OutputSampleType::Int16LittleEndian => 2,
@@ -56,7 +59,9 @@ pub enum ChannelOrdering {
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct TrimmingSettings {
+    /// Whether to apply leading sample trims from audio frame OBUs.
     pub trim_beginning: bool,
+    /// Whether to apply trailing sample trims from audio frame OBUs.
     pub trim_end: bool,
 }
 
@@ -74,12 +79,15 @@ impl Default for TrimmingSettings {
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct StreamSettings {
+    /// Target loudspeaker layout or binaural rendering mode.
     pub layout: SoundSystem,
     /// `None` selects s16le or s32le from the stream's bit depth.
     pub sample_type: Option<OutputSampleType>,
     /// Which mix presentation to decode.
     pub mix_selection: MixSelection,
+    /// Output channel ordering (IAMF standard or Android/WAVE).
     pub channel_ordering: ChannelOrdering,
+    /// Trimming configuration for packet start/end trims.
     pub trimming: TrimmingSettings,
     /// Profiles the caller supports (iamf-tools
     /// `requested_profile_versions`): the stream's declared profiles must
@@ -937,10 +945,12 @@ impl StreamDecoder {
         Ok(Some(bytes))
     }
 
+    /// Number of output audio channels rendered for the selected layout.
     pub fn num_output_channels(&self) -> usize {
         self.target.channels()
     }
 
+    /// Output sampling rate in Hz.
     pub fn sample_rate(&self) -> u32 {
         self.slots
             .iter()
@@ -960,10 +970,12 @@ impl StreamDecoder {
             })
     }
 
+    /// Frame duration / number of samples per channel per temporal unit.
     pub fn frame_size(&self) -> u32 {
         self.frame_size
     }
 
+    /// PCM sample encoding format of pulled audio data.
     pub fn sample_type(&self) -> OutputSampleType {
         self.sample_type
     }
@@ -980,6 +992,7 @@ impl StreamDecoder {
         self.ended = true;
     }
 
+    /// Returns true if end-of-stream has been signaled.
     pub fn is_ended(&self) -> bool {
         self.ended
     }

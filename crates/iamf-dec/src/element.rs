@@ -35,8 +35,11 @@ pub fn substream_channels(config: &AudioElementConfig) -> Vec<u8> {
 /// One decoded, untrimmed frame of one substream (interleaved).
 #[derive(Debug, Clone, Default)]
 pub struct FramePcm {
+    /// Interleaved sample data.
     pub samples: Vec<f32>,
+    /// Number of start samples to trim.
     pub trim_start: u32,
+    /// Number of end samples to trim.
     pub trim_end: u32,
 }
 
@@ -54,8 +57,11 @@ impl FramePcm {
 /// Decoded PCM of one substream.
 #[derive(Debug, Clone, Default)]
 pub struct SubstreamPcm {
+    /// Substream ID.
     pub substream_id: u32,
+    /// Channel count.
     pub channels: u8,
+    /// Sample rate in Hz.
     pub sample_rate: u32,
     /// Interleaved samples with per-frame trimming applied.
     pub samples: Vec<f32>,
@@ -65,13 +71,18 @@ pub struct SubstreamPcm {
 /// (scalable demixing).
 #[derive(Debug, Clone, Default)]
 pub struct SubstreamFrames {
+    /// Substream ID.
     pub substream_id: u32,
+    /// Channel count.
     pub channels: u8,
+    /// Sample rate in Hz.
     pub sample_rate: u32,
+    /// List of untrimmed decoded frames.
     pub frames: Vec<FramePcm>,
 }
 
 impl SubstreamFrames {
+    /// Returns the concatenated samples with all frame-level trims applied.
     pub fn trimmed(&self) -> SubstreamPcm {
         let channels = usize::from(self.channels.max(1));
         let mut samples = Vec::new();
@@ -107,6 +118,7 @@ impl core::fmt::Debug for ElementDecoder {
 }
 
 impl ElementDecoder {
+    /// Creates a new element decoder for the given audio element and codec configuration.
     pub fn new(
         element: &AudioElement,
         codec_config: &CodecConfig,

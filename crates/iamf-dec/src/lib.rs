@@ -6,6 +6,7 @@
 //! supply pure-Rust decoders, FFI decoders, or platform decoders.
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 #[cfg(feature = "binaural")]
 pub mod binaural;
@@ -29,8 +30,11 @@ pub use matrices::{HoaOrder, MatrixLayout};
 /// PCM output of one substream for one frame: interleaved f32 in [-1, 1].
 #[derive(Debug, Clone, Default)]
 pub struct DecodedFrame {
+    /// Interleaved audio sample buffer.
     pub samples: Vec<f32>,
+    /// Number of channels in the decoded frame.
     pub channels: u8,
+    /// Sample rate in Hz.
     pub sample_rate: u32,
 }
 
@@ -49,7 +53,9 @@ pub trait SubstreamDecoder {
 /// one factory per codec they support. `channels` is the substream's channel
 /// count (1, or 2 for coupled substreams), derived from the audio element.
 pub trait CodecFactory {
+    /// Returns true if this factory can decode streams with the given configuration.
     fn supports(&self, config: &CodecConfig) -> bool;
+    /// Creates a new substream decoder for the specified configuration and channel count.
     fn create(
         &self,
         config: &CodecConfig,
@@ -57,6 +63,7 @@ pub trait CodecFactory {
     ) -> Result<Box<dyn SubstreamDecoder>, DecodeError>;
 }
 
+/// Errors produced by the IAMF decoding pipeline.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DecodeError {

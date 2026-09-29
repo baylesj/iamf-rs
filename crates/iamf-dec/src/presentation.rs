@@ -28,13 +28,18 @@ use crate::{CodecFactory, DecodeError};
 /// re-transmissions.
 #[derive(Debug, Clone, Default)]
 pub struct Descriptors {
+    /// Parsed sequence header descriptor, if present.
     pub sequence_header: Option<descriptors::SequenceHeader>,
+    /// All unique codec config descriptors.
     pub codec_configs: Vec<CodecConfig>,
+    /// All unique audio element descriptors.
     pub audio_elements: Vec<AudioElement>,
+    /// All unique mix presentation descriptors.
     pub mix_presentations: Vec<MixPresentation>,
 }
 
 impl Descriptors {
+    /// Collects and parses all descriptor OBUs from a raw byte stream.
     pub fn collect(data: &[u8]) -> Result<Self, DecodeError> {
         let mut out = Descriptors::default();
         for result in ObuIter::new(data) {
@@ -89,7 +94,9 @@ impl Descriptors {
 /// Final rendered output of one sub mix.
 #[derive(Debug)]
 pub struct RenderedMix {
+    /// Number of output audio channels.
     pub channels: usize,
+    /// Sample rate in Hz.
     pub sample_rate: u32,
     /// Interleaved f32 samples.
     pub interleaved: Vec<f32>,
@@ -135,6 +142,7 @@ pub struct PresentationDecoder {
 }
 
 impl PresentationDecoder {
+    /// Creates a new presentation decoder for the specified mix presentation index, target sound system, and codec factory.
     pub fn new(
         descriptors: &Descriptors,
         mix_presentation_index: usize,
@@ -290,6 +298,7 @@ impl PresentationDecoder {
                 .then(|| evaluate_gain_track(&gain_blocks, gain, gain_rate, rate, &trim_map));
             let rendered = match slot_output {
                 SlotOutput::Planar(reconstructed) => render(&reconstructed, target_matrix)?,
+                #[cfg(feature = "binaural")]
                 SlotOutput::Stereo(stereo) => stereo,
             };
             if mixed.is_empty() {
@@ -404,6 +413,7 @@ type TrimMap = Vec<UnitTrim>;
 /// binauralized stereo.
 enum SlotOutput {
     Planar(Reconstructed),
+    #[cfg(feature = "binaural")]
     Stereo(Vec<Vec<f32>>),
 }
 
@@ -440,6 +450,7 @@ fn binauralize(
 }
 
 /// Cuts trim spans out of planes, per temporal unit.
+#[cfg(feature = "binaural")]
 fn apply_trim_map(planes: Vec<Vec<f32>>, trim_map: &TrimMap) -> Vec<Vec<f32>> {
     planes
         .into_iter()
@@ -529,6 +540,7 @@ fn reconstruct_slot(
                 }
             }
             let unit_count = substreams.iter().map(|s| s.frames.len()).min().unwrap_or(0);
+            #[cfg(feature = "binaural")]
             let frame_size = substreams
                 .first()
                 .and_then(|s| s.frames.first())
