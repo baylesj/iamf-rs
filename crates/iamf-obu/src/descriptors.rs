@@ -664,7 +664,11 @@ pub struct MixPresentation {
     pub localized_annotations: Vec<String>,
     /// The sub mixes (IAMF v1.1 requires exactly one).
     pub sub_mixes: Vec<SubMix>,
-    /// §8.x mix presentation tags (name, value), when present.
+    /// §3.7.5 mix presentation tags (name, value), when present, in
+    /// bitstream order. As in iamf-tools' permissive decoding, restricted
+    /// tags that violate their rule are dropped: `content_language` must
+    /// be a three-character ISO 639-2 code and, like `content_type`, may
+    /// occur at most once (the first valid instance is kept).
     pub tags: Vec<(String, String)>,
 }
 
@@ -716,8 +720,12 @@ impl MixPresentation {
         let mut tags = Vec::new();
         if !r.is_empty() {
             let num_tags = r.read_u8()?;
+            let mut restricted_counts = [0usize; TAG_RESTRICTIONS.len()];
             for _ in 0..num_tags {
-                tags.push((r.read_string()?, r.read_string()?));
+                let (name, value) = (r.read_string()?, r.read_string()?);
+                if keep_tag(&name, &value, &mut restricted_counts) {
+                    tags.push((name, value));
+                }
             }
         }
 
@@ -729,6 +737,50 @@ impl MixPresentation {
             tags,
         })
     }
+}
+
+/// One restricted mix presentation tag name (iamf-tools `TagRestriction`).
+struct TagRestriction {
+    name: &'static str,
+    max_count: usize,
+    /// Whether the value must be an ISO 639-2 code.
+    iso_639_2: bool,
+}
+
+/// Tags are freeform and may repeat, except these (iamf-tools
+/// `GetTagRestrictions`, iamf/obu/mix_presentation.cc). §3.7.5: at most
+/// one `content_language`, whose value SHALL conform to ISO 639-2
+/// (iamf-tools accepts any three-character value); `content_type` is also
+/// limited to one instance (iamf-tools 25a3dbb3b).
+const TAG_RESTRICTIONS: [TagRestriction; 2] = [
+    TagRestriction {
+        name: "content_language",
+        max_count: 1,
+        iso_639_2: true,
+    },
+    TagRestriction {
+        name: "content_type",
+        max_count: 1,
+        iso_639_2: false,
+    },
+];
+
+/// iamf-tools `ValidateTag` on decode: whether to keep a tag, counting
+/// kept instances of restricted names in `counts` (indexed like
+/// [`TAG_RESTRICTIONS`]). A value that fails validation is dropped without
+/// counting, so a later valid instance can still be kept; beyond
+/// `max_count`, instances are dropped (§3.7.5: "parsers SHOULD use the
+/// tag_value corresponding to the first instance").
+fn keep_tag(name: &str, value: &str, counts: &mut [usize; TAG_RESTRICTIONS.len()]) -> bool {
+    let Some(index) = TAG_RESTRICTIONS.iter().position(|t| t.name == name) else {
+        return true;
+    };
+    let restriction = &TAG_RESTRICTIONS[index];
+    if restriction.iso_639_2 && value.len() != 3 {
+        return false;
+    }
+    counts[index] += 1;
+    counts[index] <= restriction.max_count
 }
 
 /// Reads `count` items, guarding against absurd counts from a hostile
@@ -978,6 +1030,77 @@ mod tests {
         );
         assert_eq!(sub.layouts[0].1.integrated_loudness, -4096);
         assert!(mp.tags.is_empty());
+    }
+
+    /// Minimal unlabeled mix presentation followed by `tags`.
+    fn mix_with_tags(tags: &[(&str, &str)]) -> MixPresentation {
+        let mut payload = vec![0x2a, 0x00, 0x01]; // id 42, no labels, 1 sub mix
+        payload.push(0x01); // num_audio_elements
+        payload.extend([0x0a, 0x00, 0x00]); // element 10, rendering config
+        for parameter_id in [0x00, 0x01] {
+            // element_mix_gain then output_mix_gain: mode 1, 0 dB.
+            payload.push(parameter_id);
+            payload.extend([0x80, 0xf7, 0x02, 0x80, 0x00, 0x00]);
+        }
+        payload.extend([0x01, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00]); // stereo layout
+        payload.push(u8::try_from(tags.len()).unwrap());
+        for (name, value) in tags {
+            for s in [name, value] {
+                payload.extend(s.as_bytes());
+                payload.push(0);
+            }
+        }
+        let mp = MixPresentation::parse(&mut ByteReader::new(&payload)).unwrap();
+        assert_eq!(mp.sub_mixes[0].elements[0].audio_element_id, 10);
+        mp
+    }
+
+    fn tag_pairs(mp: &MixPresentation) -> Vec<(&str, &str)> {
+        mp.tags
+            .iter()
+            .map(|(n, v)| (n.as_str(), v.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn mix_presentation_tags_unrestricted_kept_in_order() {
+        let tags = [
+            ("artist", "a"),
+            ("artist", "b"),
+            ("content_language", "eng"),
+        ];
+        assert_eq!(tag_pairs(&mix_with_tags(&tags)), tags);
+    }
+
+    /// §3.7.5: at most one content_language; the first instance wins.
+    #[test]
+    fn mix_presentation_duplicate_content_language_ignored() {
+        let mp = mix_with_tags(&[("content_language", "eng"), ("content_language", "kor")]);
+        assert_eq!(tag_pairs(&mp), [("content_language", "eng")]);
+    }
+
+    /// content_language must be an ISO 639-2 (three-character) code. An
+    /// invalid value is dropped without using up the single slot.
+    #[test]
+    fn mix_presentation_non_iso_639_2_content_language_ignored() {
+        let mp = mix_with_tags(&[
+            ("content_language", "en-us"),
+            ("content_language", ""),
+            ("content_language", "fra"),
+            ("content_language", "deu"),
+        ]);
+        assert_eq!(tag_pairs(&mp), [("content_language", "fra")]);
+    }
+
+    /// iamf-tools 25a3dbb3b: content_type may occur at most once.
+    #[test]
+    fn mix_presentation_duplicate_content_type_ignored() {
+        let mp = mix_with_tags(&[
+            ("content_type", "music"),
+            ("other", "x"),
+            ("content_type", "dialogue"),
+        ]);
+        assert_eq!(tag_pairs(&mp), [("content_type", "music"), ("other", "x")]);
     }
 
     #[test]
