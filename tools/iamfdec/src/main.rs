@@ -8,18 +8,24 @@ use std::process::ExitCode;
 use iamf_codecs::DefaultFactory;
 use iamf_dec::layout::SoundSystem;
 use iamf_dec::presentation::{Descriptors, PresentationDecoder};
+use iamf_dec::stream::TrimmingSettings;
 use iamf_obu::ObuIter;
 use iamf_obu::descriptors::{self, AudioElementConfig, Descriptor, Layout};
+
+/// Sound system number of binaural output (iamf-tools `kIAMF_Binaural`).
+const BINAURAL: u8 = 14;
 
 struct Options {
     sound_system: u8,
     limiter: bool,
     /// Target loudness in dB for normalization, when set.
     loudness: Option<f32>,
+    /// Which audio-frame trims to apply (iamf-tools `TrimmingSettings`).
+    trimming: TrimmingSettings,
 }
 
-const USAGE: &str =
-    "usage: iamfdec <file.iamf> [-o out.wav] [-s sound_system] [--limiter] [--loudness dB]";
+const USAGE: &str = "usage: iamfdec <file.iamf> [-o out.wav] [-s sound_system|binaural] \
+     [--limiter] [--loudness dB] [--no-trim-start] [--no-trim-end]";
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
@@ -27,6 +33,7 @@ fn main() -> ExitCode {
         sound_system: 0,
         limiter: false,
         loudness: None,
+        trimming: TrimmingSettings::default(),
     };
     let mut wav_out = None;
     let mut path = None;
@@ -41,10 +48,16 @@ fn main() -> ExitCode {
                 }
             }
             "-s" => {
-                if let Some(s) = args.next().and_then(|v| v.parse().ok()) {
+                let value = args.next();
+                let parsed = match value.as_deref() {
+                    Some("binaural") => Some(BINAURAL),
+                    Some(v) => v.parse().ok(),
+                    None => None,
+                };
+                if let Some(s) = parsed {
                     opts.sound_system = s;
                 } else {
-                    eprintln!("error: -s expects a sound system number (0..=14)");
+                    eprintln!("error: -s expects a sound system number (0..=14) or `binaural`");
                     return ExitCode::FAILURE;
                 }
             }
@@ -57,6 +70,9 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             }
+            // For output that an outer layer (e.g. an MP4 edit list) trims.
+            "--no-trim-start" => opts.trimming.trim_beginning = false,
+            "--no-trim-end" => opts.trimming.trim_end = false,
             flag if flag.starts_with('-') => {
                 eprintln!("error: unknown option {flag}\n{USAGE}");
                 return ExitCode::FAILURE;
@@ -131,7 +147,7 @@ fn decode_to_wav(data: &[u8], out_path: &str, opts: &Options) -> ExitCode {
         }
     };
     let mut decoder = match PresentationDecoder::new(&descriptors, 0, target, &DefaultFactory) {
-        Ok(d) => d,
+        Ok(d) => d.with_trimming(opts.trimming),
         Err(err) => {
             eprintln!("error: {err}");
             return ExitCode::FAILURE;
@@ -177,6 +193,9 @@ fn decode_to_wav(data: &[u8], out_path: &str, opts: &Options) -> ExitCode {
                         Layout::LoudspeakersSsConvention { sound_system: s }
                             if *s == sound_system =>
                         {
+                            Some(f32::from(loudness.integrated_loudness) / 256.0)
+                        }
+                        Layout::Binaural if sound_system == BINAURAL => {
                             Some(f32::from(loudness.integrated_loudness) / 256.0)
                         }
                         _ => None,
