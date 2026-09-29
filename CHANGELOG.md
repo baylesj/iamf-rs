@@ -34,6 +34,18 @@ conformance suite is byte-identical).
 - CLI polish: `iamfdec` rejects unknown flags and parses args linearly;
   `iamfplay` prints `Display` errors.
 
+Descriptor-handling fixes ported from iamf-tools (conformant streams
+decode unchanged):
+
+- A sub mix with no audio elements (§3.7: num_audio_elements SHALL NOT
+  be 0) is never rendered (iamf-tools ac2fff70b). Previously the parser
+  rejected the whole descriptor set (even when other mixes were valid),
+  and hand-built descriptors "rendered" zero channels at rate 0. Now the
+  mix parses, automatic and by-id selection skip it, and an explicit
+  `MixSelection::ByIndex` to it, `PresentationDecoder::new` on it, or a
+  stream offering nothing else fails with `InvalidDescriptors`
+  (`IAMFRS_ERR_CORRUPT_DATA` in the C ABI).
+
 ## 0.2.0 — 2026-08-25
 
 Spec-conformance and Chromium-integration hardening. The C ABI settings

@@ -644,7 +644,9 @@ pub struct SubMixElement {
 /// One sub mix of a mix presentation (§3.8.1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubMix {
-    /// The audio elements summed into this sub mix.
+    /// The audio elements summed into this sub mix. Empty only in
+    /// non-conformant streams (§3.7: num_audio_elements SHALL NOT be 0);
+    /// such a sub mix must not be rendered.
     pub elements: Vec<SubMixElement>,
     /// Gain applied to the summed output.
     pub output_mix_gain: MixGainParam,
@@ -679,10 +681,12 @@ impl MixPresentation {
 
         let num_sub_mixes = r.read_leb128()?;
         let sub_mixes = read_bounded_vec(r, num_sub_mixes, |r| {
+            // §3.7: num_audio_elements SHALL NOT be 0. The sub mix is still
+            // well-formed syntax, so it parses (with no elements) and the
+            // decoder refuses to render it: one bad mix presentation must
+            // not invalidate the others (iamf-tools drops such a mix and
+            // never renders a sub mix without audio elements).
             let num_elements = r.read_leb128()?;
-            if num_elements == 0 {
-                return Err(invalid(r));
-            }
             let elements = read_bounded_vec(r, num_elements, |r| {
                 let audio_element_id = r.read_leb128()?;
                 let localized_annotations = read_bounded_vec(r, count_label, |r| r.read_string())?;
@@ -978,6 +982,32 @@ mod tests {
         );
         assert_eq!(sub.layouts[0].1.integrated_loudness, -4096);
         assert!(mp.tags.is_empty());
+    }
+
+    /// num_audio_elements == 0 violates §3.7 but is well-formed syntax: it
+    /// parses to an empty sub mix, which decoders refuse to render.
+    #[test]
+    fn mix_presentation_empty_sub_mix_parses() {
+        let mut payload = vec![0x07]; // mix_presentation_id = 7
+        payload.push(0x00); // count_label
+        payload.push(0x01); // num_sub_mixes
+        payload.push(0x00); // num_audio_elements = 0
+        // output_mix_gain: id, rate, mode=1, default gain.
+        payload.push(0x01);
+        payload.extend([0x80, 0xf7, 0x02]);
+        payload.push(0x80);
+        payload.extend(0i16.to_be_bytes());
+        payload.push(0x01); // num_layouts
+        payload.push(0x80); // ss convention, sound system A
+        payload.push(0x00); // info_type
+        payload.extend(0i16.to_be_bytes());
+        payload.extend(0i16.to_be_bytes());
+
+        let mp = MixPresentation::parse(&mut ByteReader::new(&payload)).unwrap();
+        assert_eq!(mp.mix_presentation_id, 7);
+        assert_eq!(mp.sub_mixes.len(), 1);
+        assert!(mp.sub_mixes[0].elements.is_empty());
+        assert_eq!(mp.sub_mixes[0].layouts.len(), 1);
     }
 
     #[test]
