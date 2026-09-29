@@ -15,7 +15,7 @@ use crate::params::{
     SubblockData, build_param_index,
 };
 use crate::post::{LIMITER_LOOKAHEAD, LIMITER_THRESHOLD_DB, PeakLimiter};
-use crate::presentation::Descriptors;
+use crate::presentation::{Descriptors, EMPTY_SUB_MIX};
 use crate::profile::{ProfileSet, filter_profiles_for_mix};
 use crate::reconstruct::{ChannelReconstructor, ambisonics_from_planes, deinterleave};
 use crate::render::render;
@@ -165,6 +165,14 @@ fn output_permutation(target: SoundSystem, ordering: ChannelOrdering) -> Vec<usi
         // Everything else matches Android order already.
         _ => identity(channels),
     }
+}
+
+/// Whether every sub mix of `mix` has an audio element to render (§3.7:
+/// num_audio_elements SHALL NOT be 0).
+fn has_audio_elements(mix: &iamf_obu::descriptors::MixPresentation) -> bool {
+    mix.sub_mixes
+        .iter()
+        .all(|sub_mix| !sub_mix.elements.is_empty())
 }
 
 /// Resolves a mix selection against parsed descriptors. `supported[i]`
@@ -398,6 +406,21 @@ impl StreamDecoder {
                 "no mix presentations".into(),
             ));
         }
+        // §3.7 / iamf-tools ac2fff70b: a sub mix without audio elements is
+        // never rendered. The profile filter marks such mixes unsupported,
+        // so automatic (and by-id) selection skips them; an explicit index
+        // to one, or a stream offering nothing else, is an error naming
+        // the actual problem rather than a profile mismatch.
+        let explicitly_empty = match settings.mix_selection {
+            MixSelection::ByIndex(index) => parsed
+                .mix_presentations
+                .get(index)
+                .is_some_and(|mix| !has_audio_elements(mix)),
+            _ => false,
+        };
+        if explicitly_empty || !parsed.mix_presentations.iter().any(has_audio_elements) {
+            return Err(DecodeError::InvalidDescriptors(EMPTY_SUB_MIX.into()));
+        }
         // §3.5: decode only when the stream declares a profile we were
         // asked to support (checked when the blob includes the header).
         if let Some(header) = &parsed.sequence_header {
@@ -438,6 +461,10 @@ impl StreamDecoder {
                 "IAMF v1.1 requires exactly one sub mix per mix presentation".into(),
             ));
         };
+        if sub_mix.elements.is_empty() {
+            // Likewise guaranteed by the profile filter.
+            return Err(DecodeError::InvalidDescriptors(EMPTY_SUB_MIX.into()));
+        }
 
         let mut slots = Vec::new();
         let mut frame_size = 0u32;

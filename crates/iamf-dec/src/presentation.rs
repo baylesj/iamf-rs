@@ -25,6 +25,12 @@ use crate::render::render;
 use crate::stream::TrimmingSettings;
 use crate::{CodecFactory, DecodeError};
 
+/// Error text for a sub mix without audio elements: §3.7 forbids
+/// num_audio_elements == 0, and like iamf-tools (ac2fff70b) such a sub mix
+/// is never rendered.
+pub(crate) const EMPTY_SUB_MIX: &str =
+    "sub mix has no audio elements (num_audio_elements SHALL NOT be 0)";
+
 /// All descriptor OBUs of an IA sequence, first copy wins for redundant
 /// re-transmissions — except that a non-redundant IA sequence header
 /// supersedes a redundant one seen before any temporal unit.
@@ -187,6 +193,10 @@ impl PresentationDecoder {
                 "IAMF v1.1 requires exactly one sub mix per mix presentation".into(),
             ));
         };
+        if sub_mix.elements.is_empty() {
+            // Would otherwise "render" zero channels at rate 0.
+            return Err(DecodeError::InvalidDescriptors(EMPTY_SUB_MIX.into()));
+        }
 
         let mut slots = Vec::new();
         for sub_element in &sub_mix.elements {
