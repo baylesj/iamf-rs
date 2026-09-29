@@ -1,12 +1,15 @@
 //! Hand-built LPCM streams exercising behaviors the fetched conformance
 //! vectors don't cover: parameter blocks whose subblocks span several
 //! temporal units, temporal-delimiter alignment checking, per-unit trim
-//! consistency, and duplicated parameter IDs.
+//! consistency, duplicated parameter IDs, and mix presentations whose
+//! sub mix has no audio elements.
 
 use iamf_codecs::DefaultFactory;
 use iamf_dec::DecodeError;
 use iamf_dec::layout::SoundSystem;
-use iamf_dec::stream::{StreamDecoder, StreamSettings};
+use iamf_dec::presentation::{Descriptors, PresentationDecoder};
+use iamf_dec::stream::{MixSelection, StreamDecoder, StreamSettings};
+use iamf_obu::ObuIter;
 
 const FRAME: usize = 64;
 
@@ -310,4 +313,121 @@ fn duplicate_parameter_id_applies_to_all_consumers() {
             "sample {g} vs expected {expected} (both gain stages must apply)"
         );
     }
+}
+
+/// Mix presentation `id` whose single sub mix holds `elements` — possibly
+/// none, which §3.7 forbids (num_audio_elements SHALL NOT be 0) — with one
+/// stereo layout entry.
+fn mix_presentation_of(id: u32, elements: &[u32]) -> Vec<u8> {
+    let mut p = leb(id);
+    p.extend(leb(0)); // count_label
+    p.extend(leb(1)); // num_sub_mixes
+    p.extend(leb(elements.len() as u32)); // num_audio_elements
+    for &element in elements {
+        p.extend(leb(element));
+        p.push(0x00); // headphones_rendering_mode
+        p.extend(leb(0)); // rendering_config_extension_size
+        p.extend(mix_gain_param(100 + element));
+    }
+    p.extend(mix_gain_param(200 + id));
+    p.extend(leb(1)); // num_layouts
+    p.push(0x80); // ss convention, sound system A (stereo)
+    p.push(0x00); // loudness info_type
+    p.extend(0i16.to_be_bytes());
+    p.extend(0i16.to_be_bytes());
+    obu(2, &p)
+}
+
+/// One stereo temporal unit after descriptors holding an empty mix
+/// (id 7) and, when `with_valid_mix`, a renderable stereo mix (id 8).
+fn empty_sub_mix_stream(with_valid_mix: bool) -> Vec<u8> {
+    let mut mixes = mix_presentation_of(7, &[]);
+    if with_valid_mix {
+        mixes.extend(mix_presentation_of(8, &[1]));
+    }
+    let mut data = descriptors(stereo_element(), mixes);
+    let samples: Vec<i16> = (0..FRAME).flat_map(|k| [k as i16, -(k as i16)]).collect();
+    data.extend(frame_obu(0, &samples));
+    data
+}
+
+/// Batch driver: the descriptors still parse (one bad mix must not sink
+/// the others), but rendering the empty sub mix is refused instead of
+/// yielding zero channels at rate 0 (iamf-tools ac2fff70b).
+#[test]
+fn empty_sub_mix_batch_rejected() {
+    let data = empty_sub_mix_stream(true);
+    let descriptors = Descriptors::collect(&data).unwrap();
+    assert_eq!(descriptors.mix_presentations.len(), 2);
+    assert!(matches!(
+        PresentationDecoder::new(&descriptors, 0, SoundSystem::A, &DefaultFactory),
+        Err(DecodeError::InvalidDescriptors(_))
+    ));
+
+    let mut decoder =
+        PresentationDecoder::new(&descriptors, 1, SoundSystem::A, &DefaultFactory).unwrap();
+    for obu in ObuIter::new(&data).map(Result::unwrap) {
+        decoder.process_obu(&obu).unwrap();
+    }
+    let mix = decoder.finish().unwrap();
+    assert_eq!(mix.channels, 2);
+    assert_eq!(mix.interleaved.len(), FRAME * 2);
+}
+
+/// Streaming driver: automatic and by-id selection skip the empty mix;
+/// an explicit index to it, or a stream with nothing else, is an error.
+#[test]
+fn empty_sub_mix_streaming_skipped_or_rejected() {
+    let decode = |data: &[u8], selection: MixSelection| -> Result<(u32, usize), DecodeError> {
+        let mut settings = StreamSettings::default();
+        settings.mix_selection = selection;
+        let mut decoder = StreamDecoder::new_from_descriptors(data, settings, &DefaultFactory)?;
+        decoder.decode(data)?;
+        let mut bytes = 0;
+        while let Some(unit) = decoder.get_output_temporal_unit()? {
+            bytes += unit.len();
+        }
+        Ok((decoder.selected_mix().0, bytes))
+    };
+    let unit_bytes = FRAME * 2 * 2;
+    let both = empty_sub_mix_stream(true);
+    assert_eq!(decode(&both, MixSelection::Auto).unwrap(), (8, unit_bytes));
+    // Like any unsupported mix, a by-id request falls back to automatic
+    // selection (iamf-tools RequestedMix semantics).
+    assert_eq!(
+        decode(&both, MixSelection::ById(7)).unwrap(),
+        (8, unit_bytes)
+    );
+    assert_eq!(
+        decode(&both, MixSelection::ByIndex(1)).unwrap(),
+        (8, unit_bytes)
+    );
+    assert!(matches!(
+        decode(&both, MixSelection::ByIndex(0)),
+        Err(DecodeError::InvalidDescriptors(_))
+    ));
+
+    let only_empty = empty_sub_mix_stream(false);
+    for selection in [
+        MixSelection::Auto,
+        MixSelection::ById(7),
+        MixSelection::ByIndex(0),
+    ] {
+        assert!(
+            matches!(
+                decode(&only_empty, selection),
+                Err(DecodeError::InvalidDescriptors(_))
+            ),
+            "{selection:?}"
+        );
+    }
+
+    // Reconfiguring onto the empty mix fails the same way.
+    let mut decoder =
+        StreamDecoder::new_from_descriptors(&both, StreamSettings::default(), &DefaultFactory)
+            .unwrap();
+    assert!(matches!(
+        decoder.reset_with_new_mix(MixSelection::ByIndex(0), None, &DefaultFactory),
+        Err(DecodeError::InvalidDescriptors(_))
+    ));
 }

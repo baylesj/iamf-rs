@@ -147,6 +147,16 @@ pub fn filter_profiles_for_mix(
         return ProfileSet::empty();
     }
 
+    // §3.7: num_audio_elements SHALL NOT be 0, and there is nothing to
+    // render without an element (iamf-tools refuses to, ac2fff70b).
+    if mix
+        .sub_mixes
+        .iter()
+        .any(|sub_mix| sub_mix.elements.is_empty())
+    {
+        return ProfileSet::empty();
+    }
+
     // headphones_rendering_mode: 0 and 1 are v1.1; 2 (head-locked binaural)
     // and 3 (reserved) are not supported by any v1.1 profile.
     for sub_mix in &mix.sub_mixes {
@@ -398,6 +408,14 @@ mod tests {
     fn missing_element_reference_unsupported() {
         let configs = [codec_config(0)];
         let set = filter_profiles_for_mix(&mix(&[9], 0), &[], &configs, ProfileSet::all());
+        assert!(set.is_empty());
+    }
+
+    #[test]
+    fn sub_mix_without_elements_unsupported() {
+        let elements = [stereo_element(1, 0)];
+        let configs = [codec_config(0)];
+        let set = filter_profiles_for_mix(&mix(&[], 0), &elements, &configs, ProfileSet::all());
         assert!(set.is_empty());
     }
 

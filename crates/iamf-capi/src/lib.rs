@@ -583,4 +583,89 @@ mod tests {
             iamfrs_decoder_destroy(std::ptr::null_mut());
         }
     }
+
+    /// Descriptor blob: LPCM stereo element 1, then one mix presentation
+    /// per entry of `mixes` as (mix_presentation_id, element ids).
+    fn descriptor_blob(mixes: &[(u8, &[u8])]) -> Vec<u8> {
+        fn obu(obu_type: u8, payload: &[u8]) -> Vec<u8> {
+            let mut out = vec![obu_type << 3, u8::try_from(payload.len()).unwrap()];
+            out.extend_from_slice(payload);
+            out
+        }
+        // Mode-1 mix gain parameter definition: id, rate 48000, 0 dB.
+        let gain = |id: u8| [id, 0x80, 0xf7, 0x02, 0x80, 0, 0];
+        let mut blob = obu(31, b"iamf\x00\x00");
+        let mut codec = vec![0];
+        codec.extend(b"ipcm");
+        codec.extend([64, 0, 0, 1, 16]);
+        codec.extend(48000u32.to_be_bytes());
+        blob.extend(obu(0, &codec));
+        // Element 1: codec config 0, substream 0, one stereo layer.
+        blob.extend(obu(1, &[1, 0, 0, 1, 0, 0, 1 << 5, 1 << 4, 1, 1]));
+        for &(id, elements) in mixes {
+            let mut mix = vec![id, 0, 1, u8::try_from(elements.len()).unwrap()];
+            for &element in elements {
+                mix.extend([element, 0, 0]);
+                mix.extend(gain(100 + element));
+            }
+            mix.extend(gain(120 + id)); // ids stay single-byte leb128
+            mix.extend([1, 0x80, 0, 0, 0, 0, 0]); // stereo layout, loudness
+            blob.extend(obu(2, &mix));
+        }
+        blob
+    }
+
+    /// A mix whose sub mix has no audio elements (§3.7 forbids it) is
+    /// never selected; a stream offering nothing else is corrupt.
+    #[test]
+    fn empty_sub_mix_is_skipped_or_rejected() {
+        let settings = |mix_presentation_id: i64| IamfrsSettings {
+            output_layout: 0,
+            sample_type: 0,
+            mix_presentation_id,
+            channel_ordering: 0,
+            disable_trim_start: 0,
+            disable_trim_end: 0,
+            requested_profiles: 0,
+            enable_limiter: 0,
+            enable_loudness_normalization: 0,
+            loudness_target_db: 0.0,
+        };
+        let both = descriptor_blob(&[(7, &[]), (8, &[1])]);
+        let only_empty = descriptor_blob(&[(7, &[])]);
+        // SAFETY: valid pointers throughout; handles are destroyed.
+        unsafe {
+            // Auto, and a request for the empty mix's id, both select 8.
+            for requested in [-1, 7] {
+                let mut decoder: *mut IamfrsDecoder = std::ptr::null_mut();
+                assert_eq!(
+                    iamfrs_decoder_create_from_descriptors(
+                        both.as_ptr(),
+                        both.len(),
+                        &settings(requested),
+                        &mut decoder
+                    ),
+                    IAMFRS_OK
+                );
+                let mut mix_id = 0u32;
+                assert_eq!(
+                    iamfrs_decoder_get_selected_mix_presentation_id(decoder, &mut mix_id),
+                    IAMFRS_OK
+                );
+                assert_eq!(mix_id, 8, "requested {requested}");
+                iamfrs_decoder_destroy(decoder);
+            }
+            let mut decoder: *mut IamfrsDecoder = std::ptr::null_mut();
+            assert_eq!(
+                iamfrs_decoder_create_from_descriptors(
+                    only_empty.as_ptr(),
+                    only_empty.len(),
+                    &settings(-1),
+                    &mut decoder
+                ),
+                IAMFRS_ERR_CORRUPT_DATA
+            );
+            assert!(decoder.is_null());
+        }
+    }
 }
