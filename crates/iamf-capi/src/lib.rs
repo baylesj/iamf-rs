@@ -64,8 +64,9 @@ pub struct IamfrsSettings {
     pub output_layout: i32,
     /// 0 = auto (from the stream's bit depth), 1 = s16le, 2 = s32le.
     pub sample_type: i32,
-    /// Mix presentation to decode, or -1 to select automatically (a mix
-    /// declaring the requested layout, else the first).
+    /// Mix presentation to decode, or -1 to select automatically (the IAMF
+    /// §7.4.1 creator-preferred mix for the requested layout, else the
+    /// first; see `MixSelection::Auto`).
     pub mix_presentation_id: i64,
     /// 0 = IAMF rendering order, 1 = Android/WAVE order (iamf-tools
     /// `ChannelOrdering`).

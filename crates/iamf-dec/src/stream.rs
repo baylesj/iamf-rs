@@ -9,14 +9,16 @@ use iamf_obu::descriptors::{AudioElement, AudioElementConfig, CodecConfig, Eleme
 use iamf_obu::{AudioFrame, ByteReader, Error, Obu, ObuType};
 
 use crate::element::{FramePcm, substream_channels};
-use crate::layout::SoundSystem;
+use crate::layout::{
+    LOUDSPEAKER_LAYOUT_BINAURAL, LOUDSPEAKER_LAYOUT_STEREO, SoundSystem, is_binaural_input,
+};
 use crate::params::{
     ParamContext, ParamCursor, ParamIndex, ParamKind, ParameterBlock, ReconGainLayers,
     SubblockData, build_param_index,
 };
 use crate::post::{LIMITER_LOOKAHEAD, LIMITER_THRESHOLD_DB, PeakLimiter};
 use crate::presentation::Descriptors;
-use crate::profile::{ProfileSet, filter_profiles_for_mix};
+use crate::profile::ProfileSet;
 use crate::reconstruct::{ChannelReconstructor, ambisonics_from_planes, deinterleave};
 use crate::render::render;
 use crate::{CodecFactory, DecodeError, DecodedFrame, SubstreamDecoder};
@@ -109,13 +111,21 @@ pub struct StreamSettings {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum MixSelection {
-    /// Prefer a mix presentation that declares a layout matching the
-    /// requested output layout; fall back to the first supported.
+    /// Creator-preferred selection for the requested output layout (IAMF
+    /// §7.4.1, as in iamf-tools `FindMixPresentationAndLayout`): for
+    /// binaural output, a mix whose single audio element is authored
+    /// binaural, else one declaring a binaural loudness layout; for stereo
+    /// (sound system A), a mix with one stereo layout and one stereo
+    /// element, preferring `headphones_rendering_mode` stereo; for other
+    /// layouts, the first mix declaring that layout. Falls back to the
+    /// first supported mix. Mixes that cannot be rendered to the requested
+    /// layout (binaural-input elements to loudspeakers other than stereo)
+    /// are never selected.
     #[default]
     Auto,
     /// Select by mix_presentation_id. When no supported mix carries the id,
-    /// selection proceeds as if unspecified (iamf-tools `RequestedMix`
-    /// semantics).
+    /// selection proceeds as if unspecified, i.e. like [`MixSelection::Auto`]
+    /// (iamf-tools `RequestedMix` semantics).
     ById(u32),
     /// Select by position in the descriptors (must be supported).
     ByIndex(usize),
@@ -167,62 +177,164 @@ fn output_permutation(target: SoundSystem, ordering: ChannelOrdering) -> Vec<usi
     }
 }
 
-/// Resolves a mix selection against parsed descriptors. `supported[i]`
-/// says whether mix i fits some requested profile (see
-/// [`filter_profiles_for_mix`]); unsupported mixes are never selected.
+/// §3.8.2 `headphones_rendering_mode` for stereo (non-HRTF) playback.
+const HEADPHONES_RENDERING_MODE_STEREO: u8 = 0;
+
+/// Whether `sub_mix` has exactly one audio element, and that element is
+/// scalable-channel-based with its last (highest) layer in
+/// `loudspeaker_layout` (iamf-tools `HasOneAudioElementWithLayout`).
+/// Elements missing from `elements` never match.
+fn has_one_element_with_layout(
+    sub_mix: &SubMix,
+    elements: &[AudioElement],
+    loudspeaker_layout: u8,
+) -> bool {
+    let [sub_element] = sub_mix.elements.as_slice() else {
+        return false;
+    };
+    elements
+        .iter()
+        .find(|e| e.audio_element_id == sub_element.audio_element_id)
+        .is_some_and(|e| match &e.config {
+            AudioElementConfig::ChannelBased { layers } => layers
+                .last()
+                .is_some_and(|l| l.loudspeaker_layout == loudspeaker_layout),
+            _ => false,
+        })
+}
+
+/// §7.4.1 2.2.x candidate: the first sub-mix declares exactly one layout,
+/// sound system A (0+2+0), and has exactly one stereo channel-based
+/// element (iamf-tools `HasOneStereoLayoutAndAudioElement`). The spec is
+/// silent about multiple sub-mixes; like iamf-tools, only the first is
+/// considered so that an appended "system sound" sub-mix does not change
+/// the choice.
+fn has_one_stereo_layout_and_element(
+    mix: &iamf_obu::descriptors::MixPresentation,
+    elements: &[AudioElement],
+) -> bool {
+    use iamf_obu::descriptors::Layout;
+    let Some(first) = mix.sub_mixes.first() else {
+        return false;
+    };
+    matches!(
+        first.layouts.as_slice(),
+        [(Layout::LoudspeakersSsConvention { sound_system: 0 }, _)]
+    ) && has_one_element_with_layout(first, elements, LOUDSPEAKER_LAYOUT_STEREO)
+}
+
+/// Resolves a mix selection against parsed descriptors, following the
+/// creator-preferred selection of IAMF §7.4.1 as implemented by
+/// iamf-tools `FindMixPresentationAndLayout`. `supported[i]` says whether
+/// mix i fits some requested profile (see
+/// [`crate::profile::filter_profiles_for_mix`]) and can be rendered to
+/// `target`; unsupported mixes are never selected. `elements` are the stream's
+/// audio element descriptors, inspected by the binaural and stereo
+/// clauses.
+///
+/// Over the supported mixes, in descriptor order:
+/// 1. [`MixSelection::ById`]: the mix with that id, if supported.
+/// 2. By `target` layout:
+///    - Binaural: 2.1.1 the first mix whose first sub-mix has exactly one
+///      element, a channel-based one whose last layer is BINAURAL; else
+///      2.1.2 the first mix declaring a binaural loudness layout. (2.1.3,
+///      "highest layout" fallback, is unimplemented upstream too.)
+///    - Stereo (sound system A): 2.2.1 the first mix satisfying
+///      [`has_one_stereo_layout_and_element`] whose element has
+///      `headphones_rendering_mode` 0 (stereo); else 2.2.2 the same
+///      without the rendering-mode constraint.
+///    - Otherwise: 2.3.1 the first mix declaring `target` in any sub-mix.
+/// 3. Otherwise the first supported mix.
+///
+/// A 2.1.1 mix carries binaural (loudspeaker_layout 9) input, which is
+/// passed through to binaural (or stereo) output. Such mixes cannot be
+/// rendered to other loudspeaker layouts, so callers mark them
+/// unsupported for those targets (see
+/// [`Descriptors::select_mix_presentation`]).
 pub(crate) fn select_mix_index(
     mixes: &[iamf_obu::descriptors::MixPresentation],
+    elements: &[AudioElement],
     supported: &[bool],
     selection: MixSelection,
     target: SoundSystem,
 ) -> Result<usize, DecodeError> {
+    use iamf_obu::descriptors::Layout;
     if let MixSelection::ByIndex(index) = selection {
         return match supported.get(index) {
             Some(true) => Ok(index),
             Some(false) => Err(DecodeError::UnsupportedProfile(format!(
-                "mix presentation {index} exceeds the requested profiles"
+                "mix presentation {index} exceeds the requested profiles or cannot be \
+                 rendered to {target:?}"
             ))),
             None => Err(DecodeError::InvalidDescriptors(
                 "no such mix presentation".into(),
             )),
         };
     }
+    let is_supported = |i: usize| supported.get(i).copied().unwrap_or(false);
+    let first_where = |pred: &dyn Fn(&iamf_obu::descriptors::MixPresentation) -> bool| {
+        mixes
+            .iter()
+            .enumerate()
+            .position(|(i, m)| is_supported(i) && pred(m))
+    };
     if let MixSelection::ById(id) = selection {
         // A missing or unsupported id falls back to automatic selection
         // (iamf-tools `RequestedMix`: "the decoder will behave as if it
         // was unspecified").
-        if let Some(index) = mixes
-            .iter()
-            .position(|m| m.mix_presentation_id == id)
-            .filter(|&i| supported[i])
-        {
+        if let Some(index) = first_where(&|m| m.mix_presentation_id == id) {
             return Ok(index);
         }
     }
-    // Binaural playback matches mixes authored for stereo.
-    let wanted = match target {
-        SoundSystem::Binaural => SoundSystem::A,
-        other => other,
-    };
-    let declares_target = |m: &iamf_obu::descriptors::MixPresentation| {
-        m.sub_mixes.iter().any(|sm| {
-            sm.layouts.iter().any(|(layout, _)| match layout {
-                iamf_obu::descriptors::Layout::LoudspeakersSsConvention { sound_system } => {
-                    SoundSystem::from_u8(*sound_system) == Some(wanted)
-                }
-                iamf_obu::descriptors::Layout::Binaural => target == SoundSystem::Binaural,
-                iamf_obu::descriptors::Layout::Reserved { .. } => false,
+    let by_layout = match target {
+        SoundSystem::Binaural => {
+            // 2.1.1: exactly one element, authored binaural.
+            first_where(&|m| {
+                m.sub_mixes.first().is_some_and(|sm| {
+                    has_one_element_with_layout(sm, elements, LOUDSPEAKER_LAYOUT_BINAURAL)
+                })
             })
-        })
+            // 2.1.2: a binaural loudness layout in any sub-mix. Mixes that
+            // only declare stereo are deliberately not preferred.
+            .or_else(|| {
+                first_where(&|m| {
+                    m.sub_mixes.iter().any(|sm| {
+                        sm.layouts
+                            .iter()
+                            .any(|(layout, _)| matches!(layout, Layout::Binaural))
+                    })
+                })
+            })
+        }
+        SoundSystem::A => {
+            // 2.2.1: one stereo layout + one stereo element, rendered as
+            // stereo on headphones.
+            first_where(&|m| {
+                has_one_stereo_layout_and_element(m, elements)
+                    && m.sub_mixes[0].elements[0].headphones_rendering_mode
+                        == HEADPHONES_RENDERING_MODE_STEREO
+            })
+            // 2.2.2: same, any headphones_rendering_mode.
+            .or_else(|| first_where(&|m| has_one_stereo_layout_and_element(m, elements)))
+        }
+        // 2.3.1: the first mix declaring the exact target layout.
+        other => first_where(&|m| {
+            m.sub_mixes.iter().any(|sm| {
+                sm.layouts.iter().any(|(layout, _)| match layout {
+                    Layout::LoudspeakersSsConvention { sound_system } => {
+                        SoundSystem::from_u8(*sound_system) == Some(other)
+                    }
+                    Layout::Binaural | Layout::Reserved { .. } => false,
+                })
+            })
+        }),
     };
-    mixes
-        .iter()
-        .enumerate()
-        .position(|(i, m)| supported[i] && declares_target(m))
-        .or_else(|| supported.iter().position(|&s| s))
+    // 3: the first supported mix.
+    by_layout
+        .or_else(|| (0..mixes.len()).find(|&i| is_supported(i)))
         .ok_or_else(|| {
             DecodeError::UnsupportedProfile(
-                "no mix presentation is supported by the requested profiles".into(),
+                "no mix presentation fits the requested profiles and output layout".into(),
             )
         })
 }
@@ -411,25 +523,13 @@ impl StreamDecoder {
             }
         }
         // iamf-tools semantics: a mix presentation is selectable when it
-        // fits within some requested profile's limits.
-        let supported: Vec<bool> = parsed
-            .mix_presentations
-            .iter()
-            .map(|mix| {
-                !filter_profiles_for_mix(
-                    mix,
-                    &parsed.audio_elements,
-                    &parsed.codec_configs,
-                    settings.requested_profiles,
-                )
-                .is_empty()
-            })
-            .collect();
-        let mix_index = select_mix_index(
-            &parsed.mix_presentations,
-            &supported,
+        // fits within some requested profile's limits (and, here, can be
+        // rendered to the target); among those, §7.4.1 creator-preferred
+        // selection applies.
+        let mix_index = parsed.select_mix_presentation(
             settings.mix_selection,
             settings.layout,
+            settings.requested_profiles,
         )?;
         let mix = &parsed.mix_presentations[mix_index];
         let [sub_mix] = mix.sub_mixes.as_slice() else {
@@ -781,9 +881,11 @@ impl StreamDecoder {
                 planes.extend(deinterleave(&frame.samples, usize::from(ch.max(1))));
             }
 
+            // Binaural input is already headphone audio: never HRTF it.
             let hrtf = cfg!(feature = "binaural")
                 && self.target == SoundSystem::Binaural
-                && slot.headphones_rendering_mode == 1;
+                && slot.headphones_rendering_mode == 1
+                && !is_binaural_input(&slot.element.config);
             // Not if-let-else: the ambisonics arm is a peer case, not a
             // fallback.
             #[allow(clippy::single_match_else)]
@@ -816,7 +918,10 @@ impl StreamDecoder {
                     }
                     let planar = rec.process_frame(&planes)?;
                     #[cfg(feature = "binaural")]
-                    let rendered = if hrtf {
+                    let rendered = if rec.is_binaural_input() {
+                        // Passthrough (target is binaural or stereo).
+                        planar
+                    } else if hrtf {
                         let layout = rec.layout();
                         binauralize_unit(
                             &mut slot.binaural,
@@ -835,7 +940,9 @@ impl StreamDecoder {
                         render(&reconstructed, target_matrix)?
                     };
                     #[cfg(not(feature = "binaural"))]
-                    let rendered = {
+                    let rendered = if rec.is_binaural_input() {
+                        planar
+                    } else {
                         let reconstructed = crate::reconstruct::Reconstructed::Channels {
                             matrix: rec.matrix(),
                             planar,
@@ -1067,11 +1174,16 @@ impl StreamDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iamf_obu::descriptors::{Layout, MixPresentation, SubMix};
+    use iamf_obu::descriptors::{
+        ChannelAudioLayer, Layout, LoudnessInfo, MixGainParam, MixPresentation, ParamDefinition,
+        SubMix, SubMixElement,
+    };
 
-    fn mix(id: u32, sound_system: u8) -> MixPresentation {
-        use iamf_obu::descriptors::{MixGainParam, ParamDefinition};
-        let gain = MixGainParam {
+    /// §3.8.2 headphones_rendering_mode: binaural (world-locked).
+    const BINAURAL_MODE: u8 = 1;
+
+    fn gain() -> MixGainParam {
+        MixGainParam {
             base: ParamDefinition {
                 parameter_id: 0,
                 parameter_rate: 48000,
@@ -1081,27 +1193,119 @@ mod tests {
                 subblock_durations: vec![],
             },
             default_mix_gain: 0,
-        };
+        }
+    }
+
+    fn ss(sound_system: u8) -> Layout {
+        Layout::LoudspeakersSsConvention { sound_system }
+    }
+
+    /// A sub-mix of `(audio_element_id, headphones_rendering_mode)`
+    /// entries, declaring `layouts`.
+    fn sub_mix(elements: &[(u32, u8)], layouts: &[Layout]) -> SubMix {
+        SubMix {
+            elements: elements
+                .iter()
+                .map(
+                    |&(audio_element_id, headphones_rendering_mode)| SubMixElement {
+                        audio_element_id,
+                        localized_annotations: vec![],
+                        headphones_rendering_mode,
+                        element_mix_gain: gain(),
+                    },
+                )
+                .collect(),
+            output_mix_gain: gain(),
+            layouts: layouts
+                .iter()
+                .map(|&layout| {
+                    (
+                        layout,
+                        LoudnessInfo {
+                            info_type: 0,
+                            integrated_loudness: 0,
+                            digital_peak: 0,
+                            true_peak: None,
+                            anchored_loudness: vec![],
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    fn mix_with(id: u32, sub_mixes: Vec<SubMix>) -> MixPresentation {
         MixPresentation {
             mix_presentation_id: id,
             annotation_languages: vec![],
             localized_annotations: vec![],
-            sub_mixes: vec![SubMix {
-                elements: vec![],
-                output_mix_gain: gain,
-                layouts: vec![(
-                    Layout::LoudspeakersSsConvention { sound_system },
-                    iamf_obu::descriptors::LoudnessInfo {
-                        info_type: 0,
-                        integrated_loudness: 0,
-                        digital_peak: 0,
-                        true_peak: None,
-                        anchored_loudness: vec![],
-                    },
-                )],
-            }],
+            sub_mixes,
             tags: vec![],
         }
+    }
+
+    /// A mix with no audio elements declaring one sound system layout.
+    fn mix(id: u32, sound_system: u8) -> MixPresentation {
+        mix_with(id, vec![sub_mix(&[], &[ss(sound_system)])])
+    }
+
+    /// A scalable channel-based element with the given layer
+    /// loudspeaker_layouts, lowest first.
+    fn channel_element(id: u32, layouts: &[u8]) -> AudioElement {
+        AudioElement {
+            audio_element_id: id,
+            codec_config_id: 0,
+            substream_ids: vec![],
+            params: vec![],
+            config: AudioElementConfig::ChannelBased {
+                layers: layouts
+                    .iter()
+                    .map(|&loudspeaker_layout| ChannelAudioLayer {
+                        loudspeaker_layout,
+                        substream_count: 1,
+                        coupled_substream_count: 1,
+                        recon_gain_is_present: false,
+                        output_gain: None,
+                        expanded_loudspeaker_layout: None,
+                    })
+                    .collect(),
+            },
+        }
+    }
+
+    fn foa_element(id: u32) -> AudioElement {
+        AudioElement {
+            audio_element_id: id,
+            codec_config_id: 0,
+            substream_ids: vec![],
+            params: vec![],
+            config: AudioElementConfig::AmbisonicsMono {
+                output_channel_count: 4,
+                substream_count: 4,
+                channel_mapping: vec![0, 1, 2, 3],
+            },
+        }
+    }
+
+    /// Auto selection over all-supported mixes, as a mix_presentation_id.
+    fn auto_id(mixes: &[MixPresentation], elements: &[AudioElement], target: SoundSystem) -> u32 {
+        let supported = vec![true; mixes.len()];
+        let index =
+            select_mix_index(mixes, elements, &supported, MixSelection::Auto, target).unwrap();
+        mixes[index].mix_presentation_id
+    }
+
+    const STEREO_ID: u32 = 1234;
+    const BINAURAL_ID: u32 = 2222;
+    const FOA_ID: u32 = 3333;
+    const PREFERRED: u32 = 9999;
+
+    fn elements() -> Vec<AudioElement> {
+        vec![
+            channel_element(STEREO_ID, &[LOUDSPEAKER_LAYOUT_STEREO]),
+            channel_element(BINAURAL_ID, &[LOUDSPEAKER_LAYOUT_BINAURAL]),
+            foa_element(FOA_ID),
+        ]
     }
 
     #[test]
@@ -1110,34 +1314,286 @@ mod tests {
         let all = [true, true];
         // Auto prefers the mix declaring the requested layout.
         assert_eq!(
-            select_mix_index(&mixes, &all, MixSelection::Auto, SoundSystem::J).unwrap(),
+            select_mix_index(&mixes, &[], &all, MixSelection::Auto, SoundSystem::J).unwrap(),
             1
         );
         // Auto falls back to the first when nothing matches.
         assert_eq!(
-            select_mix_index(&mixes, &all, MixSelection::Auto, SoundSystem::H).unwrap(),
+            select_mix_index(&mixes, &[], &all, MixSelection::Auto, SoundSystem::H).unwrap(),
             0
         );
-        // Binaural playback matches stereo-authored mixes.
+        // Binaural playback with neither a binaural element nor a binaural
+        // layout falls back to the first mix.
         assert_eq!(
-            select_mix_index(&mixes, &all, MixSelection::Auto, SoundSystem::Binaural).unwrap(),
+            select_mix_index(&mixes, &[], &all, MixSelection::Auto, SoundSystem::Binaural).unwrap(),
             0
         );
         assert_eq!(
-            select_mix_index(&mixes, &all, MixSelection::ById(20), SoundSystem::A).unwrap(),
+            select_mix_index(&mixes, &[], &all, MixSelection::ById(20), SoundSystem::A).unwrap(),
             1
         );
         // Unknown id falls back to automatic selection (iamf-tools
         // RequestedMix semantics).
         assert_eq!(
-            select_mix_index(&mixes, &all, MixSelection::ById(99), SoundSystem::A).unwrap(),
+            select_mix_index(&mixes, &[], &all, MixSelection::ById(99), SoundSystem::A).unwrap(),
             0
         );
         assert_eq!(
-            select_mix_index(&mixes, &all, MixSelection::ByIndex(1), SoundSystem::A).unwrap(),
+            select_mix_index(&mixes, &[], &all, MixSelection::ByIndex(1), SoundSystem::A).unwrap(),
             1
         );
-        assert!(select_mix_index(&mixes, &all, MixSelection::ByIndex(2), SoundSystem::A).is_err());
+        assert!(
+            select_mix_index(&mixes, &[], &all, MixSelection::ByIndex(2), SoundSystem::A).is_err()
+        );
+    }
+
+    /// Clause 3: nothing matches the stereo clauses, take the first.
+    #[test]
+    fn stereo_without_creator_preferred_mix_takes_first() {
+        let mixes = [mix(PREFERRED, 4), mix(2, 3)];
+        assert_eq!(auto_id(&mixes, &elements(), SoundSystem::A), PREFERRED);
+    }
+
+    /// 2.2.1: one stereo layout, one stereo element, stereo rendering.
+    #[test]
+    fn stereo_selects_creator_preferred_mix() {
+        let preferred = mix_with(PREFERRED, vec![sub_mix(&[(STEREO_ID, 0)], &[ss(0)])]);
+        // Over a non-stereo mix.
+        assert_eq!(
+            auto_id(&[mix(1, 4), preferred.clone()], &elements(), SoundSystem::A),
+            PREFERRED
+        );
+        // Over an earlier mix that merely declares stereo (the pre-§7.4.1
+        // rule picked this one).
+        assert_eq!(
+            auto_id(&[mix(1, 0), preferred.clone()], &elements(), SoundSystem::A),
+            PREFERRED
+        );
+        // A multi-layer element qualifies by its last (highest) layer.
+        let layered = [channel_element(STEREO_ID, &[0, LOUDSPEAKER_LAYOUT_STEREO])];
+        assert_eq!(
+            auto_id(&[mix(1, 0), preferred], &layered, SoundSystem::A),
+            PREFERRED
+        );
+    }
+
+    /// 2.2.1: the first sub-mix must declare exactly one layout.
+    #[test]
+    fn stereo_prefers_mix_with_one_stereo_layout() {
+        let mixes = [
+            mix_with(1, vec![sub_mix(&[(STEREO_ID, 0)], &[ss(0), ss(9)])]),
+            mix_with(PREFERRED, vec![sub_mix(&[(STEREO_ID, 0)], &[ss(0)])]),
+        ];
+        assert_eq!(auto_id(&mixes, &elements(), SoundSystem::A), PREFERRED);
+    }
+
+    /// 2.2.1: exactly one audio element, and it must be stereo.
+    #[test]
+    fn stereo_prefers_one_stereo_element() {
+        let mixes = [
+            mix_with(1, vec![sub_mix(&[(STEREO_ID, 0), (FOA_ID, 0)], &[ss(0)])]),
+            mix_with(2, vec![sub_mix(&[(FOA_ID, 0)], &[ss(0)])]),
+            mix_with(PREFERRED, vec![sub_mix(&[(STEREO_ID, 0)], &[ss(0)])]),
+        ];
+        assert_eq!(auto_id(&mixes, &elements(), SoundSystem::A), PREFERRED);
+        // A stereo base layer under a 5.1 top layer is not a stereo element.
+        let layered = [channel_element(STEREO_ID, &[LOUDSPEAKER_LAYOUT_STEREO, 2])];
+        assert_eq!(auto_id(&mixes, &layered, SoundSystem::A), 1);
+    }
+
+    /// 2.2.1 prefers headphones_rendering_mode stereo over binaural.
+    #[test]
+    fn stereo_prefers_stereo_rendering_mode() {
+        let mixes = [
+            mix_with(1, vec![sub_mix(&[(STEREO_ID, BINAURAL_MODE)], &[ss(0)])]),
+            mix_with(PREFERRED, vec![sub_mix(&[(STEREO_ID, 0)], &[ss(0)])]),
+        ];
+        assert_eq!(auto_id(&mixes, &elements(), SoundSystem::A), PREFERRED);
+    }
+
+    /// 2.2.2: without a stereo-rendering candidate, relax that constraint.
+    #[test]
+    fn stereo_falls_back_to_any_rendering_mode() {
+        let fallback = mix_with(
+            PREFERRED,
+            vec![sub_mix(&[(STEREO_ID, BINAURAL_MODE)], &[ss(0)])],
+        );
+        assert_eq!(
+            auto_id(&[mix(1, 4), fallback.clone()], &elements(), SoundSystem::A),
+            PREFERRED
+        );
+        assert_eq!(
+            auto_id(&[mix(1, 0), fallback], &elements(), SoundSystem::A),
+            PREFERRED
+        );
+    }
+
+    /// Mixes referencing unknown elements never match; fall back to first.
+    #[test]
+    fn stereo_bypasses_missing_audio_element() {
+        let mixes = [
+            mix_with(1, vec![sub_mix(&[(4321, 0)], &[ss(0)])]),
+            mix(2, 0),
+        ];
+        assert_eq!(auto_id(&mixes, &elements(), SoundSystem::A), 1);
+    }
+
+    /// Only the first sub-mix is considered (an appended "system sound"
+    /// sub-mix does not disqualify the mix, nor qualify it).
+    #[test]
+    fn stereo_is_based_on_first_sub_mix() {
+        let stereo_sub_mix = || sub_mix(&[(STEREO_ID, 0)], &[ss(0)]);
+        let mixes = [
+            mix(1, 4),
+            mix_with(PREFERRED, vec![stereo_sub_mix(), stereo_sub_mix()]),
+        ];
+        assert_eq!(auto_id(&mixes, &elements(), SoundSystem::A), PREFERRED);
+        let second_only = [
+            mix(1, 4),
+            mix_with(2, vec![sub_mix(&[(FOA_ID, 0)], &[ss(4)]), stereo_sub_mix()]),
+        ];
+        assert_eq!(auto_id(&second_only, &elements(), SoundSystem::A), 1);
+    }
+
+    /// 2.1.1: exactly one audio element, authored binaural, wins over
+    /// earlier stereo and binaural-layout mixes.
+    #[test]
+    fn binaural_selects_mix_with_one_binaural_element() {
+        let mixes = [
+            mix(1, 0),
+            mix_with(2, vec![sub_mix(&[], &[Layout::Binaural])]),
+            mix_with(
+                PREFERRED,
+                vec![sub_mix(&[(BINAURAL_ID, BINAURAL_MODE)], &[ss(0)])],
+            ),
+        ];
+        assert_eq!(
+            auto_id(&mixes, &elements(), SoundSystem::Binaural),
+            PREFERRED
+        );
+        // Two elements disqualify the mix: 2.1.2 picks the binaural layout.
+        let two = [
+            mix(1, 0),
+            mix_with(2, vec![sub_mix(&[], &[Layout::Binaural])]),
+            mix_with(
+                3,
+                vec![sub_mix(&[(BINAURAL_ID, 0), (STEREO_ID, 0)], &[ss(0)])],
+            ),
+        ];
+        assert_eq!(auto_id(&two, &elements(), SoundSystem::Binaural), 2);
+    }
+
+    /// 2.1.2: otherwise, the first mix declaring a binaural layout, in any
+    /// sub-mix.
+    #[test]
+    fn binaural_selects_mix_by_loudness_layout() {
+        let mixes = [
+            mix(1, 0),
+            mix_with(
+                PREFERRED,
+                vec![sub_mix(&[(FOA_ID, 0)], &[Layout::Binaural])],
+            ),
+        ];
+        assert_eq!(
+            auto_id(&mixes, &elements(), SoundSystem::Binaural),
+            PREFERRED
+        );
+        let later_sub_mix = [
+            mix(1, 0),
+            mix_with(
+                PREFERRED,
+                vec![
+                    sub_mix(&[(FOA_ID, 0)], &[ss(0)]),
+                    sub_mix(&[(FOA_ID, 0)], &[Layout::Binaural]),
+                ],
+            ),
+        ];
+        assert_eq!(
+            auto_id(&later_sub_mix, &elements(), SoundSystem::Binaural),
+            PREFERRED
+        );
+    }
+
+    /// Binaural output no longer prefers stereo-declaring mixes (upstream
+    /// has no such clause; 2.1.3 is unimplemented): first mix wins.
+    #[test]
+    fn binaural_does_not_prefer_stereo_mixes() {
+        let mixes = [mix(1, 9), mix(2, 0)];
+        assert_eq!(auto_id(&mixes, &elements(), SoundSystem::Binaural), 1);
+    }
+
+    /// 2.3.1: other layouts pick the first mix declaring that exact
+    /// layout in any sub-mix; stereo element preferences do not apply.
+    #[test]
+    fn other_layouts_select_first_declaring_mix() {
+        let mixes = [
+            mix_with(1, vec![sub_mix(&[(STEREO_ID, 0)], &[ss(0)])]),
+            mix_with(
+                2,
+                vec![sub_mix(&[(FOA_ID, 0)], &[ss(0)]), sub_mix(&[], &[ss(9)])],
+            ),
+            mix(3, 9),
+        ];
+        assert_eq!(auto_id(&mixes, &elements(), SoundSystem::J), 2);
+        assert_eq!(auto_id(&mixes, &elements(), SoundSystem::B), 1);
+    }
+
+    /// Clause 1: a supported requested id beats every layout clause.
+    #[test]
+    fn requested_id_takes_precedence() {
+        let mixes = [
+            mix(1, 4),
+            mix_with(2, vec![sub_mix(&[(BINAURAL_ID, BINAURAL_MODE)], &[ss(0)])]),
+            mix_with(3, vec![sub_mix(&[(STEREO_ID, 0)], &[ss(0)])]),
+        ];
+        let all = [true; 3];
+        for target in [SoundSystem::A, SoundSystem::Binaural, SoundSystem::J] {
+            assert_eq!(
+                select_mix_index(&mixes, &elements(), &all, MixSelection::ById(1), target).unwrap(),
+                0,
+                "{target:?}"
+            );
+        }
+        // An absent id falls through to the layout clauses.
+        assert_eq!(
+            select_mix_index(
+                &mixes,
+                &elements(),
+                &all,
+                MixSelection::ById(7),
+                SoundSystem::Binaural
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            select_mix_index(
+                &mixes,
+                &elements(),
+                &all,
+                MixSelection::ById(7),
+                SoundSystem::A
+            )
+            .unwrap(),
+            2
+        );
+    }
+
+    /// Unsupported mixes are skipped by every layout clause.
+    #[test]
+    fn layout_clauses_skip_unsupported_mixes() {
+        let mixes = [
+            mix(1, 4),
+            mix_with(2, vec![sub_mix(&[(BINAURAL_ID, BINAURAL_MODE)], &[ss(0)])]),
+            mix_with(3, vec![sub_mix(&[(STEREO_ID, 0)], &[ss(0)])]),
+            mix_with(4, vec![sub_mix(&[], &[Layout::Binaural])]),
+        ];
+        let supported = [true, false, false, true];
+        let pick = |target| {
+            select_mix_index(&mixes, &elements(), &supported, MixSelection::Auto, target).unwrap()
+        };
+        assert_eq!(pick(SoundSystem::Binaural), 3);
+        assert_eq!(pick(SoundSystem::A), 0);
     }
 
     #[test]
@@ -1163,22 +1619,41 @@ mod tests {
         let supported = [false, true];
         // Auto skips the unsupported mix even though it matches first.
         assert_eq!(
-            select_mix_index(&mixes, &supported, MixSelection::Auto, SoundSystem::J).unwrap(),
+            select_mix_index(&mixes, &[], &supported, MixSelection::Auto, SoundSystem::J).unwrap(),
             1
         );
         // An id resolving to an unsupported mix falls back to auto.
         assert_eq!(
-            select_mix_index(&mixes, &supported, MixSelection::ById(10), SoundSystem::A).unwrap(),
+            select_mix_index(
+                &mixes,
+                &[],
+                &supported,
+                MixSelection::ById(10),
+                SoundSystem::A
+            )
+            .unwrap(),
             1
         );
         // Explicit index to an unsupported mix is an error.
         assert!(matches!(
-            select_mix_index(&mixes, &supported, MixSelection::ByIndex(0), SoundSystem::A),
+            select_mix_index(
+                &mixes,
+                &[],
+                &supported,
+                MixSelection::ByIndex(0),
+                SoundSystem::A
+            ),
             Err(DecodeError::UnsupportedProfile(_))
         ));
         // Nothing supported at all.
         assert!(matches!(
-            select_mix_index(&mixes, &[false, false], MixSelection::Auto, SoundSystem::A),
+            select_mix_index(
+                &mixes,
+                &[],
+                &[false, false],
+                MixSelection::Auto,
+                SoundSystem::A
+            ),
             Err(DecodeError::UnsupportedProfile(_))
         ));
     }

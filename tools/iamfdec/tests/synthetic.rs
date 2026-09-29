@@ -1,12 +1,16 @@
 //! Hand-built LPCM streams exercising behaviors the fetched conformance
 //! vectors don't cover: parameter blocks whose subblocks span several
 //! temporal units, temporal-delimiter alignment checking, per-unit trim
-//! consistency, and duplicated parameter IDs.
+//! consistency, duplicated parameter IDs, §7.4.1 mix selection among
+//! several mix presentations, and binaural-input element passthrough.
 
 use iamf_codecs::DefaultFactory;
 use iamf_dec::DecodeError;
 use iamf_dec::layout::SoundSystem;
-use iamf_dec::stream::{StreamDecoder, StreamSettings};
+use iamf_dec::presentation::{Descriptors, PresentationDecoder};
+use iamf_dec::profile::ProfileSet;
+use iamf_dec::stream::{MixSelection, StreamDecoder, StreamSettings};
+use iamf_obu::ObuIter;
 
 const FRAME: usize = 64;
 
@@ -310,4 +314,203 @@ fn duplicate_parameter_id_applies_to_all_consumers() {
             "sample {g} vs expected {expected} (both gain stages must apply)"
         );
     }
+}
+
+/// Single-layer channel element with its own substream (id ==
+/// audio_element_id) in `loudspeaker_layout`, coupled.
+fn single_layer_element(audio_element_id: u32, loudspeaker_layout: u8) -> Vec<u8> {
+    let mut p = leb(audio_element_id);
+    p.push(0x00); // element_type 0 (channel based)
+    p.extend(leb(0)); // codec_config_id
+    p.extend(leb(1)); // num_substreams
+    p.extend(leb(audio_element_id)); // substream id
+    p.extend(leb(0)); // num_parameters
+    p.push(1 << 5); // num_layers = 1
+    p.push(loudspeaker_layout << 4);
+    p.push(1); // substream_count
+    p.push(1); // coupled_substream_count
+    obu(1, &p)
+}
+
+/// One-element mix presentation declaring a single loudness layout
+/// (`layout_byte`: layout_type << 6 | sound_system << 2).
+fn single_element_mix(
+    mix_id: u32,
+    element_id: u32,
+    rendering_mode: u8,
+    layout_byte: u8,
+) -> Vec<u8> {
+    let mut p = leb(mix_id);
+    p.extend(leb(0)); // count_label
+    p.extend(leb(1)); // num_sub_mixes
+    p.extend(leb(1)); // num_audio_elements
+    p.extend(leb(element_id));
+    p.push(rendering_mode << 6); // headphones_rendering_mode
+    p.extend(leb(0)); // rendering_config_extension_size
+    p.extend(mix_gain_param(100));
+    p.extend(mix_gain_param(101));
+    p.extend(leb(1)); // num_layouts
+    p.push(layout_byte);
+    p.push(0x00); // loudness info_type
+    p.extend(0i16.to_be_bytes());
+    p.extend(0i16.to_be_bytes());
+    obu(2, &p)
+}
+
+/// Layout bytes for [`single_element_mix`].
+const SS_A: u8 = 0x80; // layout_type 2 (ss convention), sound system A
+const SS_J: u8 = 0x80 | (9 << 2); // sound system J (7.1.4)
+const BINAURAL_LAYOUT: u8 = 0xc0; // layout_type 3
+
+/// Stereo element 1 content (constant) and binaural element 2 content
+/// (distinct ramps), interleaved L/R.
+fn stereo_frames() -> Vec<i16> {
+    (0..FRAME).flat_map(|_| [8192i16, -8192]).collect()
+}
+
+fn binaural_frames() -> Vec<i16> {
+    (0..FRAME as i16)
+        .flat_map(|k| [k * 311 - 9000, 7000 - k * 97])
+        .collect()
+}
+
+/// A stream with stereo element 1 and binaural-input element 2 (one unit
+/// each) and the given mix presentation OBUs.
+fn two_element_stream(mixes: &[Vec<u8>]) -> Vec<u8> {
+    let mut stream = obu(31, b"iamf\x00\x01");
+    stream.extend(lpcm_codec_config());
+    stream.extend(single_layer_element(1, 1)); // stereo
+    stream.extend(single_layer_element(2, 9)); // binaural
+    for mix in mixes {
+        stream.extend(mix);
+    }
+    stream.extend(frame_obu(1, &stereo_frames()));
+    stream.extend(frame_obu(2, &binaural_frames()));
+    stream
+}
+
+fn s16le(samples: &[i16]) -> Vec<u8> {
+    samples.iter().flat_map(|s| s.to_le_bytes()).collect()
+}
+
+/// Selected mix id via the batch helper, checking StreamDecoder agrees.
+fn selected_mix_id(stream: &[u8], selection: MixSelection, layout: SoundSystem) -> u32 {
+    let descriptors = Descriptors::collect(stream).unwrap();
+    let index = descriptors
+        .select_mix_presentation(selection, layout, ProfileSet::all())
+        .unwrap();
+    let id = descriptors.mix_presentations[index].mix_presentation_id;
+    let mut settings = StreamSettings::default();
+    settings.layout = layout;
+    settings.mix_selection = selection;
+    let streamed = StreamDecoder::new_from_descriptors(stream, settings, &DefaultFactory)
+        .unwrap()
+        .selected_mix()
+        .0;
+    assert_eq!(streamed, id, "{layout:?}: stream/batch selection mismatch");
+    id
+}
+
+/// Batch (PresentationDecoder) decode of the auto-selected mix, as s16le.
+fn batch_decode(stream: &[u8], layout: SoundSystem) -> Vec<u8> {
+    let descriptors = Descriptors::collect(stream).unwrap();
+    let index = descriptors
+        .select_mix_presentation(MixSelection::Auto, layout, ProfileSet::all())
+        .unwrap();
+    let mut decoder =
+        PresentationDecoder::new(&descriptors, index, layout, &DefaultFactory).unwrap();
+    for obu in ObuIter::new(stream).map(Result::unwrap) {
+        decoder.process_obu(&obu).unwrap();
+    }
+    let mix = decoder.finish().unwrap();
+    let samples: Vec<i16> = mix
+        .interleaved
+        .iter()
+        .map(|&s| iamf_dec::post::quantize_s16(s))
+        .collect();
+    s16le(&samples)
+}
+
+/// §7.4.1 end to end: stereo output picks the stereo-rendering 2.2.1 mix
+/// over an earlier binaural-rendering (2.2.2) one, and binaural output
+/// picks the 2.1.1 binaural-input mix, whose element passes through
+/// bit-exactly (no HRTF, although its headphones_rendering_mode is 1).
+#[test]
+fn creator_preferred_mix_selection() {
+    let stream = two_element_stream(&[
+        single_element_mix(10, 1, 1, SS_A),
+        single_element_mix(20, 1, 0, SS_A),
+        single_element_mix(30, 2, 1, SS_A),
+    ]);
+    assert_eq!(
+        selected_mix_id(&stream, MixSelection::Auto, SoundSystem::A),
+        20
+    );
+    assert_eq!(
+        selected_mix_id(&stream, MixSelection::Auto, SoundSystem::Binaural),
+        30
+    );
+    // 2.3.1 finds no 5.1 mix: first supported.
+    assert_eq!(
+        selected_mix_id(&stream, MixSelection::Auto, SoundSystem::B),
+        10
+    );
+
+    assert_eq!(
+        decode_all(&stream, SoundSystem::A).unwrap(),
+        s16le(&stereo_frames())
+    );
+    let binaural = s16le(&binaural_frames());
+    assert_eq!(
+        decode_all(&stream, SoundSystem::Binaural).unwrap(),
+        binaural
+    );
+    assert_eq!(batch_decode(&stream, SoundSystem::Binaural), binaural);
+}
+
+/// Binaural input passes through to binaural and stereo output (iamf-tools
+/// `AudioElementRendererPassThrough`), and mixes containing it are skipped
+/// for other loudspeaker layouts, which it cannot be rendered to.
+#[test]
+fn binaural_input_mix_passthrough_and_skipping() {
+    let stream = two_element_stream(&[
+        single_element_mix(30, 2, 1, BINAURAL_LAYOUT),
+        single_element_mix(10, 1, 0, SS_J),
+    ]);
+    let binaural = s16le(&binaural_frames());
+    // Binaural: 2.1.1. Stereo: no 2.2.x candidate, first mix (renderable
+    // to stereo by passthrough).
+    for layout in [SoundSystem::Binaural, SoundSystem::A] {
+        assert_eq!(selected_mix_id(&stream, MixSelection::Auto, layout), 30);
+        assert_eq!(decode_all(&stream, layout).unwrap(), binaural, "{layout:?}");
+        assert_eq!(batch_decode(&stream, layout), binaural, "{layout:?}");
+    }
+    // 7.1.4: 2.3.1. 5.1: the first mix cannot render, so the first
+    // renderable one; a requested id naming it falls back likewise.
+    assert_eq!(
+        selected_mix_id(&stream, MixSelection::Auto, SoundSystem::J),
+        10
+    );
+    assert_eq!(
+        selected_mix_id(&stream, MixSelection::Auto, SoundSystem::B),
+        10
+    );
+    assert_eq!(
+        selected_mix_id(&stream, MixSelection::ById(30), SoundSystem::B),
+        10
+    );
+    assert_eq!(
+        decode_all(&stream, SoundSystem::B).unwrap().len(),
+        FRAME * 6 * 2
+    );
+    // Explicitly indexing the unrenderable mix is an error.
+    let descriptors = Descriptors::collect(&stream).unwrap();
+    assert!(matches!(
+        descriptors.select_mix_presentation(
+            MixSelection::ByIndex(0),
+            SoundSystem::B,
+            ProfileSet::all()
+        ),
+        Err(DecodeError::UnsupportedProfile(_))
+    ));
 }

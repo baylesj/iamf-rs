@@ -2,8 +2,8 @@
 
 ## Unreleased
 
-Modernization and cleanup pass (no decoding behavior changes; the
-conformance suite is byte-identical).
+Modernization and cleanup pass (no decoding behavior changes beyond mix
+selection, below; the conformance suite is byte-identical).
 
 - Semver hygiene: `#[non_exhaustive]` on the public enums and settings
   structs; `channels`/`demixer`/`matrices` are crate-private (with
@@ -33,6 +33,26 @@ conformance suite is byte-identical).
   C header constants to the Rust definitions.
 - CLI polish: `iamfdec` rejects unknown flags and parses args linearly;
   `iamfplay` prints `Display` errors.
+- Mix selection (behavior change for multi-mix streams; every
+  conformance vector has one mix and decodes identically):
+  `MixSelection::Auto` implements IAMF §7.4.1 creator-preferred
+  selection, ported from iamf-tools `FindMixPresentationAndLayout`
+  (7dac42316, f6ff4ab6c). Binaural output prefers a mix whose single
+  audio element is authored binaural, then one declaring a binaural
+  loudness layout, and no longer prefers stereo-declaring mixes; stereo
+  output prefers a mix with exactly one stereo layout and one stereo
+  element, rendering-mode stereo first; other layouts still take the
+  first mix declaring them. New `Descriptors::select_mix_presentation`
+  exposes the same selection for the batch `PresentationDecoder` path,
+  and `iamfdec` now uses it instead of always decoding the first mix.
+- Binaural-input elements (single-layer loudspeaker_layout BINAURAL, the
+  2.1.1 case) now decode: like iamf-tools' passthrough renderer, their
+  L/R signals pass through unchanged to binaural and stereo output
+  (never HRTF-processed, whatever `headphones_rendering_mode` says). As
+  iamf-tools has no renderer for them to other loudspeaker layouts,
+  mixes containing them are not selectable for those targets (`Auto`
+  and unmatched `ById` skip them; `ByIndex` reports
+  `DecodeError::UnsupportedProfile`).
 
 ## 0.2.0 — 2026-08-25
 

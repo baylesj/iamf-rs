@@ -15,7 +15,10 @@ use crate::channels::{
 };
 use crate::demixer::Demixer;
 use crate::element::SubstreamPcm;
-use crate::layout::{SoundSystem, loudspeaker_info, loudspeaker_sound_system};
+use crate::layout::{
+    LOUDSPEAKER_LAYOUT_BINAURAL, LOUDSPEAKER_LAYOUT_STEREO, SoundSystem, loudspeaker_info,
+    loudspeaker_sound_system,
+};
 use crate::matrices::{HoaOrder, MatrixLayout};
 use crate::params::{ReconGainLayers, q78_db_to_linear};
 
@@ -61,6 +64,9 @@ pub struct ChannelReconstructor {
     /// Total decoded channels for layers 0..=layer, in decode order.
     input_channels: usize,
     matrix: MatrixLayout,
+    /// The element carries binaural input, reconstructed as stereo, which
+    /// renderers pass through instead of rendering.
+    binaural_input: bool,
 }
 
 impl ChannelReconstructor {
@@ -80,10 +86,37 @@ impl ChannelReconstructor {
         if layers.is_empty() {
             return Err(DecodeError::InvalidDescriptors("no channel layers".into()));
         }
+        // Binaural input (§3.7.4): one coupled L/R layer of pre-rendered
+        // headphone audio. It is decoded like a stereo layer and then
+        // passed through unchanged, to binaural or stereo output only
+        // (iamf-tools `AudioElementRendererPassThrough`; see
+        // `crate::layout::element_renders_to`).
+        if layers
+            .iter()
+            .any(|l| l.loudspeaker_layout == LOUDSPEAKER_LAYOUT_BINAURAL)
+        {
+            let [layer] = layers else {
+                return Err(DecodeError::InvalidDescriptors(
+                    "a binaural layer must be the only layer".into(),
+                ));
+            };
+            if !matches!(target, SoundSystem::A | SoundSystem::Binaural) {
+                return Err(DecodeError::Unimplemented(
+                    "binaural input to loudspeaker layouts other than stereo",
+                ));
+            }
+            let as_stereo = ChannelAudioLayer {
+                loudspeaker_layout: LOUDSPEAKER_LAYOUT_STEREO,
+                ..layer.clone()
+            };
+            let mut rec = Self::with_layer_selection(&[as_stereo], target, false)?;
+            rec.binaural_input = true;
+            return Ok(rec);
+        }
         for layer in layers {
             if layer.expanded_loudspeaker_layout.is_some() || layer.loudspeaker_layout > 8 {
                 return Err(DecodeError::Unimplemented(
-                    "expanded/binaural loudspeaker layouts",
+                    "expanded/reserved loudspeaker layouts",
                 ));
             }
         }
@@ -161,6 +194,7 @@ impl ChannelReconstructor {
             layout,
             input_channels,
             matrix,
+            binaural_input: false,
         })
     }
 
@@ -175,9 +209,18 @@ impl ChannelReconstructor {
         self.matrix
     }
 
-    /// Loudspeaker layout of the selected layer.
+    /// Loudspeaker layout of the selected layer (stereo for binaural
+    /// input, see [`ChannelReconstructor::is_binaural_input`]).
     pub fn layout(&self) -> u8 {
         self.layout
+    }
+
+    /// Whether the element carries binaural input (§3.7.4 loudspeaker_layout
+    /// BINAURAL): the reconstructed L/R planes are the final binaural or
+    /// stereo output and must be passed through, never matrix-rendered or
+    /// HRTF-processed.
+    pub fn is_binaural_input(&self) -> bool {
+        self.binaural_input
     }
 
     /// Updates the demixing mode from a demixing parameter block (dynamic
@@ -449,5 +492,42 @@ mod tests {
         let out = rec.process_frame(&planes).unwrap();
         // Default recon gain smoothing on first frame: 0.25*1 + 0.75*1 = 1.
         assert!((out[4][0] - ls).abs() < 1e-5, "Ls = {}", out[4][0]);
+    }
+
+    #[test]
+    fn binaural_input_is_single_layer_passthrough() {
+        let binaural = [layer(LOUDSPEAKER_LAYOUT_BINAURAL, 1, 1)];
+        for target in [SoundSystem::A, SoundSystem::Binaural] {
+            // Layer selection and HRTF forcing do not apply.
+            for force_highest in [false, true] {
+                let mut rec =
+                    ChannelReconstructor::with_layer_selection(&binaural, target, force_highest)
+                        .unwrap();
+                assert!(rec.is_binaural_input());
+                assert_eq!(rec.input_channels(), 2);
+                let out = rec
+                    .process_frame(&[vec![0.5, -0.125], vec![0.25, 1.0]])
+                    .unwrap();
+                assert_eq!(out, [vec![0.5, -0.125], vec![0.25, 1.0]], "{target:?}");
+            }
+        }
+        assert!(
+            !ChannelReconstructor::new(&[layer(1, 1, 1)], SoundSystem::A)
+                .unwrap()
+                .is_binaural_input()
+        );
+        // No renderer to other loudspeaker layouts (as in iamf-tools).
+        assert!(matches!(
+            ChannelReconstructor::new(&binaural, SoundSystem::B),
+            Err(DecodeError::Unimplemented(_))
+        ));
+        // §3.7.4: a binaural layer must be the only one.
+        assert!(matches!(
+            ChannelReconstructor::new(
+                &[layer(1, 1, 1), layer(LOUDSPEAKER_LAYOUT_BINAURAL, 1, 1)],
+                SoundSystem::A
+            ),
+            Err(DecodeError::InvalidDescriptors(_))
+        ));
     }
 }
