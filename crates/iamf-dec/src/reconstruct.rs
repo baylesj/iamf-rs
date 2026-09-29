@@ -46,6 +46,13 @@ impl Reconstructed {
             Reconstructed::Channels { planar, .. } | Reconstructed::Hoa { planar, .. } => planar,
         }
     }
+
+    /// Consumes the value, returning the planar channel audio buffers.
+    pub fn into_planar(self) -> Vec<Vec<f32>> {
+        match self {
+            Reconstructed::Channels { planar, .. } | Reconstructed::Hoa { planar, .. } => planar,
+        }
+    }
 }
 
 /// Frame-based reconstruction of a channel-based element up to the layer

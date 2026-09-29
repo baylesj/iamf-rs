@@ -52,6 +52,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
 
 [[package]]
+name = "aom-roar"
+version = "0.1.0"
+source = "git+https://github.com/AOMediaCodec/roar?rev=45ca4926b7965c77576a8a911fa66cac84f4daea#45ca4926b7965c77576a8a911fa66cac84f4daea"
+dependencies = [
+ "log",
+ "realfft",
+ "rustfft",
+]
+
+[[package]]
 name = "arrayvec"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -589,6 +599,7 @@ dependencies = [
 name = "iamf-dec"
 version = "0.2.0"
 dependencies = [
+ "aom-roar",
  "iamf-obu",
  "realfft",
 ]

@@ -22,6 +22,9 @@ OBU parser → codec decoders → element reconstructor → renderer → mixer �
 - Ambisonics, mono and projection modes, orders 1–4
 - Rendering to all 14 loudspeaker sound systems (libiamf v1.1 gain matrices)
 - Binaural rendering for headphones — native port of [google/obr](https://github.com/google/obr) (layout 14), any supported sample rate
+- Optional [ROAR](https://github.com/AOMediaCodec/roar) renderer backend
+  (AOM's Rust Open Audio Renderer, feature `roar`, streaming decoder and
+  `iamfdec --renderer roar`); see `ARCHITECTURE.md` for how it compares
 - Animated mix gains (step/linear/bezier); demixing/recon-gain parameter
   timelines at subblock granularity (blocks may span temporal units)
 - Optional loudness normalization and peak limiter (off by default,
@@ -119,6 +122,18 @@ dependencies to vendor. Dropping `binaural` also drops the FFT stack and
 ~1.8 MB of embedded HRIR filters; binaural output then falls back to
 stereo. CI checks these combinations.
 
+`roar` (on `iamf-dec`, forwarded by `iamfdec`) is a second opt-in: it
+adds the ROAR renderer backend (`StreamSettings::renderer =
+RendererBackend::Roar`). ROAR is not on crates.io — it is a git
+dependency pinned to a commit — and needs Rust 1.97.1 (the rest of the
+workspace keeps the 1.85 MSRV). ROAR also defines unmangled C symbols
+(`roar_*`), which end up in any C library that links it; `iamf-capi`
+does not expose the feature and always uses the builtin renderer.
+
+```sh
+cargo +1.97.1 run --release -p iamfdec --features roar -- file.iamf --renderer roar -s 3 -o out.wav
+```
+
 ## Scope
 
 Everything the pipeline needs for IAMF v1.1 simple/base(-enhanced-aware)
@@ -158,3 +173,8 @@ patent rights; the upstream projects publish separate patent licenses
 (AOM Patent License 1.0, OBR Patent License 1.0) covering the derived
 portions. This section is a good-faith summary, not legal advice — have
 counsel review before redistribution.
+
+Builds with the optional `roar` feature additionally link
+[ROAR](https://github.com/AOMediaCodec/roar), distributed under its own
+BSD-3-Clause license plus the AOM Patent License 1.0 (see ROAR's
+`LICENSE` and `PATENTS`). Default builds do not include it.

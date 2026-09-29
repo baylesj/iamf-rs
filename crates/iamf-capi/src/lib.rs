@@ -38,6 +38,7 @@ fn status_of(err: &DecodeError) -> c_int {
     match err {
         DecodeError::UnsupportedCodec
         | DecodeError::UnsupportedProfile(_)
+        | DecodeError::UnsupportedRenderer(_)
         | DecodeError::Unimplemented(_) => IAMFRS_ERR_UNSUPPORTED,
         DecodeError::CorruptPacket(_) | DecodeError::InvalidDescriptors(_) => {
             IAMFRS_ERR_CORRUPT_DATA

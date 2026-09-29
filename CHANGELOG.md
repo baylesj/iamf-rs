@@ -33,6 +33,17 @@ conformance suite is byte-identical).
   C header constants to the Rust definitions.
 - CLI polish: `iamfdec` rejects unknown flags and parses args linearly;
   `iamfplay` prints `Display` errors.
+- Optional ROAR renderer backend (cargo feature `iamf-dec/roar`, off by
+  default; needs Rust 1.97.1, git dependency pinned to
+  AOMediaCodec/roar@45ca492): new `renderer::RendererBackend` and
+  `StreamSettings::renderer`, `DecodeError::UnsupportedRenderer` (C ABI:
+  `IAMFRS_ERR_UNSUPPORTED`), and `iamfdec --renderer builtin|roar`. The
+  builtin renderer stays the default and the conformance path; the C ABI
+  and batch decoder always use it. ROAR matches the builtin bit-exactly
+  (or ≥ 141 dB) on every curated vector × loudspeaker layout except the
+  documented OAR downmix-renderer cases and an upstream ROAR 22.2 LFE
+  bug (`ARCHITECTURE.md`, "Renderer backends"). MSRV CI now checks every
+  feature except `roar`.
 
 ## 0.2.0 — 2026-08-25
 
