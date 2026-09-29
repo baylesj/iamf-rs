@@ -34,6 +34,15 @@ conformance suite is byte-identical).
 - CLI polish: `iamfdec` rejects unknown flags and parses args linearly;
   `iamfplay` prints `Display` errors.
 
+Descriptor-handling fixes ported from iamf-tools (conformant streams
+decode unchanged):
+
+- A non-redundant IA sequence header that follows a redundant copy
+  before any temporal unit now replaces it (iamf-tools 23e4565dd);
+  previously the first copy won even if it disagreed. Applies to both
+  drivers, the C ABI, and `iamfplay` via `Descriptors::collect`.
+  Conformance vector test_000079 joins the curated set.
+
 ## 0.2.0 — 2026-08-25
 
 Spec-conformance and Chromium-integration hardening. The C ABI settings

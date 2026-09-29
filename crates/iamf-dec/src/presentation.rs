@@ -25,7 +25,8 @@ use crate::render::render;
 use crate::{CodecFactory, DecodeError};
 
 /// All descriptor OBUs of an IA sequence, first copy wins for redundant
-/// re-transmissions.
+/// re-transmissions — except that a non-redundant IA sequence header
+/// supersedes a redundant one seen before any temporal unit.
 #[derive(Debug, Clone, Default)]
 pub struct Descriptors {
     /// Parsed sequence header descriptor, if present.
@@ -42,13 +43,35 @@ impl Descriptors {
     /// Collects and parses all descriptor OBUs from a raw byte stream.
     pub fn collect(data: &[u8]) -> Result<Self, DecodeError> {
         let mut out = Descriptors::default();
+        // Whether the stored sequence header came from a redundant copy,
+        // and whether any temporal-unit OBU has been seen yet.
+        let mut sequence_header_is_redundant = false;
+        let mut in_temporal_units = false;
         for result in ObuIter::new(data) {
             let obu = result.map_err(|e| DecodeError::InvalidDescriptors(e.to_string()))?;
+            let obu_type = obu.header.obu_type;
+            in_temporal_units |= obu_type.is_audio_frame()
+                || matches!(
+                    obu_type,
+                    ObuType::ParameterBlock | ObuType::TemporalDelimiter
+                );
             match descriptors::parse(&obu)
                 .map_err(|e| DecodeError::InvalidDescriptors(e.to_string()))?
             {
-                Some(Descriptor::SequenceHeader(sh)) if out.sequence_header.is_none() => {
+                // §3.2: a redundant copy received without its non-redundant
+                // original SHALL be processed as non-redundant, so it is
+                // stored; but when the canonical (non-redundant) header then
+                // arrives before any temporal unit, it is authoritative and
+                // replaces the copy rather than starting a new IA sequence
+                // (iamf-tools 23e4565dd; conformance vector test_000079).
+                Some(Descriptor::SequenceHeader(sh))
+                    if out.sequence_header.is_none()
+                        || (sequence_header_is_redundant
+                            && !obu.header.redundant_copy
+                            && !in_temporal_units) =>
+                {
                     out.sequence_header = Some(sh);
+                    sequence_header_is_redundant = obu.header.redundant_copy;
                 }
                 Some(Descriptor::CodecConfig(cc))
                     if !out
@@ -671,5 +694,70 @@ fn reconstruct_slot(
                 trim_map,
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// IA sequence header OBU declaring the given profiles.
+    fn sequence_header_obu(redundant: bool, primary: u8, additional: u8) -> Vec<u8> {
+        let mut out = vec![31 << 3 | u8::from(redundant) << 2, 6];
+        out.extend(b"iamf");
+        out.extend([primary, additional]);
+        out
+    }
+
+    const TEMPORAL_DELIMITER: [u8; 2] = [4 << 3, 0];
+
+    fn collected_profiles(data: &[u8]) -> (u8, u8) {
+        let header = Descriptors::collect(data)
+            .unwrap()
+            .sequence_header
+            .expect("sequence header collected");
+        (header.primary_profile, header.additional_profile)
+    }
+
+    /// test_000079 shape, but with a copy that disagrees: the canonical
+    /// (non-redundant) header wins over a redundant copy sent before it.
+    #[test]
+    fn canonical_sequence_header_supersedes_earlier_redundant_copy() {
+        let mut data = sequence_header_obu(true, 2, 2);
+        data.extend(sequence_header_obu(false, 0, 1));
+        assert_eq!(collected_profiles(&data), (0, 1));
+    }
+
+    /// §3.2: a redundant copy without its original is processed as
+    /// non-redundant.
+    #[test]
+    fn lone_redundant_sequence_header_is_used() {
+        assert_eq!(collected_profiles(&sequence_header_obu(true, 2, 2)), (2, 2));
+    }
+
+    #[test]
+    fn redundant_copy_does_not_replace_canonical_sequence_header() {
+        let mut data = sequence_header_obu(false, 0, 1);
+        data.extend(sequence_header_obu(true, 2, 2));
+        assert_eq!(collected_profiles(&data), (0, 1));
+    }
+
+    /// Once temporal units have started, a non-redundant header belongs to
+    /// a following IA sequence and does not rewrite this one.
+    #[test]
+    fn sequence_header_after_temporal_units_is_not_canonical() {
+        let mut data = sequence_header_obu(true, 2, 2);
+        data.extend(TEMPORAL_DELIMITER);
+        data.extend(sequence_header_obu(false, 0, 1));
+        assert_eq!(collected_profiles(&data), (2, 2));
+    }
+
+    /// A second non-redundant header (a new IA sequence per §3.4) keeps
+    /// the first one, as before.
+    #[test]
+    fn second_non_redundant_sequence_header_is_ignored() {
+        let mut data = sequence_header_obu(false, 0, 1);
+        data.extend(sequence_header_obu(false, 2, 2));
+        assert_eq!(collected_profiles(&data), (0, 1));
     }
 }
