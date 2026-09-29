@@ -43,6 +43,11 @@ decode unchanged):
   code, and any `content_language` / `content_type` beyond the first
   valid instance (§3.7.5), instead of keeping every tag. Violations are
   ignored, not errors, matching iamf-tools' permissive decoding.
+- A non-redundant IA sequence header that follows a redundant copy
+  before any temporal unit now replaces it (iamf-tools 23e4565dd);
+  previously the first copy won even if it disagreed. Applies to both
+  drivers, the C ABI, and `iamfplay` via `Descriptors::collect`.
+  Conformance vector test_000079 joins the curated set.
 
 ## 0.2.0 — 2026-08-25
 

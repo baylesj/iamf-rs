@@ -163,6 +163,13 @@ fn flac_scalable_demixed_51() {
     render_case("test_000073", 1, 1, 1);
 }
 
+/// §3.2 obu_redundant_copy: a redundant IA sequence header precedes the
+/// canonical descriptors; decoding must be unaffected.
+#[test]
+fn redundant_sequence_header_first_bit_exact() {
+    render_case("test_000079", 0, 0, 0);
+}
+
 /// AAC is lossy and the reference is rendered from the original PCM, so
 /// only coding-noise-level closeness is asserted.
 #[test]
