@@ -14,22 +14,34 @@ use iamf_obu::descriptors::{
 
 use crate::element::substream_channels;
 
-/// The IAMF v1.1 profiles (iamf-tools `ProfileVersion`): simple (0),
-/// base (1), base-enhanced (2).
+/// The IAMF profiles (iamf-tools `ProfileVersion`):
+/// - v1.1: Simple (0), Base (1), Base-Enhanced (2)
+/// - v2.0: Base-Advanced (3), Advanced1 (4), Advanced2 (5)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProfileSet(u8);
 
 impl ProfileSet {
-    /// IAMF Simple profile.
+    /// IAMF Simple profile (v1.1).
     pub const SIMPLE: ProfileSet = ProfileSet(1 << 0);
-    /// IAMF Base profile.
+    /// IAMF Base profile (v1.1).
     pub const BASE: ProfileSet = ProfileSet(1 << 1);
-    /// IAMF Base-Enhanced profile.
+    /// IAMF Base-Enhanced profile (v1.1).
     pub const BASE_ENHANCED: ProfileSet = ProfileSet(1 << 2);
+    /// IAMF Base-Advanced profile (v2.0).
+    pub const BASE_ADVANCED: ProfileSet = ProfileSet(1 << 3);
+    /// IAMF Advanced1 profile (v2.0).
+    pub const ADVANCED1: ProfileSet = ProfileSet(1 << 4);
+    /// IAMF Advanced2 profile (v2.0).
+    pub const ADVANCED2: ProfileSet = ProfileSet(1 << 5);
 
     /// A profile set containing all known IAMF v1.1 profiles.
+    pub const fn all_v1() -> Self {
+        ProfileSet(0b000111)
+    }
+
+    /// A profile set containing all known IAMF v1.1 and v2.0 profiles.
     pub const fn all() -> Self {
-        ProfileSet(0b111)
+        ProfileSet(0b111111)
     }
 
     /// An empty profile set.
@@ -54,12 +66,16 @@ impl ProfileSet {
     }
 
     /// From an IA sequence header profile number (0 = simple, 1 = base,
-    /// 2 = base-enhanced); unknown numbers map to the empty set.
+    /// 2 = base-enhanced, 3 = base-advanced, 4 = advanced1, 5 = advanced2);
+    /// unknown numbers map to the empty set.
     pub const fn from_profile_number(profile: u8) -> Self {
         match profile {
             0 => ProfileSet::SIMPLE,
             1 => ProfileSet::BASE,
             2 => ProfileSet::BASE_ENHANCED,
+            3 => ProfileSet::BASE_ADVANCED,
+            4 => ProfileSet::ADVANCED1,
+            5 => ProfileSet::ADVANCED2,
             _ => ProfileSet::empty(),
         }
     }
@@ -69,10 +85,11 @@ impl ProfileSet {
     }
 
     /// From the C-ABI / iamf-tools numbering: bit 0 = simple, bit 1 = base,
-    /// bit 2 = base-enhanced. Unknown high bits are ignored; an empty mask
-    /// means "no constraint" and resolves to all known profiles.
+    /// bit 2 = base-enhanced, bit 3 = base-advanced, bit 4 = advanced1, bit 5 = advanced2.
+    /// Unknown high bits are ignored; an empty mask means "no constraint" and
+    /// resolves to all known profiles.
     pub fn from_bits(bits: u32) -> Self {
-        let known = (bits & 0b111) as u8;
+        let known = (bits & 0b111111) as u8;
         if known == 0 {
             ProfileSet::all()
         } else {
@@ -110,25 +127,40 @@ fn filter_audio_element(element: &AudioElement, profiles: &mut ProfileSet) {
                 0..=9 => {}
                 // Expanded: never in simple/base; base-enhanced supports
                 // expanded layouts 0..=12 (LFE/stereo subsets, top/front
-                // groups, 9.1.6); 13..=19 arrived with the v2 draft
-                // profiles and 20+ are reserved.
+                // groups, 9.1.6); 13..=19 (e.g. 10.2.9.3, 7.1.5.4) are supported
+                // in Base-Advanced, Advanced1, and Advanced2.
                 15 => {
                     profiles.remove(ProfileSet::SIMPLE.union(ProfileSet::BASE));
                     match first.expanded_loudspeaker_layout {
                         Some(0..=12) => {}
-                        _ => profiles.remove(ProfileSet::BASE_ENHANCED),
+                        Some(13..=19) => {
+                            profiles.remove(ProfileSet::BASE_ENHANCED);
+                        }
+                        _ => {
+                            profiles.remove(
+                                ProfileSet::BASE_ENHANCED
+                                    .union(ProfileSet::BASE_ADVANCED)
+                                    .union(ProfileSet::ADVANCED1)
+                                    .union(ProfileSet::ADVANCED2),
+                            );
+                        }
                     }
                 }
-                // 10..=14 are reserved in v1.1.
+                // 10..=14 are reserved.
                 _ => *profiles = ProfileSet::empty(),
             }
         }
-        // MONO and PROJECTION ambisonics are allowed in every profile (our
-        // parser rejects other modes outright).
+        // MONO and PROJECTION ambisonics are allowed in every profile.
         AudioElementConfig::AmbisonicsMono { .. }
         | AudioElementConfig::AmbisonicsProjection { .. } => {}
-        // Object-based (IAMF v2.0) and reserved element types: none of the
-        // v1.1 profiles known here allow them.
+        // Object-based elements (IAMF v2.0) are allowed in Base-Advanced, Advanced1, Advanced2.
+        AudioElementConfig::ObjectBased { .. } => {
+            profiles.remove(
+                ProfileSet::SIMPLE
+                    .union(ProfileSet::BASE)
+                    .union(ProfileSet::BASE_ENHANCED),
+            );
+        }
         _ => *profiles = ProfileSet::empty(),
     }
 }
@@ -145,46 +177,110 @@ pub fn filter_profiles_for_mix(
 ) -> ProfileSet {
     let mut profiles = requested;
 
-    // Sub-mix count: v1.1 profiles all require exactly one.
-    if mix.sub_mixes.len() != 1 {
+    // Sub-mix count: v1.1 profiles require exactly 1. v2 profiles allow up to 2.
+    if mix.sub_mixes.len() > 1 {
+        profiles.remove(
+            ProfileSet::SIMPLE
+                .union(ProfileSet::BASE)
+                .union(ProfileSet::BASE_ENHANCED),
+        );
+    }
+    if mix.sub_mixes.len() > 2 || mix.sub_mixes.is_empty() {
         return ProfileSet::empty();
     }
 
-    // headphones_rendering_mode: 0 and 1 are v1.1; 2 (head-locked binaural)
-    // and 3 (reserved) are not supported by any v1.1 profile.
+    // headphones_rendering_mode: 0 and 1 are allowed in all profiles;
+    // 2 (head-locked binaural) is supported in v2 profiles (Base-Advanced, Advanced1, Advanced2).
     for sub_mix in &mix.sub_mixes {
         for element in &sub_mix.elements {
-            if element.headphones_rendering_mode >= 2 {
+            if element.headphones_rendering_mode == 2 {
+                profiles.remove(
+                    ProfileSet::SIMPLE
+                        .union(ProfileSet::BASE)
+                        .union(ProfileSet::BASE_ENHANCED),
+                );
+            } else if element.headphones_rendering_mode > 2 {
                 return ProfileSet::empty();
             }
         }
     }
 
     let find_element = |id: u32| elements.iter().find(|e| e.audio_element_id == id);
+    let find_codec = |id: u32| codec_configs.iter().find(|c| c.codec_config_id == id);
 
-    // Codec-config rules (spec §4): the first sub-mix must use exactly one
-    // codec config under every v1.1 profile, which also pins a single
-    // frame size and sample rate.
-    let first_sub_mix_codec_configs: Vec<u32> = {
-        let mut ids = Vec::new();
-        for sub_element in &mix.sub_mixes[0].elements {
+    // Codec-config rules (spec §4, iamf-tools FilterProfilesForCodecConfigRules):
+    // 1. Condition A: First sub-mix must use exactly one Codec Config.
+    // 2. Condition B: Max unique Codec Configs per mix: v1.1 = 1, v2 = 2.
+    // 3. Condition C: If two unique Codec Configs, at least one must be LPCM.
+    // 4. Condition D: All Codec Configs in mix must have matching sample_rate & frame_size.
+    let mut all_codec_ids = Vec::new();
+    let mut first_sub_mix_codec_ids = Vec::new();
+
+    for (i, sub_mix) in mix.sub_mixes.iter().enumerate() {
+        for sub_element in &sub_mix.elements {
             let Some(element) = find_element(sub_element.audio_element_id) else {
                 return ProfileSet::empty();
             };
-            if codec_configs
-                .iter()
-                .all(|c| c.codec_config_id != element.codec_config_id)
-            {
+            let Some(cc) = find_codec(element.codec_config_id) else {
                 return ProfileSet::empty();
+            };
+            if !all_codec_ids.contains(&cc.codec_config_id) {
+                all_codec_ids.push(cc.codec_config_id);
             }
-            if !ids.contains(&element.codec_config_id) {
-                ids.push(element.codec_config_id);
+            if i == 0 && !first_sub_mix_codec_ids.contains(&cc.codec_config_id) {
+                first_sub_mix_codec_ids.push(cc.codec_config_id);
             }
         }
-        ids
-    };
-    if first_sub_mix_codec_configs.len() != 1 {
+    }
+
+    // Condition A check: first sub-mix has >1 codec config -> unsupported by all.
+    if first_sub_mix_codec_ids.len() > 1 {
         return ProfileSet::empty();
+    }
+
+    // Condition B check:
+    if all_codec_ids.len() > 1 {
+        profiles.remove(
+            ProfileSet::SIMPLE
+                .union(ProfileSet::BASE)
+                .union(ProfileSet::BASE_ENHANCED),
+        );
+    }
+    if all_codec_ids.len() > 2 {
+        return ProfileSet::empty();
+    }
+
+    // Condition C & D check if 2 codec configs:
+    if all_codec_ids.len() == 2 {
+        let Some(c1) = find_codec(all_codec_ids[0]) else {
+            return ProfileSet::empty();
+        };
+        let Some(c2) = find_codec(all_codec_ids[1]) else {
+            return ProfileSet::empty();
+        };
+        // Condition C: At least one must be LPCM
+        if c1.codec_id != iamf_obu::descriptors::CodecId::Lpcm
+            && c2.codec_id != iamf_obu::descriptors::CodecId::Lpcm
+        {
+            return ProfileSet::empty();
+        }
+        // Condition D: Same frame sizes and sample rates
+        let sr1 = match &c1.decoder_config {
+            iamf_obu::descriptors::DecoderConfig::Opus { .. } => 48000,
+            iamf_obu::descriptors::DecoderConfig::Lpcm { sample_rate, .. }
+            | iamf_obu::descriptors::DecoderConfig::Flac { sample_rate, .. } => *sample_rate,
+            _ => 0,
+        };
+        let sr2 = match &c2.decoder_config {
+            iamf_obu::descriptors::DecoderConfig::Opus { .. } => 48000,
+            iamf_obu::descriptors::DecoderConfig::Lpcm { sample_rate, .. }
+            | iamf_obu::descriptors::DecoderConfig::Flac { sample_rate, .. } => *sample_rate,
+            _ => 0,
+        };
+        let (fs1, fs2) = (c1.num_samples_per_frame, c2.num_samples_per_frame);
+        if sr1 != sr2 || fs1 != fs2 {
+            return ProfileSet::empty();
+        }
     }
 
     // Per-element limits, plus element/channel budgets across the mix.
@@ -203,23 +299,36 @@ pub fn filter_profiles_for_mix(
             num_channels += element_channels(element);
         }
     }
+
+    // Audio element count budgets:
+    // Simple: 1, Base: 2, Base-Enhanced: 28, Base-Advanced: 18, Advanced1: 18, Advanced2: 28.
     if num_elements > 1 {
         profiles.remove(ProfileSet::SIMPLE);
     }
     if num_elements > 2 {
         profiles.remove(ProfileSet::BASE);
     }
-    if num_elements > 28 {
-        profiles.remove(ProfileSet::BASE_ENHANCED);
+    if num_elements > 18 {
+        profiles.remove(ProfileSet::BASE_ADVANCED.union(ProfileSet::ADVANCED1));
     }
+    if num_elements > 28 {
+        profiles.remove(ProfileSet::BASE_ENHANCED.union(ProfileSet::ADVANCED2));
+    }
+
+    // Channel budgets:
+    // Simple: 16, Base: 18, Base-Enhanced: 28, Base-Advanced: 18, Advanced1: 18, Advanced2: 28.
     if num_channels > 16 {
         profiles.remove(ProfileSet::SIMPLE);
     }
     if num_channels > 18 {
-        profiles.remove(ProfileSet::BASE);
+        profiles.remove(
+            ProfileSet::BASE
+                .union(ProfileSet::BASE_ADVANCED)
+                .union(ProfileSet::ADVANCED1),
+        );
     }
     if num_channels > 28 {
-        profiles.remove(ProfileSet::BASE_ENHANCED);
+        profiles.remove(ProfileSet::BASE_ENHANCED.union(ProfileSet::ADVANCED2));
     }
     profiles
 }
@@ -342,7 +451,8 @@ mod tests {
     fn two_elements_exceed_simple() {
         let elements = [stereo_element(1, 0), stereo_element(2, 0)];
         let configs = [codec_config(0)];
-        let set = filter_profiles_for_mix(&mix(&[1, 2], 0), &elements, &configs, ProfileSet::all());
+        let set =
+            filter_profiles_for_mix(&mix(&[1, 2], 0), &elements, &configs, ProfileSet::all_v1());
         assert_eq!(set, ProfileSet::BASE.union(ProfileSet::BASE_ENHANCED));
         // Requesting only simple leaves nothing.
         let set =
@@ -368,11 +478,11 @@ mod tests {
             &mix(&[1], 0),
             &[element.clone()],
             &configs,
-            ProfileSet::all(),
+            ProfileSet::all_v1(),
         );
         assert_eq!(set, ProfileSet::BASE_ENHANCED);
 
-        // v2-draft expanded layouts are outside every v1.1 profile.
+        // v2 expanded layouts are supported in Base-Advanced, Advanced1, Advanced2.
         element.config = AudioElementConfig::ChannelBased {
             layers: vec![ChannelAudioLayer {
                 loudspeaker_layout: 15,
@@ -384,22 +494,75 @@ mod tests {
             }],
         };
         let set = filter_profiles_for_mix(&mix(&[1], 0), &[element], &configs, ProfileSet::all());
-        assert!(set.is_empty());
+        assert_eq!(
+            set,
+            ProfileSet::BASE_ADVANCED
+                .union(ProfileSet::ADVANCED1)
+                .union(ProfileSet::ADVANCED2)
+        );
     }
 
     #[test]
-    fn headlocked_binaural_unsupported() {
+    fn headlocked_binaural_supported_in_v2_profiles() {
         let elements = [stereo_element(1, 0)];
         let configs = [codec_config(0)];
         let set = filter_profiles_for_mix(&mix(&[1], 2), &elements, &configs, ProfileSet::all());
+        assert_eq!(
+            set,
+            ProfileSet::BASE_ADVANCED
+                .union(ProfileSet::ADVANCED1)
+                .union(ProfileSet::ADVANCED2)
+        );
+        let set = filter_profiles_for_mix(&mix(&[1], 2), &elements, &configs, ProfileSet::all_v1());
         assert!(set.is_empty());
     }
 
     #[test]
-    fn two_codec_configs_in_first_sub_mix_unsupported() {
+    fn object_element_supported_in_v2_profiles() {
+        let element = AudioElement {
+            audio_element_id: 1,
+            codec_config_id: 0,
+            substream_ids: vec![10],
+            params: vec![],
+            config: AudioElementConfig::ObjectBased {
+                num_objects: 1,
+                extension: vec![],
+            },
+        };
+        let configs = [codec_config(0)];
+        let set = filter_profiles_for_mix(&mix(&[1], 0), &[element], &configs, ProfileSet::all());
+        assert_eq!(
+            set,
+            ProfileSet::BASE_ADVANCED
+                .union(ProfileSet::ADVANCED1)
+                .union(ProfileSet::ADVANCED2)
+        );
+    }
+
+    #[test]
+    fn two_codec_configs_in_first_sub_mix_unsupported_all() {
         let elements = [stereo_element(1, 0), stereo_element(2, 1)];
         let configs = [codec_config(0), codec_config(1)];
         let set = filter_profiles_for_mix(&mix(&[1, 2], 0), &elements, &configs, ProfileSet::all());
+        assert!(set.is_empty());
+    }
+
+    #[test]
+    fn two_submixes_supported_in_v2_profiles() {
+        let elements = [stereo_element(1, 0), stereo_element(2, 0)];
+        let configs = [codec_config(0)];
+        let mut m = mix(&[1], 0);
+        let mut sub2 = m.sub_mixes[0].clone();
+        sub2.elements[0].audio_element_id = 2;
+        m.sub_mixes.push(sub2);
+        let set = filter_profiles_for_mix(&m, &elements, &configs, ProfileSet::all());
+        assert_eq!(
+            set,
+            ProfileSet::BASE_ADVANCED
+                .union(ProfileSet::ADVANCED1)
+                .union(ProfileSet::ADVANCED2)
+        );
+        let set = filter_profiles_for_mix(&m, &elements, &configs, ProfileSet::all_v1());
         assert!(set.is_empty());
     }
 
@@ -413,10 +576,16 @@ mod tests {
     #[test]
     fn profile_bits_roundtrip() {
         assert_eq!(ProfileSet::from_bits(0), ProfileSet::all());
-        assert_eq!(ProfileSet::from_bits(0b001), ProfileSet::SIMPLE);
+        assert_eq!(ProfileSet::from_bits(0b000001), ProfileSet::SIMPLE);
         assert_eq!(
-            ProfileSet::from_bits(0b110),
+            ProfileSet::from_bits(0b000110),
             ProfileSet::BASE.union(ProfileSet::BASE_ENHANCED)
+        );
+        assert_eq!(
+            ProfileSet::from_bits(0b111000),
+            ProfileSet::BASE_ADVANCED
+                .union(ProfileSet::ADVANCED1)
+                .union(ProfileSet::ADVANCED2)
         );
     }
 }
