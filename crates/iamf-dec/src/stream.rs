@@ -1205,10 +1205,12 @@ mod tests {
                         digital_peak: 0,
                         true_peak: None,
                         anchored_loudness: vec![],
+                        layout_extension: vec![],
                     },
                 )],
             }],
             tags: vec![],
+            optional_fields: None,
         }
     }
 
