@@ -127,6 +127,9 @@ fn filter_audio_element(element: &AudioElement, profiles: &mut ProfileSet) {
         // parser rejects other modes outright).
         AudioElementConfig::AmbisonicsMono { .. }
         | AudioElementConfig::AmbisonicsProjection { .. } => {}
+        // Object-based (IAMF v2.0) and reserved element types: none of the
+        // v1.1 profiles known here allow them.
+        _ => *profiles = ProfileSet::empty(),
     }
 }
 
@@ -302,6 +305,10 @@ mod tests {
                         audio_element_id: id,
                         localized_annotations: vec![],
                         headphones_rendering_mode: headphones_mode,
+                        binaural_filter_profile:
+                            iamf_obu::descriptors::BinauralFilterProfile::default(),
+                        position_params: vec![],
+                        element_gain_offset: None,
                         element_mix_gain: gain(),
                     })
                     .collect(),
@@ -314,10 +321,12 @@ mod tests {
                         digital_peak: 0,
                         true_peak: None,
                         anchored_loudness: vec![],
+                        layout_extension: vec![],
                     },
                 )],
             }],
             tags: vec![],
+            optional_fields: None,
         }
     }
 

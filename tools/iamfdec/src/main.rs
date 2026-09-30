@@ -330,6 +330,10 @@ fn describe(descriptor: &Descriptor) {
                 } => {
                     format!("ambisonics projection, {output_channel_count} channels")
                 }
+                AudioElementConfig::ObjectBased { num_objects, .. } => {
+                    format!("object based, {num_objects} object(s)")
+                }
+                _ => "unknown".to_string(),
             };
             println!(
                 "audio element {}: {kind}, codec config {}, substreams {:?}",

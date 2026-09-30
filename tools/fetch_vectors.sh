@@ -7,6 +7,7 @@
 #   tools/fetch_vectors.sh              # curated default set
 #   tools/fetch_vectors.sh test_000123  # specific vector(s)
 #   tools/fetch_vectors.sh --all        # every vector (~333, slow)
+#   tools/fetch_vectors.sh --v2         # curated IAMF v2.0 vectors (opt-in)
 #   tools/fetch_vectors.sh --demo      # real program material from the
 #                                      # iamf-tools web demo (for iamfplay)
 set -euo pipefail
@@ -23,6 +24,22 @@ DEFAULT_VECTORS=(
   test_000032 test_000033 test_000036 test_000038 test_000039 test_000042
   test_000048 test_000065 test_000066 test_000069 test_000070 test_000082
   test_000086 test_000088 test_000073 test_000090 test_000092
+)
+
+# IAMF v2.0 (Base-Advanced / Advanced-1 profile) vectors, all LPCM unless
+# noted, picked small (~25 MB of .iamf): objects with every position
+# parameter type (000800-000808, 000812), the 10.2.9.3 and 7.1.5.4
+# expanded-layout families (000828 LFE pair, 000829/000830 bottom 3/4ch,
+# 000831 top 1ch), two codec configs (000845), Metadata OBUs (000849),
+# parameter blocks spanning frames (000850), mix presentation optional
+# fields (000851/000852), element gain offsets (000853/000854), live
+# loudness (000855), Advanced-1 objects (000912), and binaural output
+# (001100-001103). The full v2 set is ~570 MB; name vectors to get more.
+V2_VECTORS=(
+  test_000800 test_000801 test_000802 test_000806 test_000807 test_000808
+  test_000812 test_000828 test_000829 test_000830 test_000831 test_000845
+  test_000849 test_000850 test_000851 test_000852 test_000853 test_000854
+  test_000855 test_000912 test_001100 test_001101 test_001102 test_001103
 )
 
 if [[ "${1:-}" == "--demo" ]]; then
@@ -58,6 +75,8 @@ if [[ "${1:-}" == "--all" ]]; then
       grep -oE '"path": *"tests/test_[0-9_a-z]+\.iamf"' | sed -E 's|.*"tests/(test_[^"]+)\.iamf"|\1|')
   fi
   set -- $vectors
+elif [[ "${1:-}" == "--v2" ]]; then
+  set -- "${V2_VECTORS[@]}"
 elif [[ $# -eq 0 ]]; then
   set -- "${DEFAULT_VECTORS[@]}"
 fi

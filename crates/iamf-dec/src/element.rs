@@ -29,6 +29,11 @@ pub fn substream_channels(config: &AudioElementConfig) -> Vec<u8> {
             coupled_substream_count,
             ..
         } => group(*substream_count, *coupled_substream_count).collect(),
+        // IAMF v2.0: exactly one substream carrying every object.
+        AudioElementConfig::ObjectBased { num_objects, .. } => vec![*num_objects],
+        // Reserved element types (and future ones): no decodable
+        // substreams; decoders ignore such elements.
+        _ => Vec::new(),
     }
 }
 

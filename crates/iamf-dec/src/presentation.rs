@@ -671,5 +671,10 @@ fn reconstruct_slot(
                 trim_map,
             ))
         }
+        // Profile filtering excludes mixes with object-based / reserved
+        // elements before they get here.
+        _ => Err(DecodeError::Unimplemented(
+            "rendering object-based or reserved audio elements",
+        )),
     }
 }

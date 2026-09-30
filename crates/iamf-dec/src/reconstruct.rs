@@ -334,8 +334,8 @@ pub fn ambisonics_from_planes(
             }
             Ok(Reconstructed::Hoa { order, planar })
         }
-        AudioElementConfig::ChannelBased { .. } => Err(DecodeError::InvalidDescriptors(
-            "channel-based element in ambisonics reconstruction".into(),
+        _ => Err(DecodeError::InvalidDescriptors(
+            "non-ambisonics element in ambisonics reconstruction".into(),
         )),
     }
 }

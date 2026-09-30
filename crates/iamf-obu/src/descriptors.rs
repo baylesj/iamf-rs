@@ -1,10 +1,19 @@
 //! Descriptor OBU payloads: IA sequence header, codec config, audio element,
-//! and mix presentation (IAMF v1.1 §3.5–§3.8).
+//! and mix presentation (IAMF v1.1 §3.5–§3.8, plus the IAMF v2.0
+//! additions).
 //!
-//! Syntax targets IAMF v1.1 (the profile Chromium ships). Fields added by
-//! later spec revisions arrive inside sized extension regions, which are
-//! skipped rather than rejected, so v2-flavored streams still parse.
+//! IAMF v1.1 syntax is parsed exactly as before. IAMF v2.0 additions are
+//! parsed too, following iamf-tools v3.0.0 (the reference this crate
+//! matches): object-based audio elements, the rendering-config extension
+//! (position parameter definitions, [`ElementGainOffsetConfig`]) and
+//! [`BinauralFilterProfile`], [`MixPresentationOptionalFields`], live
+//! loudness, the Base-Advanced / Advanced profiles ([`ProfileVersion`]) and
+//! the 10.2.9.3 / 7.1.5.4 expanded layouts ([`ExpandedLayout`]). Anything
+//! still unknown (reserved element types, parameter types, extension
+//! bytes) arrives inside sized regions, which are skipped rather than
+//! rejected, so newer streams keep parsing.
 
+use crate::position::{PositionParamDefinition, PositionParamType};
 use crate::{ByteReader, Error, Obu, ObuType, Result};
 
 /// A parsed descriptor OBU payload.
@@ -21,14 +30,17 @@ pub enum Descriptor {
 }
 
 /// Parses the payload of a descriptor OBU. Returns `None` for OBU types that
-/// are not descriptors (audio frames, parameter blocks, temporal delimiters).
+/// are not descriptors (audio frames, parameter blocks, temporal delimiters,
+/// metadata, reserved types).
 pub fn parse(obu: &Obu<'_>) -> Result<Option<Descriptor>> {
     let mut r = ByteReader::new(obu.payload);
     let descriptor = match obu.header.obu_type {
         ObuType::SequenceHeader => Descriptor::SequenceHeader(SequenceHeader::parse(&mut r)?),
         ObuType::CodecConfig => Descriptor::CodecConfig(CodecConfig::parse(&mut r)?),
         ObuType::AudioElement => Descriptor::AudioElement(AudioElement::parse(&mut r)?),
-        ObuType::MixPresentation => Descriptor::MixPresentation(MixPresentation::parse(&mut r)?),
+        ObuType::MixPresentation => Descriptor::MixPresentation(
+            MixPresentation::parse_with_optional_fields(&mut r, obu.header.optional_fields_flag())?,
+        ),
         _ => return Ok(None),
     };
     Ok(Some(descriptor))
@@ -47,8 +59,7 @@ fn invalid(r: &ByteReader<'_>) -> Error {
 /// IA sequence header (§3.5): the profiles the stream complies with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SequenceHeader {
-    /// Profile the full stream complies with (0 = simple, 1 = base,
-    /// 2 = base-enhanced).
+    /// Profile the full stream complies with (see [`ProfileVersion`]).
     pub primary_profile: u8,
     /// A profile the stream also complies with when unsupported elements
     /// are ignored.
@@ -65,6 +76,64 @@ impl SequenceHeader {
             primary_profile: r.read_u8()?,
             additional_profile: r.read_u8()?,
         })
+    }
+
+    /// [`SequenceHeader::primary_profile`] as a [`ProfileVersion`].
+    pub fn primary(&self) -> ProfileVersion {
+        ProfileVersion::from_u8(self.primary_profile)
+    }
+
+    /// [`SequenceHeader::additional_profile`] as a [`ProfileVersion`].
+    pub fn additional(&self) -> ProfileVersion {
+        ProfileVersion::from_u8(self.additional_profile)
+    }
+}
+
+/// IA sequence header profile values (iamf-tools `ProfileVersion`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ProfileVersion {
+    /// 0: Simple (IAMF v1.0).
+    Simple,
+    /// 1: Base (IAMF v1.0).
+    Base,
+    /// 2: Base-Enhanced (IAMF v1.1).
+    BaseEnhanced,
+    /// 3: Base-Advanced (IAMF v2.0).
+    BaseAdvanced,
+    /// 4: Advanced-1 (IAMF v2.0).
+    Advanced1,
+    /// 5: Advanced-2 (IAMF v2.0).
+    Advanced2,
+    /// Any other value (reserved for future profiles).
+    Reserved(u8),
+}
+
+impl ProfileVersion {
+    /// Maps a coded profile value.
+    pub fn from_u8(value: u8) -> Self {
+        match value {
+            0 => ProfileVersion::Simple,
+            1 => ProfileVersion::Base,
+            2 => ProfileVersion::BaseEnhanced,
+            3 => ProfileVersion::BaseAdvanced,
+            4 => ProfileVersion::Advanced1,
+            5 => ProfileVersion::Advanced2,
+            other => ProfileVersion::Reserved(other),
+        }
+    }
+
+    /// The coded profile value.
+    pub fn as_u8(self) -> u8 {
+        match self {
+            ProfileVersion::Simple => 0,
+            ProfileVersion::Base => 1,
+            ProfileVersion::BaseEnhanced => 2,
+            ProfileVersion::BaseAdvanced => 3,
+            ProfileVersion::Advanced1 => 4,
+            ProfileVersion::Advanced2 => 5,
+            ProfileVersion::Reserved(other) => other,
+        }
     }
 }
 
@@ -287,7 +356,7 @@ pub struct ParamDefinition {
 
 impl ParamDefinition {
     #[allow(clippy::redundant_closure_for_method_calls)]
-    fn parse(r: &mut ByteReader<'_>) -> Result<Self> {
+    pub(crate) fn parse(r: &mut ByteReader<'_>) -> Result<Self> {
         let parameter_id = r.read_leb128()?;
         let parameter_rate = r.read_leb128()?;
         let mode = r.read_u8()? & 0x80 != 0;
@@ -372,12 +441,133 @@ pub struct ChannelAudioLayer {
     pub recon_gain_is_present: bool,
     /// (output_gain_flags, output_gain Q7.8 dB) when present.
     pub output_gain: Option<(u8, i16)>,
-    /// Present when the first layer's loudspeaker_layout is 15 (expanded).
+    /// Present when the first layer's loudspeaker_layout is 15 (expanded);
+    /// see [`ExpandedLayout`].
     pub expanded_loudspeaker_layout: Option<u8>,
+}
+
+/// §3.7.4 `expanded_loudspeaker_layout` values (iamf-tools
+/// `ExpandedLoudspeakerLayout`). 0..=12 arrived with IAMF v1.1
+/// (Base-Enhanced); 13..=19 — the 10.2.9.3 (sound system H) and 7.1.5.4
+/// families — with IAMF v2.0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ExpandedLayout {
+    /// 0: LFE of 7.1.4.
+    Lfe,
+    /// 1: Ls/Rs of 5.1.4.
+    StereoS,
+    /// 2: Lss/Rss of 7.1.4.
+    StereoSs,
+    /// 3: Lrs/Rrs of 7.1.4.
+    StereoRs,
+    /// 4: Ltf/Rtf of 7.1.4.
+    StereoTf,
+    /// 5: Ltb/Rtb of 7.1.4.
+    StereoTb,
+    /// 6: Ltf/Rtf/Ltb/Rtb of 7.1.4.
+    Top4Ch,
+    /// 7: L/C/R of 7.1.4.
+    Ch3_0,
+    /// 8: 9.1.6 (subset of sound system H).
+    Ch9_1_6,
+    /// 9: FL/FR of 9.1.6.
+    StereoF,
+    /// 10: SiL/SiR of 9.1.6.
+    StereoSi,
+    /// 11: TpSiL/TpSiR of 9.1.6.
+    StereoTpSi,
+    /// 12: TpFL/TpFR/TpSiL/TpSiR/TpBL/TpBR of 9.1.6.
+    Top6Ch,
+    /// 13: 10.2.9.3, sound system H (9+10+3) (IAMF v2.0).
+    Ch10_2_9_3,
+    /// 14: LFE1/LFE2 of 10.2.9.3 (IAMF v2.0).
+    LfePair,
+    /// 15: BtFL/BtFC/BtFR of 10.2.9.3 (IAMF v2.0).
+    Bottom3Ch,
+    /// 16: 7.1.5.4: 7.1.4 plus TpC and four bottom channels (IAMF v2.0).
+    Ch7_1_5_4,
+    /// 17: BtFL/BtFR/BtBL/BtBR of 7.1.5.4 (IAMF v2.0).
+    Bottom4Ch,
+    /// 18: TpC of 7.1.5.4 (IAMF v2.0).
+    Top1Ch,
+    /// 19: Ltf/Rtf/Ltb/Rtb/TpC of 7.1.5.4 (IAMF v2.0).
+    Top5Ch,
+}
+
+impl ExpandedLayout {
+    /// Maps a coded value (`None` for reserved values 20..=255).
+    pub fn from_u8(value: u8) -> Option<Self> {
+        use ExpandedLayout as E;
+        const ALL: [ExpandedLayout; 20] = [
+            E::Lfe,
+            E::StereoS,
+            E::StereoSs,
+            E::StereoRs,
+            E::StereoTf,
+            E::StereoTb,
+            E::Top4Ch,
+            E::Ch3_0,
+            E::Ch9_1_6,
+            E::StereoF,
+            E::StereoSi,
+            E::StereoTpSi,
+            E::Top6Ch,
+            E::Ch10_2_9_3,
+            E::LfePair,
+            E::Bottom3Ch,
+            E::Ch7_1_5_4,
+            E::Bottom4Ch,
+            E::Top1Ch,
+            E::Top5Ch,
+        ];
+        ALL.get(usize::from(value)).copied()
+    }
+
+    /// Number of channels in the layout.
+    pub fn channel_count(self) -> usize {
+        use ExpandedLayout as E;
+        match self {
+            E::Lfe | E::Top1Ch => 1,
+            E::StereoS
+            | E::StereoSs
+            | E::StereoRs
+            | E::StereoTf
+            | E::StereoTb
+            | E::StereoF
+            | E::StereoSi
+            | E::StereoTpSi
+            | E::LfePair => 2,
+            E::Ch3_0 | E::Bottom3Ch => 3,
+            E::Top4Ch | E::Bottom4Ch => 4,
+            E::Top5Ch => 5,
+            E::Top6Ch => 6,
+            E::Ch9_1_6 => 16,
+            E::Ch7_1_5_4 => 17,
+            E::Ch10_2_9_3 => 24,
+        }
+    }
+
+    /// Whether the layout arrived with IAMF v2.0 (values 13..=19).
+    pub fn is_v2(self) -> bool {
+        matches!(
+            self,
+            ExpandedLayout::Ch10_2_9_3
+                | ExpandedLayout::LfePair
+                | ExpandedLayout::Bottom3Ch
+                | ExpandedLayout::Ch7_1_5_4
+                | ExpandedLayout::Bottom4Ch
+                | ExpandedLayout::Top1Ch
+                | ExpandedLayout::Top5Ch
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// The element-type-specific half of an audio element (§3.7).
+///
+/// Non-exhaustive: IAMF revisions keep adding element types.
+#[non_exhaustive]
 pub enum AudioElementConfig {
     /// §3.7.4 scalable channel layout config.
     ChannelBased {
@@ -406,10 +596,27 @@ pub enum AudioElementConfig {
         /// (entry `[c * output_channel_count + acn]`).
         demixing_matrix: Vec<i16>,
     },
+    /// IAMF v2.0 `objects_config` (audio_element_type 2): one substream
+    /// carrying `num_objects` (1 or 2) objects, positioned by a sub-mix
+    /// element's position parameter.
+    ObjectBased {
+        /// 1 (mono substream) or 2 (coupled substream).
+        num_objects: u8,
+        /// `objects_config_extension_bytes`, uninterpreted.
+        extension: Vec<u8>,
+    },
+    /// Reserved audio_element_type 3..=7: the sized config was skipped;
+    /// decoders ignore such elements.
+    Extension {
+        /// The reserved audio_element_type.
+        element_type: u8,
+        /// The raw `audio_element_config` bytes.
+        config: Vec<u8>,
+    },
 }
 
 /// Audio element descriptor (§3.7): a set of substreams that decode into
-/// one channel-based or scene-based element.
+/// one channel-based, scene-based or object-based element.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioElement {
     /// Identifier mix presentations reference.
@@ -462,7 +669,15 @@ impl AudioElement {
         let config = match element_type {
             0 => Self::parse_channel_config(r)?,
             1 => Self::parse_ambisonics_config(r)?,
-            _ => return Err(invalid(r)),
+            2 => Self::parse_objects_config(r)?,
+            _ => {
+                // Reserved types: audio_element_config_size, then bytes.
+                let size = r.read_leb128()? as usize;
+                AudioElementConfig::Extension {
+                    element_type,
+                    config: r.read_bytes(size)?.to_vec(),
+                }
+            }
         };
 
         Ok(AudioElement {
@@ -543,6 +758,26 @@ impl AudioElement {
             _ => Err(invalid(r)),
         }
     }
+
+    /// IAMF v2.0 objects_config, per iamf-tools
+    /// `ObjectsConfig::CreateFromBuffer`: `object_config_size` (u8, at
+    /// least 1, covering the rest), `num_objects` (1 or 2), then
+    /// `object_config_size - 1` extension bytes.
+    fn parse_objects_config(r: &mut ByteReader<'_>) -> Result<AudioElementConfig> {
+        let size = r.read_u8()?;
+        if size == 0 {
+            return Err(invalid(r));
+        }
+        let num_objects = r.read_u8()?;
+        if !(1..=2).contains(&num_objects) {
+            return Err(invalid(r));
+        }
+        let extension = r.read_bytes(usize::from(size) - 1)?.to_vec();
+        Ok(AudioElementConfig::ObjectBased {
+            num_objects,
+            extension,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -553,7 +788,8 @@ impl AudioElement {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Layout {
     /// layout_type 2: ITU-R BS.2051 sound system letter (0..=9 → A..=J,
-    /// then extensions).
+    /// then extensions: 10 = 7.1.2, 11 = 3.1.2, 12 = mono, 13 = 9.1.6,
+    /// and — IAMF v2.0 — 14 = 7.1.5.4).
     LoudspeakersSsConvention {
         /// Sound system number (the [`crate::descriptors`] numbering
         /// shared with mix rendering targets).
@@ -584,7 +820,8 @@ impl Layout {
 /// §3.8.4 loudness_info. Gains/loudness values are Q7.8.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoudnessInfo {
-    /// Bitmask of optional measurements present (§3.8.4 info_type).
+    /// Bitmask of optional measurements present (§3.8.4 info_type; see
+    /// the `LoudnessInfo::*` bit constants).
     pub info_type: u8,
     /// Integrated loudness of the mix for this layout, Q7.8 LKFS.
     pub integrated_loudness: i16,
@@ -594,29 +831,49 @@ pub struct LoudnessInfo {
     pub true_peak: Option<i16>,
     /// (anchor_element, anchored_loudness) pairs.
     pub anchored_loudness: Vec<(u8, i16)>,
+    /// `info_type_bytes`: the sized layout-extension region present when
+    /// any bit of [`LoudnessInfo::ANY_LAYOUT_EXTENSION`] is set
+    /// (uninterpreted; e.g. momentary loudness / loudness range).
+    pub layout_extension: Vec<u8>,
 }
 
 impl LoudnessInfo {
+    /// info_type bit: `true_peak` is present.
+    pub const TRUE_PEAK: u8 = 0x01;
+    /// info_type bit: anchored loudness entries are present.
+    pub const ANCHORED_LOUDNESS: u8 = 0x02;
+    /// info_type bit (IAMF v2.0 `LOUDNESS_INFO_TYPE_LIVE`): the values
+    /// were measured live rather than over the whole program.
+    pub const LIVE: u8 = 0x04;
+    /// info_type bits that make a sized `info_type_bytes` region follow
+    /// (iamf-tools `kAnyLayoutExtension`; includes [`LoudnessInfo::LIVE`]).
+    pub const ANY_LAYOUT_EXTENSION: u8 = 0xfc;
+
+    /// Whether the loudness was measured live
+    /// ([`LoudnessInfo::LIVE`]).
+    pub fn is_live(&self) -> bool {
+        self.info_type & Self::LIVE != 0
+    }
+
     fn parse(r: &mut ByteReader<'_>) -> Result<Self> {
-        const TRUE_PEAK: u8 = 0x01;
-        const ANCHORED: u8 = 0x02;
         let info_type = r.read_u8()?;
         let integrated_loudness = r.read_i16_be()?;
         let digital_peak = r.read_i16_be()?;
-        let true_peak = (info_type & TRUE_PEAK != 0)
+        let true_peak = (info_type & Self::TRUE_PEAK != 0)
             .then(|| r.read_i16_be())
             .transpose()?;
         let mut anchored_loudness = Vec::new();
-        if info_type & ANCHORED != 0 {
+        if info_type & Self::ANCHORED_LOUDNESS != 0 {
             let count = r.read_u8()?;
             for _ in 0..count {
                 anchored_loudness.push((r.read_u8()?, r.read_i16_be()?));
             }
         }
-        if info_type & !(TRUE_PEAK | ANCHORED) != 0 {
+        let mut layout_extension = Vec::new();
+        if info_type & Self::ANY_LAYOUT_EXTENSION != 0 {
             // Extension bits set: a sized extension region follows.
             let size = r.read_leb128()?;
-            r.skip(size as usize)?;
+            layout_extension = r.read_bytes(size as usize)?.to_vec();
         }
         Ok(LoudnessInfo {
             info_type,
@@ -624,7 +881,138 @@ impl LoudnessInfo {
             digital_peak,
             true_peak,
             anchored_loudness,
+            layout_extension,
         })
+    }
+}
+
+/// §3.8.2 headphones_rendering_mode (2 bits), with the IAMF v2.0 names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum HeadphonesRenderingMode {
+    /// 0: render to stereo loudspeakers, then to headphones.
+    Stereo,
+    /// 1: binaural, world-locked (IAMF v1.1 "binaural").
+    BinauralWorldLocked,
+    /// 2: binaural, head-locked (IAMF v2.0; reserved in v1.1).
+    BinauralHeadLocked,
+    /// 3: reserved.
+    Reserved,
+}
+
+impl HeadphonesRenderingMode {
+    /// Maps the 2-bit coded value (higher bits are ignored).
+    pub fn from_u8(value: u8) -> Self {
+        match value & 0x03 {
+            0 => HeadphonesRenderingMode::Stereo,
+            1 => HeadphonesRenderingMode::BinauralWorldLocked,
+            2 => HeadphonesRenderingMode::BinauralHeadLocked,
+            _ => HeadphonesRenderingMode::Reserved,
+        }
+    }
+
+    /// The coded value.
+    pub fn as_u8(self) -> u8 {
+        match self {
+            HeadphonesRenderingMode::Stereo => 0,
+            HeadphonesRenderingMode::BinauralWorldLocked => 1,
+            HeadphonesRenderingMode::BinauralHeadLocked => 2,
+            HeadphonesRenderingMode::Reserved => 3,
+        }
+    }
+}
+
+/// IAMF v2.0 rendering_config `binaural_filter_profile` (2 bits).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum BinauralFilterProfile {
+    /// 0: ambient (the default, and what v1.1 streams signal).
+    #[default]
+    Ambient,
+    /// 1: direct.
+    Direct,
+    /// 2: reverberant.
+    Reverberant,
+    /// 3: reserved.
+    Reserved,
+}
+
+impl BinauralFilterProfile {
+    /// Maps the 2-bit coded value (higher bits are ignored).
+    pub fn from_u8(value: u8) -> Self {
+        match value & 0x03 {
+            0 => BinauralFilterProfile::Ambient,
+            1 => BinauralFilterProfile::Direct,
+            2 => BinauralFilterProfile::Reverberant,
+            _ => BinauralFilterProfile::Reserved,
+        }
+    }
+}
+
+/// IAMF v2.0 `element_gain_offset_config` (in the rendering-config
+/// extension when `element_gain_offset_flag` is set): a playback-time gain
+/// the user may apply to the element. Values are Q7.8 dB.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ElementGainOffsetConfig {
+    /// Type 0: a fixed offset.
+    Value {
+        /// The offset, Q7.8 dB.
+        offset: i16,
+    },
+    /// Type 1: a user-adjustable offset within [min, max].
+    Range {
+        /// Offset applied unless the user picks another, Q7.8 dB.
+        default: i16,
+        /// Lowest allowed offset, Q7.8 dB.
+        min: i16,
+        /// Highest allowed offset, Q7.8 dB.
+        max: i16,
+    },
+    /// Reserved types 2..=255: sized payload, uninterpreted.
+    Extension {
+        /// The reserved `element_gain_offset_config_type`.
+        config_type: u8,
+        /// The raw payload.
+        bytes: Vec<u8>,
+    },
+}
+
+impl ElementGainOffsetConfig {
+    /// Parses per iamf-tools `ElementGainOffsetConfig::CreateFromBuffer`
+    /// (a range type must satisfy `min <= default <= max`).
+    fn parse(r: &mut ByteReader<'_>) -> Result<Self> {
+        Ok(match r.read_u8()? {
+            0 => ElementGainOffsetConfig::Value {
+                offset: r.read_i16_be()?,
+            },
+            1 => {
+                let default = r.read_i16_be()?;
+                let min = r.read_i16_be()?;
+                let max = r.read_i16_be()?;
+                if !(min..=max).contains(&default) {
+                    return Err(invalid(r));
+                }
+                ElementGainOffsetConfig::Range { default, min, max }
+            }
+            config_type => {
+                let size = r.read_leb128()? as usize;
+                ElementGainOffsetConfig::Extension {
+                    config_type,
+                    bytes: r.read_bytes(size)?.to_vec(),
+                }
+            }
+        })
+    }
+
+    /// The offset to apply by default, Q7.8 dB (`None` for reserved
+    /// types).
+    pub fn default_offset(&self) -> Option<i16> {
+        match *self {
+            ElementGainOffsetConfig::Value { offset } => Some(offset),
+            ElementGainOffsetConfig::Range { default, .. } => Some(default),
+            ElementGainOffsetConfig::Extension { .. } => None,
+        }
     }
 }
 
@@ -635,10 +1023,105 @@ pub struct SubMixElement {
     pub audio_element_id: u32,
     /// Human-readable labels, one per annotation language.
     pub localized_annotations: Vec<String>,
-    /// §3.8.2 rendering_config.
+    /// §3.8.2 rendering_config headphones_rendering_mode (0..=3; see
+    /// [`SubMixElement::headphones_mode`]).
     pub headphones_rendering_mode: u8,
+    /// IAMF v2.0 rendering_config binaural_filter_profile.
+    pub binaural_filter_profile: BinauralFilterProfile,
+    /// IAMF v2.0 position parameter definitions from the rendering-config
+    /// extension (object-based elements).
+    pub position_params: Vec<PositionParamDefinition>,
+    /// IAMF v2.0 element gain offset, when `element_gain_offset_flag` is
+    /// set and the rendering-config extension carries one.
+    pub element_gain_offset: Option<ElementGainOffsetConfig>,
     /// This element's mix gain into the sub mix.
     pub element_mix_gain: MixGainParam,
+}
+
+impl SubMixElement {
+    /// [`SubMixElement::headphones_rendering_mode`] with its IAMF v2.0
+    /// name.
+    pub fn headphones_mode(&self) -> HeadphonesRenderingMode {
+        HeadphonesRenderingMode::from_u8(self.headphones_rendering_mode)
+    }
+}
+
+/// The parsed `rendering_config` of a sub-mix element.
+struct RenderingConfig {
+    headphones_rendering_mode: u8,
+    binaural_filter_profile: BinauralFilterProfile,
+    position_params: Vec<PositionParamDefinition>,
+    element_gain_offset: Option<ElementGainOffsetConfig>,
+}
+
+impl RenderingConfig {
+    /// §3.8.2 rendering_config, per iamf-tools
+    /// `RenderingConfig::CreateFromBuffer`: headphones_rendering_mode (2
+    /// bits), element_gain_offset_flag (1), binaural_filter_profile (2),
+    /// reserved (3), rendering_config_extension_size, then the extension.
+    ///
+    /// The extension holds `num_params` position parameter definitions and,
+    /// when flagged, an element gain offset config; bytes after those are
+    /// future extensions and skipped. As in iamf-tools, an extension that
+    /// fails to parse (e.g. an unknown parameter type) is treated as opaque
+    /// and skipped whole, while one whose parsed content overruns
+    /// `rendering_config_extension_size` is an error. In IAMF v1.1 the
+    /// bits after the mode were reserved and the extension was always
+    /// skipped; v1.1 streams (zero bits, empty extension) parse the same.
+    fn parse(r: &mut ByteReader<'_>) -> Result<Self> {
+        let byte = r.read_u8()?;
+        let headphones_rendering_mode = byte >> 6 & 0x03;
+        let element_gain_offset_flag = byte >> 5 & 0x01 != 0;
+        let binaural_filter_profile = BinauralFilterProfile::from_u8(byte >> 3);
+        let extension_size = r.read_leb128()? as usize;
+        let mut config = RenderingConfig {
+            headphones_rendering_mode,
+            binaural_filter_profile,
+            position_params: Vec::new(),
+            element_gain_offset: None,
+        };
+        if extension_size == 0 {
+            return Ok(config);
+        }
+        let start = r.position();
+        let mut probe = r.clone();
+        if let Ok((params, gain_offset)) =
+            Self::parse_extension(&mut probe, element_gain_offset_flag)
+        {
+            if probe.position() - start > extension_size {
+                return Err(invalid(&probe));
+            }
+            config.position_params = params;
+            config.element_gain_offset = gain_offset;
+        }
+        r.skip(extension_size)?;
+        Ok(config)
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn parse_extension(
+        r: &mut ByteReader<'_>,
+        element_gain_offset_flag: bool,
+    ) -> Result<(
+        Vec<PositionParamDefinition>,
+        Option<ElementGainOffsetConfig>,
+    )> {
+        let num_params = r.read_leb128()?;
+        let params = read_bounded_vec(r, num_params, |r| {
+            let param_definition_type = r.read_leb128()?;
+            match PositionParamType::from_param_definition_type(param_definition_type) {
+                Some(ty) => PositionParamDefinition::parse(r, ty),
+                // iamf-tools skips the sized definition, then reports the
+                // type as unsupported, which makes the whole extension
+                // opaque.
+                None => Err(invalid(r)),
+            }
+        })?;
+        let gain_offset = element_gain_offset_flag
+            .then(|| ElementGainOffsetConfig::parse(r))
+            .transpose()?;
+        Ok((params, gain_offset))
+    }
 }
 
 /// One sub mix of a mix presentation (§3.8.1).
@@ -650,6 +1133,35 @@ pub struct SubMix {
     pub output_mix_gain: MixGainParam,
     /// Layouts the mix was authored/measured for, with loudness for each.
     pub layouts: Vec<(Layout, LoudnessInfo)>,
+}
+
+/// IAMF v2.0 `mix_presentation_optional_fields`, present when the mix
+/// presentation OBU header sets `optional_fields_flag`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct MixPresentationOptionalFields {
+    /// Preferred loudspeaker renderer: 0 = none; 1..=255 reserved.
+    pub preferred_loudspeaker_renderer: u8,
+    /// Preferred binaural renderer: 0 = none; 1..=255 reserved.
+    pub preferred_binaural_renderer: u8,
+    /// Remaining `optional_fields_size - 2` bytes, uninterpreted.
+    pub extension: Vec<u8>,
+}
+
+impl MixPresentationOptionalFields {
+    /// Parses per iamf-tools `MixPresentationOptionalFields::CreateFromBuffer`
+    /// (`optional_fields_size` must be at least 2).
+    fn parse(r: &mut ByteReader<'_>) -> Result<Self> {
+        let size = r.read_leb128()? as usize;
+        if size < 2 {
+            return Err(invalid(r));
+        }
+        Ok(MixPresentationOptionalFields {
+            preferred_loudspeaker_renderer: r.read_u8()?,
+            preferred_binaural_renderer: r.read_u8()?,
+            extension: r.read_bytes(size - 2)?.to_vec(),
+        })
+    }
 }
 
 /// Mix presentation descriptor (§3.8): a renderable presentation of one
@@ -666,12 +1178,26 @@ pub struct MixPresentation {
     pub sub_mixes: Vec<SubMix>,
     /// §8.x mix presentation tags (name, value), when present.
     pub tags: Vec<(String, String)>,
+    /// IAMF v2.0 optional fields, when the OBU header flags them.
+    pub optional_fields: Option<MixPresentationOptionalFields>,
 }
 
 impl MixPresentation {
-    #[allow(clippy::redundant_closure_for_method_calls)]
-    /// Parses a mix presentation OBU payload.
+    /// Parses a mix presentation OBU payload whose header did not set
+    /// `optional_fields_flag` (every IAMF v1.x stream).
     pub fn parse(r: &mut ByteReader<'_>) -> Result<Self> {
+        Self::parse_with_optional_fields(r, false)
+    }
+
+    /// Parses a mix presentation OBU payload; `optional_fields_flag` is the
+    /// OBU header's type-specific flag
+    /// ([`crate::ObuHeader::optional_fields_flag`]). Per iamf-tools, a
+    /// flagged OBU must carry the tags block and then the optional fields.
+    #[allow(clippy::redundant_closure_for_method_calls)]
+    pub fn parse_with_optional_fields(
+        r: &mut ByteReader<'_>,
+        optional_fields_flag: bool,
+    ) -> Result<Self> {
         let mix_presentation_id = r.read_leb128()?;
         let count_label = r.read_leb128()?;
         let annotation_languages = read_bounded_vec(r, count_label, |r| r.read_string())?;
@@ -686,14 +1212,15 @@ impl MixPresentation {
             let elements = read_bounded_vec(r, num_elements, |r| {
                 let audio_element_id = r.read_leb128()?;
                 let localized_annotations = read_bounded_vec(r, count_label, |r| r.read_string())?;
-                let headphones_rendering_mode = r.read_u8()? >> 6 & 0x03;
-                let extension_size = r.read_leb128()?;
-                r.skip(extension_size as usize)?;
+                let rendering = RenderingConfig::parse(r)?;
                 let element_mix_gain = MixGainParam::parse(r)?;
                 Ok(SubMixElement {
                     audio_element_id,
                     localized_annotations,
-                    headphones_rendering_mode,
+                    headphones_rendering_mode: rendering.headphones_rendering_mode,
+                    binaural_filter_profile: rendering.binaural_filter_profile,
+                    position_params: rendering.position_params,
+                    element_gain_offset: rendering.element_gain_offset,
                     element_mix_gain,
                 })
             })?;
@@ -719,7 +1246,13 @@ impl MixPresentation {
             for _ in 0..num_tags {
                 tags.push((r.read_string()?, r.read_string()?));
             }
+        } else if optional_fields_flag {
+            // v2.0: flagged optional fields follow the (mandatory) tags.
+            return Err(invalid(r));
         }
+        let optional_fields = optional_fields_flag
+            .then(|| MixPresentationOptionalFields::parse(r))
+            .transpose()?;
 
         Ok(MixPresentation {
             mix_presentation_id,
@@ -727,6 +1260,7 @@ impl MixPresentation {
             localized_annotations,
             sub_mixes,
             tags,
+            optional_fields,
         })
     }
 }
