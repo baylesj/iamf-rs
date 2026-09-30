@@ -1238,6 +1238,10 @@ mod tests {
                         audio_element_id,
                         localized_annotations: vec![],
                         headphones_rendering_mode,
+                        binaural_filter_profile:
+                            iamf_obu::descriptors::BinauralFilterProfile::default(),
+                        position_params: vec![],
+                        element_gain_offset: None,
                         element_mix_gain: gain(),
                     },
                 )
@@ -1254,6 +1258,7 @@ mod tests {
                             digital_peak: 0,
                             true_peak: None,
                             anchored_loudness: vec![],
+                            layout_extension: vec![],
                         },
                     )
                 })
@@ -1268,6 +1273,7 @@ mod tests {
             localized_annotations: vec![],
             sub_mixes,
             tags: vec![],
+            optional_fields: None,
         }
     }
 

@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod bits;
 mod error;
 mod frames;
 mod leb128;
@@ -16,6 +17,8 @@ mod obu;
 mod reader;
 
 pub mod descriptors;
+pub mod metadata;
+pub mod position;
 
 pub use error::Error;
 pub use frames::AudioFrame;
