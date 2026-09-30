@@ -94,7 +94,8 @@ pub struct StreamSettings {
     /// Profiles the caller supports (iamf-tools
     /// `requested_profile_versions`): the stream's declared profiles must
     /// intersect this set, and only mix presentations within some requested
-    /// profile's limits are selectable.
+    /// profile's limits are selectable. Defaults to the IAMF v1.1 profiles
+    /// ([`ProfileSet::all_v1`]), as in iamf-tools.
     pub requested_profiles: ProfileSet,
     /// Loudness normalization target in dB (LKFS): applies a constant gain
     /// of `target - content` using the selected layout's `loudness_info`.
@@ -139,7 +140,7 @@ impl Default for StreamSettings {
             mix_selection: MixSelection::Auto,
             channel_ordering: ChannelOrdering::default(),
             trimming: TrimmingSettings::default(),
-            requested_profiles: ProfileSet::all(),
+            requested_profiles: ProfileSet::all_v1(),
             loudness_target_db: None,
             enable_limiter: false,
         }
@@ -1093,14 +1094,8 @@ impl StreamDecoder {
             .unwrap_or_else(|| {
                 self.slots
                     .first()
-                    .map_or(0, |s| match &s.codec_config.decoder_config {
-                        iamf_obu::descriptors::DecoderConfig::Opus { .. } => 48000,
-                        iamf_obu::descriptors::DecoderConfig::Lpcm { sample_rate, .. }
-                        | iamf_obu::descriptors::DecoderConfig::Flac { sample_rate, .. } => {
-                            *sample_rate
-                        }
-                        _ => 0,
-                    })
+                    .and_then(|s| crate::profile::output_sample_rate(&s.codec_config))
+                    .unwrap_or(0)
             })
     }
 

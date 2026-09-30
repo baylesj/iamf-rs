@@ -148,8 +148,11 @@ fn decode_to_wav(data: &[u8], out_path: &str, opts: &Options) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // Only the v1.1 profiles: the batch decoder renders one sub-mix and
+    // none of the v2.0-only element types.
     let mix_index =
-        match descriptors.select_mix_presentation(MixSelection::Auto, target, ProfileSet::all()) {
+        match descriptors.select_mix_presentation(MixSelection::Auto, target, ProfileSet::all_v1())
+        {
             Ok(i) => i,
             Err(err) => {
                 eprintln!("error: {err}");

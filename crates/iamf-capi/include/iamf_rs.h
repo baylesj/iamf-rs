@@ -41,11 +41,16 @@ enum iamfrs_channel_ordering {
 };
 
 /* Bits for iamfrs_settings.requested_profiles, numbered like the IA
- * sequence header profile values (iamf_tools ProfileVersion). */
+ * sequence header profile values (iamf_tools ProfileVersion): IAMF v1.1
+ * (simple, base, base-enhanced) and IAMF v2.0 (base-advanced, advanced1,
+ * advanced2). */
 enum iamfrs_profile {
   IAMFRS_PROFILE_SIMPLE = 1 << 0,
   IAMFRS_PROFILE_BASE = 1 << 1,
   IAMFRS_PROFILE_BASE_ENHANCED = 1 << 2,
+  IAMFRS_PROFILE_BASE_ADVANCED = 1 << 3,
+  IAMFRS_PROFILE_ADVANCED1 = 1 << 4,
+  IAMFRS_PROFILE_ADVANCED2 = 1 << 5,
 };
 
 /* Values for iamfrs_settings.output_layout and the output_layout argument
@@ -100,7 +105,9 @@ typedef struct IamfrsSettings {
   uint8_t disable_trim_start;
   uint8_t disable_trim_end;
   /* Bitmask of enum iamfrs_profile (iamf_tools requested_profile_versions).
-   * 0 means all known profiles. The stream's declared profiles must
+   * 0 means the IAMF v1.1 profiles (simple, base, base-enhanced), the
+   * iamf_tools default; the v2.0 profiles must be requested explicitly.
+   * The stream's declared profiles must
    * intersect the set and only mix presentations within some requested
    * profile's limits are selectable (iamf-tools ProfileFilter semantics). */
   uint32_t requested_profiles;

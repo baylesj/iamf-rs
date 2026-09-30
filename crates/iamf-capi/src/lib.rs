@@ -119,7 +119,9 @@ pub struct IamfrsSettings {
     pub disable_trim_end: u8,
     /// Bitmask of supported profiles (iamf-tools
     /// `requested_profile_versions`): bit 0 = simple, bit 1 = base,
-    /// bit 2 = base-enhanced. 0 means all known profiles.
+    /// bit 2 = base-enhanced, bit 3 = base-advanced, bit 4 = advanced1,
+    /// bit 5 = advanced2. 0 means the IAMF v1.1 profiles (bits 0..=2), the
+    /// iamf-tools default; the v2.0 profiles must be requested explicitly.
     pub requested_profiles: u32,
     /// Nonzero enables the libiamf-style -1 dBFS look-ahead peak limiter.
     /// Off by default, matching the iamf-tools decoder.
@@ -607,6 +609,9 @@ mod tests {
             "IAMFRS_PROFILE_SIMPLE = 1 << 0,",
             "IAMFRS_PROFILE_BASE = 1 << 1,",
             "IAMFRS_PROFILE_BASE_ENHANCED = 1 << 2,",
+            "IAMFRS_PROFILE_BASE_ADVANCED = 1 << 3,",
+            "IAMFRS_PROFILE_ADVANCED1 = 1 << 4,",
+            "IAMFRS_PROFILE_ADVANCED2 = 1 << 5,",
         ] {
             assert!(header.contains(needle), "header missing `{needle}`");
         }

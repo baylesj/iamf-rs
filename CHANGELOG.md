@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+IAMF v2.0 profile limits in `iamf_dec::profile`, ported from iamf-tools
+`ProfileFilter`. v2.0 profiles are opt-in, so the defaults decode exactly
+as before.
+
+- `ProfileSet` gains `BASE_ADVANCED`, `ADVANCED1` and `ADVANCED2`, and
+  `from_profile_number` maps sequence header profiles 3..=5 to them.
+  `ProfileSet::all()` now includes them; the new `ProfileSet::all_v1()`
+  is the v1.1 set.
+- Defaults stay v1.1-only, like iamf-tools `IamfDecoder::Settings`:
+  `ProfileSet::default()`, `ProfileSet::from_bits(0)`,
+  `StreamSettings::default()` and `iamfrs_settings.requested_profiles = 0`
+  all mean `all_v1()`. The decoder cannot yet render everything v2.0
+  allows (several sub mixes, object-based elements, the new expanded
+  layouts), so a stream that declares only v2.0 profiles still fails with
+  `UnsupportedProfile` unless the caller requests them. `iamfdec` also
+  requests the v1.1 set.
+- The per-mix rules for the v2.0 profiles: up to two sub mixes; up to two
+  codec configs per mix (the first sub mix uses one, one of the two must
+  be LPCM, and both must share the sample rate and frame size, with the
+  AAC-LC rate read from its AudioSpecificConfig); head-locked binaural
+  rendering; object-based elements with exactly one position parameter
+  matching their object count (no position parameters on other
+  elements); no Base-Advanced for mixes that combine object-based and
+  other elements; expanded layouts 13..=19; and element/channel budgets
+  of 18/18 (Base-Advanced, Advanced1) and 28/28 (Advanced2).
+- New `iamf_dec::profile::output_sample_rate(&CodecConfig)`. The AAC-LC
+  adapter uses it, which fixes the explicit-frequency (index 0xF)
+  AudioSpecificConfig case, read from the wrong bits before.
+- C ABI (header-only): `IAMFRS_PROFILE_BASE_ADVANCED`,
+  `IAMFRS_PROFILE_ADVANCED1` and `IAMFRS_PROFILE_ADVANCED2` (bits 3..=5).
+- Known gap: iamf-tools' stream-level checks are not ported
+  (`ValidateMixPresentationsForPrimaryProfile`,
+  `ValidateFirstSubMixesUseSameCodecConfig`,
+  `ValidateAudioElementsForAdditionalProfile`, and the Base-Advanced rule
+  that the first mix presentation must be used).
+
 Modernization and cleanup pass (no decoding behavior changes beyond mix
 selection, below; the conformance suite is byte-identical).
 
