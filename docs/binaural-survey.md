@@ -1,5 +1,10 @@
 # HRTF binaural rendering: options survey (Aug 2026)
 
+> **Status (August 2026)**: The recommended option — a native pure-Rust port
+> of google/obr's SH-domain binaural renderer — has been implemented in tree
+> under [`iamf_dec::binaural`](../crates/iamf-dec/src/binaural/) (behind the
+> `binaural` feature gate). This survey is preserved for historical context.
+
 What IAMF binaural needs: render fixed-position loudspeaker beds
 (BS.2051 layouts) and 1st–4th order ambisonics (ACN/SN3D) to two ears,
 realtime, deterministic, embeddable, license-compatible. Positions are

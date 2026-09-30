@@ -17,6 +17,7 @@ impl core::fmt::Debug for OpusSubstreamDecoder {
     }
 }
 
+/// Pure-Rust Opus substream decoder backed by `opus-decoder`.
 pub struct OpusSubstreamDecoder {
     decoder: opus_decoder::OpusDecoder,
     channels: u8,
@@ -24,6 +25,7 @@ pub struct OpusSubstreamDecoder {
 }
 
 impl OpusSubstreamDecoder {
+    /// Creates a new pure-Rust Opus decoder for the given channel count.
     pub fn new(channels: u8) -> Result<Self, DecodeError> {
         crate::opus_common::validate_channels(channels)?;
         let decoder = opus_decoder::OpusDecoder::new(SAMPLE_RATE, channels.into())
@@ -54,6 +56,7 @@ impl SubstreamDecoder for OpusSubstreamDecoder {
     }
 }
 
+/// Constructs pure-Rust Opus substream decoders.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct OpusFactory;
 

@@ -5,10 +5,13 @@
 //! default and loudness normalization only when the caller sets a target
 //! loudness; integrators choose per use case.
 
-/// libiamf defaults (audio_defines.h).
+/// Default peak limiter threshold in dBFS (-1.0 dBFS).
 pub const LIMITER_THRESHOLD_DB: f32 = -1.0;
+/// Default peak limiter attack duration in seconds (1 ms).
 pub const LIMITER_ATTACK_SEC: f32 = 0.001;
+/// Default peak limiter release duration in seconds (200 ms).
 pub const LIMITER_RELEASE_SEC: f32 = 0.200;
+/// Default peak limiter lookahead window in samples (240 samples = 5 ms at 48 kHz).
 pub const LIMITER_LOOKAHEAD: usize = 240;
 
 /// f32 sample → s16, matching libiamf's `FLOAT2INT16` (round half to
@@ -63,6 +66,7 @@ pub struct PeakLimiter {
 }
 
 impl PeakLimiter {
+    /// Creates a new peak limiter with the specified threshold in dBFS, sample rate, channel count, and lookahead sample count.
     pub fn new(threshold_db: f32, sample_rate: u32, channels: usize, lookahead: usize) -> Self {
         PeakLimiter {
             threshold: 10f32.powf(threshold_db / 20.0),

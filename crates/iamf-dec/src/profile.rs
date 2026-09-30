@@ -20,27 +20,35 @@ use crate::element::substream_channels;
 pub struct ProfileSet(u8);
 
 impl ProfileSet {
+    /// IAMF Simple profile.
     pub const SIMPLE: ProfileSet = ProfileSet(1 << 0);
+    /// IAMF Base profile.
     pub const BASE: ProfileSet = ProfileSet(1 << 1);
+    /// IAMF Base-Enhanced profile.
     pub const BASE_ENHANCED: ProfileSet = ProfileSet(1 << 2);
 
+    /// A profile set containing all known IAMF v1.1 profiles.
     pub const fn all() -> Self {
         ProfileSet(0b111)
     }
 
+    /// An empty profile set.
     pub const fn empty() -> Self {
         ProfileSet(0)
     }
 
+    /// Returns true if no profiles are included in this set.
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
 
+    /// Returns the union of this profile set and another.
     #[must_use]
     pub const fn union(self, other: ProfileSet) -> Self {
         ProfileSet(self.0 | other.0)
     }
 
+    /// Returns true if this set shares at least one profile with `other`.
     pub const fn intersects(self, other: ProfileSet) -> bool {
         self.0 & other.0 != 0
     }

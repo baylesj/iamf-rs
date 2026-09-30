@@ -12,36 +12,62 @@
 /// extensions) as outputs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatrixLayout {
+    /// Single-channel mono.
     Mono,
+    /// 2-channel stereo.
     Stereo,
+    /// IAMF 3.1.2 layout.
     Iamf312,
+    /// IAMF 5.1 layout.
     Iamf51,
+    /// IAMF 5.1.2 layout.
     Iamf512,
+    /// IAMF 5.1.4 layout.
     Iamf514,
+    /// IAMF 7.1 layout.
     Iamf71,
+    /// IAMF 7.1.2 layout.
     Iamf712,
+    /// IAMF 7.1.4 layout.
     Iamf714,
+    /// IAMF 9.1.6 layout.
     Iamf916,
+    /// Binaural headphone target.
     Binaural,
+    /// BS.2051-A sound system (2.0).
     Bs2051A,
+    /// BS.2051-B sound system (5.1).
     Bs2051B,
+    /// BS.2051-C sound system (5.1.2).
     Bs2051C,
+    /// BS.2051-D sound system (5.1.4).
     Bs2051D,
+    /// BS.2051-E sound system (7.1.2).
     Bs2051E,
+    /// BS.2051-F sound system (7.1.4).
     Bs2051F,
+    /// BS.2051-G sound system (9.1.4).
     Bs2051G,
+    /// BS.2051-H sound system (22.2).
     Bs2051H,
+    /// BS.2051-I sound system (7.1).
     Bs2051I,
+    /// BS.2051-J sound system (7.1.4).
     Bs2051J,
 }
 
 /// Ambisonics order of a scene-based input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HoaOrder {
+    /// 0th-order ambisonics (1 channel: W).
     Zoa,
+    /// 1st-order ambisonics / FOA (4 channels: W, Y, Z, X).
     Foa,
+    /// 2nd-order ambisonics / SOA (9 channels).
     Soa,
+    /// 3rd-order ambisonics / TOA (16 channels).
     Toa,
+    /// 4th-order ambisonics / 4OA (25 channels).
     H4a,
 }
 

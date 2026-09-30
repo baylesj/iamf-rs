@@ -8,6 +8,7 @@ use symphonia_core::codecs::{CODEC_TYPE_FLAC, CodecParameters, Decoder, DecoderO
 
 use crate::symphonia_common::SymphoniaSubstreamDecoder;
 
+/// Constructs FLAC substream decoders.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FlacFactory;
 

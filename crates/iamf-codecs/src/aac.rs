@@ -30,6 +30,7 @@ fn asc_sample_rate(asc: &[u8]) -> Option<u32> {
     }
 }
 
+/// Constructs AAC-LC substream decoders.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AacFactory;
 

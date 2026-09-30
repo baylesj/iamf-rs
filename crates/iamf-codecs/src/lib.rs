@@ -3,6 +3,7 @@
 //! supply their own decoders instead.
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 #[cfg(feature = "aac")]
 pub mod aac;

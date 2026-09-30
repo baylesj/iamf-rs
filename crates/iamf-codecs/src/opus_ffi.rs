@@ -16,6 +16,7 @@ impl core::fmt::Debug for OpusFfiSubstreamDecoder {
     }
 }
 
+/// libopus-backed Opus substream decoder.
 pub struct OpusFfiSubstreamDecoder {
     decoder: iamf_opus_ffi::Decoder,
     channels: u8,
@@ -23,6 +24,7 @@ pub struct OpusFfiSubstreamDecoder {
 }
 
 impl OpusFfiSubstreamDecoder {
+    /// Creates a new libopus decoder for the given channel count.
     pub fn new(channels: u8) -> Result<Self, DecodeError> {
         crate::opus_common::validate_channels(channels)?;
         let decoder = iamf_opus_ffi::Decoder::new(SAMPLE_RATE, usize::from(channels))
@@ -52,6 +54,7 @@ impl SubstreamDecoder for OpusFfiSubstreamDecoder {
     }
 }
 
+/// Constructs libopus-backed Opus substream decoders.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct OpusFfiFactory;
 

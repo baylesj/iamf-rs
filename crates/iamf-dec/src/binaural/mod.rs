@@ -35,13 +35,17 @@ const FILTER_SAMPLE_RATE: u32 = 48_000;
 pub enum BinauralInput {
     /// Channel-based content in rendering order for `loudspeaker_layout`
     /// (0..=8).
-    Speakers { loudspeaker_layout: u8 },
+    Speakers {
+        /// Loudspeaker layout ID (0..=8).
+        loudspeaker_layout: u8,
+    },
     /// ACN/SN3D ambisonics of the given order (1..=4).
-    Hoa { order: usize },
+    Hoa {
+        /// Ambisonics order (1..=4).
+        order: usize,
+    },
 }
 
-/// obr-style binaural renderer for one audio element. Stateful across
-/// frames (convolution tails, limiter envelope).
 impl core::fmt::Debug for BinauralRenderer {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("BinauralRenderer")
@@ -52,6 +56,8 @@ impl core::fmt::Debug for BinauralRenderer {
     }
 }
 
+/// obr-style binaural renderer for one audio element. Stateful across
+/// frames (convolution tails, limiter envelope).
 pub struct BinauralRenderer {
     frame_size: usize,
     /// Speaker-to-HOA encoding matrix, `None` for direct HOA input.
@@ -67,6 +73,7 @@ pub struct BinauralRenderer {
 }
 
 impl BinauralRenderer {
+    /// Creates a new binaural renderer for the specified input type, frame size, and sample rate.
     pub fn new(
         input: BinauralInput,
         frame_size: usize,
@@ -134,6 +141,7 @@ impl BinauralRenderer {
         })
     }
 
+    /// Number of input channels required by this renderer instance.
     pub fn input_channels(&self) -> usize {
         self.input_channels
     }

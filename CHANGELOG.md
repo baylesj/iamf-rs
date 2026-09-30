@@ -25,8 +25,8 @@ conformance suite is byte-identical).
 - Lints: workspace-wide `clippy::pedantic` subset, `unreachable_pub`,
   `missing_debug_implementations`, `rust_2018_idioms`; the FFI crates
   re-declare `undocumented_unsafe_blocks` (every unsafe block now has a
-  SAFETY comment); `missing_docs` enforced in `iamf-obu` and
-  `iamf-capi`.
+  SAFETY comment); `missing_docs` enforced across all library crates
+  (`iamf-obu`, `iamf-dec`, `iamf-codecs`, `iamf-capi`).
 - Tooling: CI gains MSRV (1.85), docs-with-warnings-denied, and fuzz
   fmt/clippy jobs; `Cargo.lock` is committed; crates.io metadata
   (keywords, categories, readme, docs.rs config) added; a test pins the
