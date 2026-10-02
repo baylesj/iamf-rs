@@ -16,6 +16,7 @@ pub mod element;
 pub mod layout;
 pub(crate) mod matrices;
 pub mod params;
+pub mod position;
 pub mod post;
 pub mod presentation;
 pub mod profile;

@@ -246,6 +246,9 @@ impl PresentationDecoder {
                     };
                     ParamContext::ReconGain(layers)
                 }
+                // The batch decoder does not render objects (their element
+                // fails in reconstruction), so their positions go unused.
+                ParamKind::Position => continue,
             };
             let block = ParameterBlock::parse(payload, definition, &context)
                 .map_err(|e| DecodeError::CorruptPacket(e.to_string()))?;
@@ -258,6 +261,7 @@ impl PresentationDecoder {
                 ParamKind::ReconGain => {
                     slot.recon_blocks.push((block, definition.parameter_rate));
                 }
+                ParamKind::Position => {}
             }
             consumed = true;
         }
@@ -671,5 +675,11 @@ fn reconstruct_slot(
                 trim_map,
             ))
         }
+        // Rendering objects to loudspeakers is the Open Audio Renderer's
+        // job, not implemented here; the streaming decoder can hand them
+        // out instead (`StreamSettings::object_passthrough`).
+        AudioElementConfig::ObjectBased { .. } => Err(DecodeError::Unimplemented(
+            "rendering object-based audio elements",
+        )),
     }
 }

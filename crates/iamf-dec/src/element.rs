@@ -29,6 +29,9 @@ pub fn substream_channels(config: &AudioElementConfig) -> Vec<u8> {
             coupled_substream_count,
             ..
         } => group(*substream_count, *coupled_substream_count).collect(),
+        // One substream: mono for one object, stereo (one per channel) for
+        // two.
+        AudioElementConfig::ObjectBased { num_objects } => vec![*num_objects],
     }
 }
 

@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use iamf_obu::descriptors::{
-    AudioElement, ChannelAudioLayer, ElementParam, ParamDefinition, SubMix,
+    AudioElement, ChannelAudioLayer, ElementParam, ParamDefinition, PositionKind, SubMix,
 };
 use iamf_obu::{ByteReader, Error};
 
@@ -22,6 +22,8 @@ pub(crate) enum ParamKind {
     ReconGain,
     ElementMixGain,
     OutputMixGain,
+    /// IAMF v2.0 object position (declared by the mix presentation).
+    Position,
 }
 
 /// parameter_id → every consumer of that id. IAMF requires unique
@@ -67,6 +69,13 @@ pub(crate) fn build_param_index(
                 ElementParam::Unknown { .. } => {}
             }
         }
+        if let Some(position) = &sub_element.position {
+            index.entry(position.base.parameter_id).or_default().push((
+                slot,
+                ParamKind::Position,
+                position.base.clone(),
+            ));
+        }
         index
             .entry(sub_element.element_mix_gain.base.parameter_id)
             .or_default()
@@ -99,6 +108,13 @@ pub enum ParamContext<'a> {
     /// Channel layers of the owning element; recon gain data exists only
     /// for layers with `recon_gain_is_present`.
     ReconGain(&'a [ChannelAudioLayer]),
+    /// IAMF v2.0 object position: its coding and object count (1 or 2).
+    Position {
+        /// Coordinate system and coding of the parameter.
+        kind: PositionKind,
+        /// Objects the parameter positions.
+        objects: usize,
+    },
 }
 
 /// §3.10.2 animated mix gain over one subblock. Values are Q7.8 dB.
@@ -249,6 +265,8 @@ pub enum SubblockData {
     },
     /// Recon gain layers payload.
     ReconGain(ReconGainLayers),
+    /// IAMF v2.0 object position payload.
+    Position(crate::position::PositionData),
 }
 
 /// A single subblock within a parameter block.
@@ -343,6 +361,9 @@ impl ParameterBlock {
                 ParamContext::ReconGain(layers) => {
                     SubblockData::ReconGain(parse_recon_gain(&mut r, layers)?)
                 }
+                ParamContext::Position { kind, objects } => SubblockData::Position(
+                    crate::position::parse_position_data(&mut r, *kind, *objects)?,
+                ),
             };
             subblocks.push(ParameterSubblock {
                 duration: subblock_duration,

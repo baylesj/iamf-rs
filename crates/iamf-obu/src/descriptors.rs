@@ -5,7 +5,7 @@
 //! later spec revisions arrive inside sized extension regions, which are
 //! skipped rather than rejected, so v2-flavored streams still parse.
 
-use crate::{ByteReader, Error, Obu, ObuType, Result};
+use crate::{BitReader, ByteReader, Error, Obu, ObuType, Result};
 
 /// A parsed descriptor OBU payload.
 #[derive(Debug, Clone, PartialEq)]
@@ -356,6 +356,195 @@ impl MixGainParam {
 }
 
 // ---------------------------------------------------------------------------
+// Position parameters and element gain offset (IAMF v2.0 rendering_config)
+// ---------------------------------------------------------------------------
+
+/// `param_definition_type` values of the position parameters (IAMF v2.0).
+const PARAM_TYPE_POLAR: u32 = 3;
+const PARAM_TYPE_CART8: u32 = 4;
+const PARAM_TYPE_CART16: u32 = 5;
+const PARAM_TYPE_DUAL_POLAR: u32 = 6;
+const PARAM_TYPE_DUAL_CART8: u32 = 7;
+const PARAM_TYPE_DUAL_CART16: u32 = 8;
+
+/// The coordinate system of a position parameter (IAMF v2.0, following
+/// ITU-R BS.2076 for objects).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PositionKind {
+    /// Azimuth (`signed int (9)`, degrees, positive to the left), elevation
+    /// (`signed int (8)`, degrees, positive up), distance (`unsigned int
+    /// (7)`, `/127` gives 0.0..=1.0).
+    Polar,
+    /// x (right), y (front), z (up), each `signed int (8)`; `/127` gives
+    /// the normalized cube coordinate.
+    Cart8,
+    /// As [`PositionKind::Cart8`] with `signed int (16)` coordinates.
+    Cart16,
+}
+
+impl PositionKind {
+    /// Bit widths of the three coordinates as coded.
+    pub fn field_bits(self) -> [u32; 3] {
+        match self {
+            PositionKind::Polar => [9, 8, 7],
+            PositionKind::Cart8 => [8, 8, 8],
+            PositionKind::Cart16 => [16, 16, 16],
+        }
+    }
+
+    /// Whether each coordinate is signed (the polar distance is not).
+    pub fn field_signed(self) -> [bool; 3] {
+        match self {
+            PositionKind::Polar => [true, true, false],
+            PositionKind::Cart8 | PositionKind::Cart16 => [true, true, true],
+        }
+    }
+}
+
+/// A position parameter definition (IAMF v2.0 `PolarParamDefinition`,
+/// `Cart8ParamDefinition`, ... and their `Dual` forms): where the objects
+/// of the referenced element are when no parameter block says otherwise.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PositionParam {
+    /// Common definition fields.
+    pub base: ParamDefinition,
+    /// Coordinate system and coding.
+    pub kind: PositionKind,
+    /// Default position per object (1 or 2), coded values in
+    /// [`PositionKind`] order.
+    pub defaults: Vec<[i32; 3]>,
+}
+
+impl PositionParam {
+    /// Objects this parameter positions: 1, or 2 for the `Dual` forms.
+    pub fn num_objects(&self) -> usize {
+        self.defaults.len()
+    }
+
+    fn parse(r: &mut ByteReader<'_>, param_type: u32) -> Result<Self> {
+        let (kind, objects) = match param_type {
+            PARAM_TYPE_POLAR => (PositionKind::Polar, 1),
+            PARAM_TYPE_CART8 => (PositionKind::Cart8, 1),
+            PARAM_TYPE_CART16 => (PositionKind::Cart16, 1),
+            PARAM_TYPE_DUAL_POLAR => (PositionKind::Polar, 2),
+            PARAM_TYPE_DUAL_CART8 => (PositionKind::Cart8, 2),
+            _ => (PositionKind::Cart16, 2),
+        };
+        let base = ParamDefinition::parse(r)?;
+        let bits = kind.field_bits();
+        let total: u32 = bits.iter().sum::<u32>() * objects;
+        let start = r.position();
+        let data = r.read_bytes(total.div_ceil(8) as usize)?;
+        let mut bits_reader = BitReader::new(data, start);
+        let mut defaults = Vec::with_capacity(objects as usize);
+        for _ in 0..objects {
+            let mut value = [0i32; 3];
+            for (axis, slot) in value.iter_mut().enumerate() {
+                *slot = if kind.field_signed()[axis] {
+                    bits_reader.read_signed(bits[axis])?
+                } else {
+                    bits_reader.read_bits(bits[axis])? as i32
+                };
+            }
+            defaults.push(value);
+        }
+        Ok(PositionParam {
+            base,
+            kind,
+            defaults,
+        })
+    }
+}
+
+/// An element gain offset (IAMF v2.0 `ElementGainOffsetConfig`), Q7.8 dB.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ElementGainOffset {
+    /// `VALUE`: a fixed offset.
+    Value(i16),
+    /// `RANGE`: a default offset, adjustable within `[min, max]` around it.
+    Range {
+        /// Offset applied unless the user picks another.
+        default: i16,
+        /// Lower bound relative to `default`.
+        min: i16,
+        /// Upper bound relative to `default`.
+        max: i16,
+    },
+    /// A reserved type, whose bytes were skipped.
+    Unknown {
+        /// The reserved `element_gain_offset_type`.
+        offset_type: u8,
+    },
+}
+
+impl ElementGainOffset {
+    /// The offset to apply by default, Q7.8 dB (0 for unknown types).
+    pub fn default_q78(self) -> i16 {
+        match self {
+            ElementGainOffset::Value(v) | ElementGainOffset::Range { default: v, .. } => v,
+            ElementGainOffset::Unknown { .. } => 0,
+        }
+    }
+
+    fn parse(r: &mut ByteReader<'_>) -> Result<Self> {
+        Ok(match r.read_u8()? {
+            0 => ElementGainOffset::Value(r.read_i16_be()?),
+            1 => ElementGainOffset::Range {
+                default: r.read_i16_be()?,
+                min: r.read_i16_be()?,
+                max: r.read_i16_be()?,
+            },
+            offset_type => {
+                let size = r.read_leb128()?;
+                r.skip(size as usize)?;
+                ElementGainOffset::Unknown { offset_type }
+            }
+        })
+    }
+}
+
+/// The IAMF v2.0 fields of a `rendering_config` extension: `num_parameters`
+/// parameter definitions (positions; other types are skipped by size), then
+/// the element gain offset when flagged. An empty extension (every v1.1
+/// stream) has none of them.
+fn parse_rendering_extension(
+    extension: &[u8],
+    base: usize,
+    element_gain_offset_flag: bool,
+) -> Result<(Option<PositionParam>, Option<ElementGainOffset>)> {
+    if extension.is_empty() {
+        return Ok((None, None));
+    }
+    let mut r = ByteReader::new(extension);
+    let offset = |e: Error| match e {
+        Error::UnexpectedEof { offset } => Error::UnexpectedEof {
+            offset: base + offset,
+        },
+        Error::InvalidDescriptor { offset } => Error::InvalidDescriptor {
+            offset: base + offset,
+        },
+        other => other,
+    };
+    let num_parameters = r.read_leb128().map_err(offset)?;
+    let mut position = None;
+    for _ in 0..num_parameters {
+        let param_type = r.read_leb128().map_err(offset)?;
+        if (PARAM_TYPE_POLAR..=PARAM_TYPE_DUAL_CART16).contains(&param_type) {
+            position = Some(PositionParam::parse(&mut r, param_type).map_err(offset)?);
+        } else {
+            let size = r.read_leb128().map_err(offset)?;
+            r.skip(size as usize).map_err(offset)?;
+        }
+    }
+    let element_gain_offset = if element_gain_offset_flag {
+        Some(ElementGainOffset::parse(&mut r).map_err(offset)?)
+    } else {
+        None
+    };
+    Ok((position, element_gain_offset))
+}
+
+// ---------------------------------------------------------------------------
 // Audio element (§3.7)
 // ---------------------------------------------------------------------------
 
@@ -406,10 +595,18 @@ pub enum AudioElementConfig {
         /// (entry `[c * output_channel_count + acn]`).
         demixing_matrix: Vec<i16>,
     },
+    /// IAMF v2.0 objects config: one substream carrying one object (mono)
+    /// or two (stereo, one per channel). Where they are comes from the
+    /// position parameter of the mix presentation that references the
+    /// element ([`SubMixElement::position`]).
+    ObjectBased {
+        /// Objects in the element's substream: 1 or 2.
+        num_objects: u8,
+    },
 }
 
 /// Audio element descriptor (§3.7): a set of substreams that decode into
-/// one channel-based or scene-based element.
+/// one channel-based, scene-based or (IAMF v2.0) object-based element.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioElement {
     /// Identifier mix presentations reference.
@@ -462,6 +659,7 @@ impl AudioElement {
         let config = match element_type {
             0 => Self::parse_channel_config(r)?,
             1 => Self::parse_ambisonics_config(r)?,
+            2 => Self::parse_objects_config(r)?,
             _ => return Err(invalid(r)),
         };
 
@@ -472,6 +670,17 @@ impl AudioElement {
             params,
             config,
         })
+    }
+
+    /// IAMF v2.0 `ObjectsConfig`: a size, `num_objects`, then extension
+    /// bytes for future versions, which are skipped.
+    fn parse_objects_config(r: &mut ByteReader<'_>) -> Result<AudioElementConfig> {
+        let size = r.read_leb128()? as usize;
+        let body = r.read_bytes(size)?;
+        match body.first() {
+            Some(&num_objects @ (1 | 2)) => Ok(AudioElementConfig::ObjectBased { num_objects }),
+            _ => Err(invalid(r)),
+        }
     }
 
     fn parse_channel_config(r: &mut ByteReader<'_>) -> Result<AudioElementConfig> {
@@ -637,6 +846,13 @@ pub struct SubMixElement {
     pub localized_annotations: Vec<String>,
     /// §3.8.2 rendering_config.
     pub headphones_rendering_mode: u8,
+    /// IAMF v2.0 `binaural_filter_profile` (0 ambient, 1 direct,
+    /// 2 reverberant).
+    pub binaural_filter_profile: u8,
+    /// IAMF v2.0: the position parameter of an object-based element.
+    pub position: Option<PositionParam>,
+    /// IAMF v2.0: a static gain applied to the rendered element.
+    pub element_gain_offset: Option<ElementGainOffset>,
     /// This element's mix gain into the sub mix.
     pub element_mix_gain: MixGainParam,
 }
@@ -686,14 +902,26 @@ impl MixPresentation {
             let elements = read_bounded_vec(r, num_elements, |r| {
                 let audio_element_id = r.read_leb128()?;
                 let localized_annotations = read_bounded_vec(r, count_label, |r| r.read_string())?;
-                let headphones_rendering_mode = r.read_u8()? >> 6 & 0x03;
+                let flags = r.read_u8()?;
+                let headphones_rendering_mode = flags >> 6 & 0x03;
+                let element_gain_offset_flag = flags >> 5 & 0x01 != 0;
+                let binaural_filter_profile = flags >> 3 & 0x03;
+                // IAMF v2.0 puts its rendering parameters inside the
+                // extension a v1.1 parser skips; reading them from a bounded
+                // copy keeps the outer reader on the v1.1 framing.
                 let extension_size = r.read_leb128()?;
-                r.skip(extension_size as usize)?;
+                let base = r.position();
+                let extension = r.read_bytes(extension_size as usize)?;
+                let (position, element_gain_offset) =
+                    parse_rendering_extension(extension, base, element_gain_offset_flag)?;
                 let element_mix_gain = MixGainParam::parse(r)?;
                 Ok(SubMixElement {
                     audio_element_id,
                     localized_annotations,
                     headphones_rendering_mode,
+                    binaural_filter_profile,
+                    position,
+                    element_gain_offset,
                     element_mix_gain,
                 })
             })?;

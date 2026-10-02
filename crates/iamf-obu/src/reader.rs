@@ -113,3 +113,79 @@ impl<'a> ByteReader<'a> {
         Ok(bytes)
     }
 }
+
+/// An MSB-first bit cursor over a byte slice, for the bit-packed fields of
+/// IAMF v2.0 position parameters (§3.8 `signed int (9)` azimuths and the
+/// like). Reading past the end is an error, never a panic.
+#[derive(Debug, Clone)]
+pub struct BitReader<'a> {
+    data: &'a [u8],
+    bit: usize,
+    /// Byte offset of `data` in the enclosing input, for error reports.
+    base: usize,
+}
+
+impl<'a> BitReader<'a> {
+    /// Wraps `data`, whose first byte sits at `base` in the enclosing input.
+    pub fn new(data: &'a [u8], base: usize) -> Self {
+        Self { data, bit: 0, base }
+    }
+
+    /// Bits consumed so far.
+    pub fn bit_position(&self) -> usize {
+        self.bit
+    }
+
+    /// Reads an unsigned `n`-bit field (`n` ≤ 32).
+    pub fn read_bits(&mut self, n: u32) -> Result<u32> {
+        debug_assert!(n <= 32);
+        let mut value = 0u32;
+        for _ in 0..n {
+            let byte = *self.data.get(self.bit / 8).ok_or(Error::UnexpectedEof {
+                offset: self.base + self.bit / 8,
+            })?;
+            let set = byte >> (7 - self.bit % 8) & 1;
+            value = value << 1 | u32::from(set);
+            self.bit += 1;
+        }
+        Ok(value)
+    }
+
+    /// Reads a two's complement `n`-bit field (`1 ≤ n ≤ 32`).
+    pub fn read_signed(&mut self, n: u32) -> Result<i32> {
+        let raw = self.read_bits(n)?;
+        let shift = 32 - n;
+        Ok(((raw << shift) as i32) >> shift)
+    }
+}
+
+#[cfg(test)]
+mod bit_tests {
+    use super::BitReader;
+
+    #[test]
+    fn reads_the_packed_polar_fields_of_a_libiamf_vector() {
+        // test_000800: azimuth +90, elevation 0, distance 127 as s9/s8/u7.
+        let mut r = BitReader::new(&[0x2d, 0x00, 0x7f], 0);
+        assert_eq!(r.read_signed(9).unwrap(), 90);
+        assert_eq!(r.read_signed(8).unwrap(), 0);
+        assert_eq!(r.read_bits(7).unwrap(), 127);
+        assert_eq!(r.bit_position(), 24);
+        // Azimuth -90 and +180.
+        assert_eq!(
+            BitReader::new(&[0xd3, 0x00], 0).read_signed(9).unwrap(),
+            -90
+        );
+        assert_eq!(
+            BitReader::new(&[0x5a, 0x00], 0).read_signed(9).unwrap(),
+            180
+        );
+    }
+
+    #[test]
+    fn running_out_of_bits_is_an_error() {
+        let mut r = BitReader::new(&[0xff], 10);
+        assert_eq!(r.read_bits(8).unwrap(), 0xff);
+        assert!(r.read_bits(1).is_err());
+    }
+}

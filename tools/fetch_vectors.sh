@@ -17,13 +17,18 @@ DEST="$(cd "$(dirname "$0")/.." && pwd)/tests/vectors"
 
 # Curated spread: LPCM/Opus/AAC-LC codecs, channel- and scene-based
 # elements (ambisonics MONO and PROJECTION: 000042/000048), plus two
-# should-fail-to-decode cases (000007, 000025).
+# should-fail-to-decode cases (000007, 000025), and the IAMF v2.0 object
+# vectors the object-passthrough tests use (polar, cart8, cart16, dual
+# polar, and a 5.1 + objects advanced-1 mix).
 DEFAULT_VECTORS=(
   test_000002 test_000005 test_000007 test_000024 test_000025 test_000026
   test_000032 test_000033 test_000036 test_000038 test_000039 test_000042
   test_000048 test_000065 test_000066 test_000069 test_000070 test_000082
   test_000086 test_000088 test_000073 test_000090 test_000092
+  test_000800 test_000801 test_000802 test_000806 test_000903
 )
+# Encoder inputs some tests compare decoded LPCM against.
+SOURCE_WAVS=(dialog_clip_stereo.wav)
 
 if [[ "${1:-}" == "--demo" ]]; then
   # Produced demo content shipped with the iamf-tools web demo (the
@@ -88,5 +93,9 @@ for name in "$@"; do
     fi
   done
   [[ -s "$DEST/$name.iamf" ]] && ok=$((ok + 1))
+done
+for wav in "${SOURCE_WAVS[@]}"; do
+  [[ -s "$DEST/$wav" ]] && continue
+  curl -fsSL "$BASE_URL/$wav" -o "$DEST/$wav" 2>/dev/null || rm -f "$DEST/$wav"
 done
 echo "$ok vectors in $DEST${fail:+ ($fail missing)}"

@@ -330,6 +330,9 @@ pub fn ambisonics_from_planes(
         AudioElementConfig::ChannelBased { .. } => Err(DecodeError::InvalidDescriptors(
             "channel-based element in ambisonics reconstruction".into(),
         )),
+        AudioElementConfig::ObjectBased { .. } => Err(DecodeError::InvalidDescriptors(
+            "object-based element in ambisonics reconstruction".into(),
+        )),
     }
 }
 

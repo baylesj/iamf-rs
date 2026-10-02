@@ -14,8 +14,9 @@ use iamf_obu::descriptors::{
 
 use crate::element::substream_channels;
 
-/// The IAMF v1.1 profiles (iamf-tools `ProfileVersion`): simple (0),
-/// base (1), base-enhanced (2).
+/// The IAMF profiles (iamf-tools `ProfileVersion`): the v1.1 simple (0),
+/// base (1) and base-enhanced (2), and the v2.0 base-advanced (3),
+/// advanced-1 (4) and advanced-2 (5), which add object-based elements.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProfileSet(u8);
 
@@ -26,10 +27,27 @@ impl ProfileSet {
     pub const BASE: ProfileSet = ProfileSet(1 << 1);
     /// IAMF Base-Enhanced profile.
     pub const BASE_ENHANCED: ProfileSet = ProfileSet(1 << 2);
+    /// IAMF v2.0 Base-Advanced profile: object-only mixes.
+    pub const BASE_ADVANCED: ProfileSet = ProfileSet(1 << 3);
+    /// IAMF v2.0 Advanced-1 profile: objects mixed with channel-based and
+    /// scene-based elements, up to 18 channels.
+    pub const ADVANCED_1: ProfileSet = ProfileSet(1 << 4);
+    /// IAMF v2.0 Advanced-2 profile: as Advanced-1, up to 28 channels.
+    pub const ADVANCED_2: ProfileSet = ProfileSet(1 << 5);
+    /// The IAMF v1.1 profiles, which have no object-based elements.
+    pub const V1: ProfileSet = ProfileSet(0b111);
+    /// The IAMF v2.0 profiles that carry object-based elements.
+    pub const V2_OBJECTS: ProfileSet = ProfileSet(0b111_000);
 
-    /// A profile set containing all known IAMF v1.1 profiles.
+    /// A profile set containing all known IAMF profiles.
     pub const fn all() -> Self {
-        ProfileSet(0b111)
+        ProfileSet(0b111_111)
+    }
+
+    /// The profiles in both sets.
+    #[must_use]
+    pub const fn intersection(self, other: ProfileSet) -> Self {
+        ProfileSet(self.0 & other.0)
     }
 
     /// An empty profile set.
@@ -54,12 +72,16 @@ impl ProfileSet {
     }
 
     /// From an IA sequence header profile number (0 = simple, 1 = base,
-    /// 2 = base-enhanced); unknown numbers map to the empty set.
+    /// 2 = base-enhanced, 3 = base-advanced, 4 = advanced-1,
+    /// 5 = advanced-2); unknown numbers map to the empty set.
     pub const fn from_profile_number(profile: u8) -> Self {
         match profile {
             0 => ProfileSet::SIMPLE,
             1 => ProfileSet::BASE,
             2 => ProfileSet::BASE_ENHANCED,
+            3 => ProfileSet::BASE_ADVANCED,
+            4 => ProfileSet::ADVANCED_1,
+            5 => ProfileSet::ADVANCED_2,
             _ => ProfileSet::empty(),
         }
     }
@@ -68,11 +90,12 @@ impl ProfileSet {
         self.0 &= !other.0;
     }
 
-    /// From the C-ABI / iamf-tools numbering: bit 0 = simple, bit 1 = base,
-    /// bit 2 = base-enhanced. Unknown high bits are ignored; an empty mask
-    /// means "no constraint" and resolves to all known profiles.
+    /// From the C-ABI / iamf-tools numbering: bit n = profile number n
+    /// (simple, base, base-enhanced, base-advanced, advanced-1,
+    /// advanced-2). Unknown high bits are ignored; an empty mask means "no
+    /// constraint" and resolves to all known profiles.
     pub fn from_bits(bits: u32) -> Self {
-        let known = (bits & 0b111) as u8;
+        let known = (bits & 0b111_111) as u8;
         if known == 0 {
             ProfileSet::all()
         } else {
@@ -127,6 +150,8 @@ fn filter_audio_element(element: &AudioElement, profiles: &mut ProfileSet) {
         // parser rejects other modes outright).
         AudioElementConfig::AmbisonicsMono { .. }
         | AudioElementConfig::AmbisonicsProjection { .. } => {}
+        // Objects arrived with the v2.0 profiles.
+        AudioElementConfig::ObjectBased { .. } => profiles.remove(ProfileSet::V1),
     }
 }
 
@@ -148,11 +173,13 @@ pub fn filter_profiles_for_mix(
     }
 
     // headphones_rendering_mode: 0 and 1 are v1.1; 2 (head-locked binaural)
-    // and 3 (reserved) are not supported by any v1.1 profile.
+    // arrived with v2.0; 3 is reserved, and the mix must be ignored.
     for sub_mix in &mix.sub_mixes {
         for element in &sub_mix.elements {
-            if element.headphones_rendering_mode >= 2 {
-                return ProfileSet::empty();
+            match element.headphones_rendering_mode {
+                0 | 1 => {}
+                2 => profiles.remove(ProfileSet::V1),
+                _ => return ProfileSet::empty(),
             }
         }
     }
@@ -187,6 +214,7 @@ pub fn filter_profiles_for_mix(
     // Per-element limits, plus element/channel budgets across the mix.
     let mut num_elements = 0usize;
     let mut num_channels = 0usize;
+    let mut num_objects = 0usize;
     for sub_mix in &mix.sub_mixes {
         num_elements += sub_mix.elements.len();
         for sub_element in &sub_mix.elements {
@@ -198,7 +226,21 @@ pub fn filter_profiles_for_mix(
                 return profiles;
             }
             num_channels += element_channels(element);
+            if matches!(element.config, AudioElementConfig::ObjectBased { .. }) {
+                num_objects += 1;
+            }
         }
+    }
+    // Base-advanced mixes objects only with objects; mixing them with
+    // channel-based or scene-based elements takes advanced-1 or -2.
+    if num_objects > 0 && num_objects < num_elements {
+        profiles.remove(ProfileSet::BASE_ADVANCED);
+    }
+    if num_elements > 18 || num_channels > 18 {
+        profiles.remove(ProfileSet::BASE_ADVANCED.union(ProfileSet::ADVANCED_1));
+    }
+    if num_elements > 28 || num_channels > 28 {
+        profiles.remove(ProfileSet::ADVANCED_2);
     }
     if num_elements > 1 {
         profiles.remove(ProfileSet::SIMPLE);
@@ -302,6 +344,9 @@ mod tests {
                         audio_element_id: id,
                         localized_annotations: vec![],
                         headphones_rendering_mode: headphones_mode,
+                        binaural_filter_profile: 0,
+                        position: None,
+                        element_gain_offset: None,
                         element_mix_gain: gain(),
                     })
                     .collect(),
@@ -333,7 +378,7 @@ mod tests {
     fn two_elements_exceed_simple() {
         let elements = [stereo_element(1, 0), stereo_element(2, 0)];
         let configs = [codec_config(0)];
-        let set = filter_profiles_for_mix(&mix(&[1, 2], 0), &elements, &configs, ProfileSet::all());
+        let set = filter_profiles_for_mix(&mix(&[1, 2], 0), &elements, &configs, ProfileSet::V1);
         assert_eq!(set, ProfileSet::BASE.union(ProfileSet::BASE_ENHANCED));
         // Requesting only simple leaves nothing.
         let set =
@@ -355,12 +400,8 @@ mod tests {
             }],
         };
         let configs = [codec_config(0)];
-        let set = filter_profiles_for_mix(
-            &mix(&[1], 0),
-            &[element.clone()],
-            &configs,
-            ProfileSet::all(),
-        );
+        let set =
+            filter_profiles_for_mix(&mix(&[1], 0), &[element.clone()], &configs, ProfileSet::V1);
         assert_eq!(set, ProfileSet::BASE_ENHANCED);
 
         // v2-draft expanded layouts are outside every v1.1 profile.
@@ -374,16 +415,53 @@ mod tests {
                 expanded_loudspeaker_layout: Some(13), // 10.2.9.3
             }],
         };
-        let set = filter_profiles_for_mix(&mix(&[1], 0), &[element], &configs, ProfileSet::all());
+        let set = filter_profiles_for_mix(&mix(&[1], 0), &[element], &configs, ProfileSet::V1);
         assert!(set.is_empty());
     }
 
     #[test]
-    fn headlocked_binaural_unsupported() {
+    fn headlocked_binaural_needs_a_v2_profile() {
         let elements = [stereo_element(1, 0)];
         let configs = [codec_config(0)];
-        let set = filter_profiles_for_mix(&mix(&[1], 2), &elements, &configs, ProfileSet::all());
+        let set = filter_profiles_for_mix(&mix(&[1], 2), &elements, &configs, ProfileSet::V1);
         assert!(set.is_empty());
+        let set = filter_profiles_for_mix(&mix(&[1], 2), &elements, &configs, ProfileSet::all());
+        assert_eq!(set, ProfileSet::V2_OBJECTS);
+    }
+
+    fn object_element(id: u32, codec: u32, num_objects: u8) -> AudioElement {
+        let mut element = stereo_element(id, codec);
+        element.config = AudioElementConfig::ObjectBased { num_objects };
+        element
+    }
+
+    #[test]
+    fn object_only_mixes_need_a_v2_profile() {
+        let elements = [object_element(1, 0, 1), object_element(2, 0, 2)];
+        let configs = [codec_config(0)];
+        let set = filter_profiles_for_mix(&mix(&[1, 2], 0), &elements, &configs, ProfileSet::all());
+        assert_eq!(set, ProfileSet::V2_OBJECTS);
+        let set = filter_profiles_for_mix(&mix(&[1, 2], 0), &elements, &configs, ProfileSet::V1);
+        assert!(set.is_empty());
+    }
+
+    #[test]
+    fn objects_mixed_with_channels_need_advanced() {
+        let elements = [object_element(1, 0, 1), stereo_element(2, 0)];
+        let configs = [codec_config(0)];
+        let set = filter_profiles_for_mix(&mix(&[1, 2], 0), &elements, &configs, ProfileSet::all());
+        assert_eq!(set, ProfileSet::ADVANCED_1.union(ProfileSet::ADVANCED_2));
+    }
+
+    #[test]
+    fn v2_profile_numbers_map_to_their_bits() {
+        assert_eq!(
+            ProfileSet::from_profile_number(3),
+            ProfileSet::BASE_ADVANCED
+        );
+        assert_eq!(ProfileSet::from_profile_number(4), ProfileSet::ADVANCED_1);
+        assert_eq!(ProfileSet::from_profile_number(5), ProfileSet::ADVANCED_2);
+        assert_eq!(ProfileSet::from_bits(1 << 3), ProfileSet::BASE_ADVANCED);
     }
 
     #[test]

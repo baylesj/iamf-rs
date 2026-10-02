@@ -14,6 +14,7 @@ use crate::params::{
     ParamContext, ParamCursor, ParamIndex, ParamKind, ParameterBlock, ReconGainLayers,
     SubblockData, build_param_index,
 };
+use crate::position::ObjectPosition;
 use crate::post::{LIMITER_LOOKAHEAD, LIMITER_THRESHOLD_DB, PeakLimiter};
 use crate::presentation::Descriptors;
 use crate::profile::{ProfileSet, filter_profiles_for_mix};
@@ -65,6 +66,25 @@ pub struct TrimmingSettings {
     pub trim_end: bool,
 }
 
+impl TrimmingSettings {
+    /// Samples to drop at the start and the end of a `len`-sample unit
+    /// whose frames signal `trim` (start, end), as these settings apply it.
+    fn window(self, trim: Option<(u32, u32)>, len: usize) -> (usize, usize) {
+        let (trim_start, trim_end) = trim.unwrap_or((0, 0));
+        let start = if self.trim_beginning {
+            (trim_start as usize).min(len)
+        } else {
+            0
+        };
+        let end = if self.trim_end {
+            (trim_end as usize).min(len - start)
+        } else {
+            0
+        };
+        (start, end)
+    }
+}
+
 impl Default for TrimmingSettings {
     fn default() -> Self {
         TrimmingSettings {
@@ -103,6 +123,46 @@ pub struct StreamSettings {
     /// the iamf-tools decoder (Chromium's reference) emits unlimited
     /// rendered PCM, while libiamf limits by default — integrators choose.
     pub enable_limiter: bool,
+    /// IAMF v2.0 object-based elements: hand them out instead of rendering
+    /// them. Each temporal unit's objects (PCM after the mix's gains and
+    /// trimming, plus their position over the unit) are then available
+    /// from [`StreamDecoder::take_objects`], and only the other elements
+    /// are rendered into the output layout. Off by default: object
+    /// rendering is not implemented, so without this flag mix
+    /// presentations containing objects are not selectable (a v2 stream's
+    /// v1.1 fallback mix, if any, is chosen instead).
+    pub object_passthrough: bool,
+    /// Samples between two object position points in passthrough mode.
+    pub object_position_interval: u32,
+}
+
+impl StreamSettings {
+    /// The profiles mix selection may use: without object passthrough,
+    /// only those whose mixes this decoder can render (the v1.1 ones).
+    fn selectable_profiles(&self) -> ProfileSet {
+        if self.object_passthrough {
+            self.requested_profiles
+        } else {
+            self.requested_profiles.intersection(ProfileSet::V1)
+        }
+    }
+}
+
+/// One object of an object-based element over one temporal unit, from
+/// [`StreamDecoder::take_objects`] (object passthrough).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecodedObject {
+    /// The audio element it belongs to.
+    pub audio_element_id: u32,
+    /// Its index in the element: 0, or 1 for the second object of a
+    /// two-object element.
+    pub index: u8,
+    /// Mono PCM after the element and output mix gains, the element gain
+    /// offset, loudness normalization and the unit's trimming.
+    pub samples: Vec<f32>,
+    /// Where it is, at sample offsets into `samples` (ascending, the first
+    /// at 0, then every `object_position_interval` samples).
+    pub positions: Vec<(u32, ObjectPosition)>,
 }
 
 /// Mix presentation selection (iamf-tools `RequestedMix` shape).
@@ -132,6 +192,8 @@ impl Default for StreamSettings {
             requested_profiles: ProfileSet::all(),
             loudness_target_db: None,
             enable_limiter: false,
+            object_passthrough: false,
+            object_position_interval: 256,
         }
     }
 }
@@ -227,6 +289,39 @@ pub(crate) fn select_mix_index(
         })
 }
 
+/// The position timeline of an object-based element from the position
+/// parameter its mix declares. A mix that declares none (which IAMF does
+/// not allow) leaves its objects at the front, on the unit sphere.
+fn object_position_cursor(
+    sub_element: &iamf_obu::descriptors::SubMixElement,
+    num_objects: u8,
+) -> Result<crate::position::PositionCursor, DecodeError> {
+    use iamf_obu::descriptors::{ParamDefinition, PositionKind, PositionParam};
+    let param = sub_element
+        .position
+        .clone()
+        .unwrap_or_else(|| PositionParam {
+            base: ParamDefinition {
+                parameter_id: u32::MAX,
+                parameter_rate: 48000,
+                mode: true,
+                duration: 0,
+                constant_subblock_duration: 0,
+                subblock_durations: Vec::new(),
+            },
+            kind: PositionKind::Polar,
+            defaults: vec![[0, 0, 127]; usize::from(num_objects)],
+        });
+    if param.num_objects() != usize::from(num_objects) {
+        return Err(DecodeError::InvalidDescriptors(format!(
+            "element {} has {num_objects} object(s) but its position parameter {}",
+            sub_element.audio_element_id,
+            param.num_objects()
+        )));
+    }
+    Ok(crate::position::PositionCursor::new(&param))
+}
+
 /// Per-sample animated gain cursor: consumes subblocks in arrival order,
 /// falling back to the default gain when exhausted. Animations are stored
 /// with endpoints pre-converted to linear gain.
@@ -275,6 +370,10 @@ struct SlotState {
     binaural: Option<crate::binaural::BinauralRenderer>,
     gain_default: f32,
     gain_cursor: GainCursor,
+    /// IAMF v2.0 element gain offset, linear (1.0 when absent).
+    gain_offset: f32,
+    /// Position timeline of an object-based element.
+    position: Option<crate::position::PositionCursor>,
     sample_rate: u32,
 }
 
@@ -371,6 +470,8 @@ pub struct StreamDecoder {
     ended: bool,
     /// Parsed descriptors, retained for [`StreamDecoder::reset_with_new_mix`].
     parsed: Descriptors,
+    /// Objects of the last pulled temporal unit (object passthrough).
+    objects: Vec<DecodedObject>,
 }
 
 impl StreamDecoder {
@@ -403,7 +504,7 @@ impl StreamDecoder {
         if let Some(header) = &parsed.sequence_header {
             let declared = ProfileSet::from_profile_number(header.primary_profile)
                 .union(ProfileSet::from_profile_number(header.additional_profile));
-            if !declared.intersects(settings.requested_profiles) {
+            if !declared.intersects(settings.selectable_profiles()) {
                 return Err(DecodeError::UnsupportedProfile(format!(
                     "stream declares profiles {}/{} outside the requested set",
                     header.primary_profile, header.additional_profile
@@ -420,7 +521,7 @@ impl StreamDecoder {
                     mix,
                     &parsed.audio_elements,
                     &parsed.codec_configs,
-                    settings.requested_profiles,
+                    settings.selectable_profiles(),
                 )
                 .is_empty()
             })
@@ -509,6 +610,15 @@ impl StreamDecoder {
                     sub_element.element_mix_gain.default_mix_gain,
                 ),
                 gain_cursor: GainCursor::default(),
+                gain_offset: sub_element.element_gain_offset.map_or(1.0, |offset| {
+                    crate::params::q78_db_to_linear(offset.default_q78())
+                }),
+                position: match &element.config {
+                    AudioElementConfig::ObjectBased { num_objects } => {
+                        Some(object_position_cursor(sub_element, *num_objects)?)
+                    }
+                    _ => None,
+                },
                 sample_rate: 0,
             });
         }
@@ -558,6 +668,7 @@ impl StreamDecoder {
             frame_size,
             ended: false,
             parsed,
+            objects: Vec::new(),
         })
     }
 
@@ -707,6 +818,22 @@ impl StreamDecoder {
                         }
                     }
                 }
+                ParamKind::Position => {
+                    let Some(cursor) = slots[*slot_index].position.as_mut() else {
+                        continue;
+                    };
+                    let context = ParamContext::Position {
+                        kind: cursor.kind(),
+                        objects: cursor.num_objects(),
+                    };
+                    let block =
+                        ParameterBlock::parse(payload, definition, &context).map_err(corrupt)?;
+                    for sb in block.subblocks {
+                        if let SubblockData::Position(data) = sb.data {
+                            cursor.push(data, sb.duration, scale);
+                        }
+                    }
+                }
                 ParamKind::ElementMixGain | ParamKind::OutputMixGain => {
                     let block = ParameterBlock::parse(payload, definition, &ParamContext::MixGain)
                         .map_err(corrupt)?;
@@ -741,6 +868,8 @@ impl StreamDecoder {
         let mut mixed: Vec<Vec<f32>> = vec![Vec::new(); out_channels];
         let mut trim: Option<(u32, u32)> = None;
         let mut unit_len: Option<usize> = None;
+        #[allow(clippy::type_complexity)]
+        let mut pending_objects: Vec<(u32, u8, Vec<f32>, Vec<(u32, ObjectPosition)>)> = Vec::new();
 
         for slot in &mut self.slots {
             let frames: Vec<FramePcm> = slot
@@ -779,6 +908,33 @@ impl StreamDecoder {
             let mut planes = Vec::new();
             for (frame, &ch) in frames.iter().zip(&slot.channels) {
                 planes.extend(deinterleave(&frame.samples, usize::from(ch.max(1))));
+            }
+
+            if let Some(cursor) = slot.position.as_mut() {
+                // Object passthrough (the only way an object mix is
+                // selected): gains now, output gain and trimming once the
+                // whole unit is known, positions at the kept samples.
+                let (start, end) = self.settings.trimming.window(trim, frame_len);
+                let interval = self.settings.object_position_interval.max(1) as usize;
+                let points: Vec<usize> = (start..frame_len - end).step_by(interval).collect();
+                let positions = cursor.positions_for_unit(frame_len, &points);
+                let gains: Vec<f32> = (0..frame_len)
+                    .map(|_| slot.gain_cursor.next(slot.gain_default) * slot.gain_offset)
+                    .collect();
+                for (index, (plane, track)) in planes.into_iter().zip(positions).enumerate() {
+                    let samples = plane.iter().zip(&gains).map(|(&s, &g)| s * g).collect();
+                    pending_objects.push((
+                        slot.element.audio_element_id,
+                        index as u8,
+                        samples,
+                        points
+                            .iter()
+                            .map(|&p| (p - start) as u32)
+                            .zip(track)
+                            .collect(),
+                    ));
+                }
+                continue;
             }
 
             let hrtf = cfg!(feature = "binaural")
@@ -875,7 +1031,7 @@ impl StreamDecoder {
                     mix_plane.resize(rendered_plane.len(), 0.0);
                 }
                 for ((o, &s), &g) in mix_plane.iter_mut().zip(rendered_plane).zip(&gains) {
-                    *o += g * s;
+                    *o += g * slot.gain_offset * s;
                 }
             }
         }
@@ -887,17 +1043,25 @@ impl StreamDecoder {
         let out_gains: Vec<f32> = (0..unit_len)
             .map(|_| self.output_cursor.next(self.output_gain_default))
             .collect();
-        let start = if self.settings.trimming.trim_beginning {
-            (trim.0 as usize).min(unit_len)
-        } else {
-            0
-        };
-        let end = if self.settings.trimming.trim_end {
-            (trim.1 as usize).min(unit_len - start)
-        } else {
-            0
-        };
+        let (start, end) = self.settings.trimming.window(Some(trim), unit_len);
         let kept = unit_len - start - end;
+        self.objects = pending_objects
+            .into_iter()
+            .map(
+                |(audio_element_id, index, samples, positions)| DecodedObject {
+                    audio_element_id,
+                    index,
+                    samples: samples
+                        .iter()
+                        .zip(&out_gains)
+                        .take(unit_len - end)
+                        .skip(start)
+                        .map(|(&s, &g)| s * g * self.norm_gain)
+                        .collect(),
+                    positions,
+                },
+            )
+            .collect();
         let mut samples = Vec::with_capacity(kept * out_channels);
         for (t, &gain) in out_gains
             .iter()
@@ -1017,10 +1181,36 @@ impl StreamDecoder {
                 slot.binaural = None;
             }
             slot.gain_cursor = GainCursor::default();
+            if let Some(cursor) = &mut slot.position {
+                cursor.clear();
+            }
             for dec in &mut slot.decoders {
                 dec.reset();
             }
         }
+        self.objects.clear();
+    }
+
+    /// The objects of the last temporal unit [`Self::get_output_temporal_unit`]
+    /// returned, in mix order (object passthrough; empty otherwise).
+    pub fn take_objects(&mut self) -> Vec<DecodedObject> {
+        std::mem::take(&mut self.objects)
+    }
+
+    /// Objects the selected mix hands out per temporal unit (object
+    /// passthrough), 0 when it has none.
+    pub fn num_objects(&self) -> usize {
+        self.slots
+            .iter()
+            .filter_map(|s| s.position.as_ref())
+            .map(crate::position::PositionCursor::num_objects)
+            .sum()
+    }
+
+    /// Whether the selected mix renders anything into the output layout,
+    /// i.e. has elements other than objects.
+    pub fn has_rendered_elements(&self) -> bool {
+        self.slots.iter().any(|s| s.position.is_none())
     }
 
     /// Reconfigures for a different mix presentation and/or output layout

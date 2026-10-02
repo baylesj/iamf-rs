@@ -15,6 +15,10 @@ OBU parser → codec decoders → element reconstructor → renderer → mixer �
 ## Features
 
 - IAMF v1.1 simple & base profile decoding: OBUs, descriptors, parameter blocks
+- IAMF v2.0 object-based elements (base-advanced, advanced-1, advanced-2
+  profiles), handed out rather than rendered (`object_passthrough`): each
+  object's PCM and its position (polar or cartesian, all five animation
+  types) per temporal unit, alongside the rendered non-object elements
 - Profile validation with iamf-tools `ProfileFilter` semantics: requested
   profile sets, sequence-header checks, per-mix capability limits
 - Codecs: Opus (pure-Rust, or libopus via `opus-ffi`), LPCM, FLAC, AAC-LC
@@ -36,7 +40,10 @@ OBU parser → codec decoders → element reconstructor → renderer → mixer �
 - `#![forbid(unsafe_code)]` outside the FFI boundary; parser and full stream decoder fuzzed (CI smoke + local corpus)
 
 Not yet supported: expanded loudspeaker layouts (base-enhanced profile;
-they are profile-filtered but not decodable) and output-rate resampling.
+they are profile-filtered but not decodable), output-rate resampling,
+rendering object-based elements (the Open Audio Renderer: objects are only
+available through `object_passthrough`), and v2.0 mixes using two codec
+configs.
 Multi-sub-mix presentations are rejected as invalid, matching the v1.1
 spec (`num_sub_mixes` must be 1) and libiamf.
 

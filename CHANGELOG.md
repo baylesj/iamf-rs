@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+IAMF v2.0 object-based audio elements, handed out rather than rendered:
+
+- `iamf-obu`: `AudioElementConfig::ObjectBased` (`ObjectsConfig`); the
+  v2.0 `rendering_config` fields a v1.1 parser skipped are now parsed:
+  `binaural_filter_profile`, position parameter definitions
+  (`PositionParam`: polar, cart8, cart16 and their dual forms) and
+  `ElementGainOffset`, on `SubMixElement`; `BitReader` for their
+  bit-packed coordinates.
+- `iamf-dec`: profiles base-advanced, advanced-1 and advanced-2
+  (`ProfileSet::BASE_ADVANCED` .. `ADVANCED_2`, `V1`, `V2_OBJECTS`) in mix
+  filtering (objects only in v2 profiles, object-only mixes for
+  base-advanced, 18/28 element and channel budgets, head-locked binaural
+  allowed in v2); position parameter blocks (`position` module: step,
+  linear, Bezier, inter-linear, inter-Bezier; polar linear animations
+  along the great circle; defaults across gaps).
+- `StreamSettings::object_passthrough`: object elements' PCM (after the
+  element and output mix gains, the element gain offset and trimming) and
+  their positions per temporal unit come out of
+  `StreamDecoder::take_objects`, while the other elements of the mix are
+  rendered as before. Without it, mixes containing objects are not
+  selectable (rendering them, per the Open Audio Renderer, is not
+  implemented), so v1.1 behavior and output are unchanged.
+- The element gain offset is applied to rendered elements too.
+- Tests: `tools/iamfdec/tests/objects.rs` on the libiamf object vectors
+  (added to `fetch_vectors.sh`): object PCM equals the LPCM source through
+  the declared gains sample for sample; polar, cartesian and dual
+  trajectories follow the vectors' parameter blocks and defaults.
+
 Modernization and cleanup pass (no decoding behavior changes; the
 conformance suite is byte-identical).
 

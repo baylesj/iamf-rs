@@ -20,7 +20,7 @@ pub mod descriptors;
 pub use error::Error;
 pub use frames::AudioFrame;
 pub use obu::{Obu, ObuHeader, ObuIter, ObuType};
-pub use reader::ByteReader;
+pub use reader::{BitReader, ByteReader};
 
 /// Crate-wide result type over [`Error`].
 pub type Result<T> = core::result::Result<T, Error>;
