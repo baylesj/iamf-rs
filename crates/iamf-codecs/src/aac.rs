@@ -8,28 +8,6 @@ use symphonia_core::codecs::{CODEC_TYPE_AAC, CodecParameters, Decoder, DecoderOp
 
 use crate::symphonia_common::SymphoniaSubstreamDecoder;
 
-/// Sample rate table for AudioSpecificConfig samplingFrequencyIndex.
-const SAMPLE_RATES: [u32; 13] = [
-    96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350,
-];
-
-fn asc_sample_rate(asc: &[u8]) -> Option<u32> {
-    // audioObjectType (5 bits), samplingFrequencyIndex (4 bits).
-    let bits = u32::from_be_bytes([
-        *asc.first()?,
-        asc.get(1).copied().unwrap_or(0),
-        asc.get(2).copied().unwrap_or(0),
-        asc.get(3).copied().unwrap_or(0),
-    ]);
-    let index = (bits >> 23) & 0x0f;
-    if index == 0x0f {
-        // Explicit 24-bit frequency.
-        Some((bits >> 7) & 0xff_ffff)
-    } else {
-        SAMPLE_RATES.get(index as usize).copied()
-    }
-}
-
 /// Constructs AAC-LC substream decoders.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AacFactory;
@@ -54,7 +32,7 @@ impl CodecFactory for AacFactory {
         else {
             return Err(DecodeError::UnsupportedCodec);
         };
-        let sample_rate = asc_sample_rate(audio_specific_config)
+        let sample_rate = iamf_dec::profile::output_sample_rate(config)
             .ok_or(DecodeError::CorruptPacket("bad AudioSpecificConfig".into()))?;
         // Patch the channelConfiguration (4 bits after the frequency
         // index) to this substream's width, as with FLAC.

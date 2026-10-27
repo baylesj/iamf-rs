@@ -4,7 +4,8 @@
 //! consistency, duplicated parameter IDs, redundant sequence headers that
 //! disagree with the canonical one, mix presentations whose sub mix has
 //! no audio elements, §7.4.1 mix selection among several mix
-//! presentations, and binaural-input element passthrough.
+//! presentations, binaural-input element passthrough, and the default
+//! (IAMF v1.1) requested profiles.
 
 use iamf_codecs::DefaultFactory;
 use iamf_dec::DecodeError;
@@ -553,7 +554,7 @@ fn s16le(samples: &[i16]) -> Vec<u8> {
 fn selected_mix_id(stream: &[u8], selection: MixSelection, layout: SoundSystem) -> u32 {
     let descriptors = Descriptors::collect(stream).unwrap();
     let index = descriptors
-        .select_mix_presentation(selection, layout, ProfileSet::all())
+        .select_mix_presentation(selection, layout, ProfileSet::default())
         .unwrap();
     let id = descriptors.mix_presentations[index].mix_presentation_id;
     let mut settings = StreamSettings::default();
@@ -571,7 +572,7 @@ fn selected_mix_id(stream: &[u8], selection: MixSelection, layout: SoundSystem) 
 fn batch_decode(stream: &[u8], layout: SoundSystem) -> Vec<u8> {
     let descriptors = Descriptors::collect(stream).unwrap();
     let index = descriptors
-        .select_mix_presentation(MixSelection::Auto, layout, ProfileSet::all())
+        .select_mix_presentation(MixSelection::Auto, layout, ProfileSet::all_v1())
         .unwrap();
     let mut decoder =
         PresentationDecoder::new(&descriptors, index, layout, &DefaultFactory).unwrap();
@@ -665,8 +666,94 @@ fn binaural_input_mix_passthrough_and_skipping() {
         descriptors.select_mix_presentation(
             MixSelection::ByIndex(0),
             SoundSystem::B,
-            ProfileSet::all()
+            ProfileSet::all_v1()
         ),
         Err(DecodeError::UnsupportedProfile(_))
     ));
+}
+
+/// Mix presentation `id` with two sub mixes, each holding `element` and
+/// one stereo layout entry: allowed only by the IAMF v2.0 profiles.
+fn two_sub_mix_presentation(id: u32, element: u32) -> Vec<u8> {
+    let mut p = leb(id);
+    p.extend(leb(0)); // count_label
+    p.extend(leb(2)); // num_sub_mixes
+    for _ in 0..2 {
+        p.extend(leb(1)); // num_audio_elements
+        p.extend(leb(element));
+        p.push(0x00); // headphones_rendering_mode
+        p.extend(leb(0)); // rendering_config_extension_size
+        p.extend(mix_gain_param(100 + element));
+        p.extend(mix_gain_param(200 + id));
+        p.extend(leb(1)); // num_layouts
+        p.push(SS_A);
+        p.push(0x00); // loudness info_type
+        p.extend(0i16.to_be_bytes());
+        p.extend(0i16.to_be_bytes());
+    }
+    obu(2, &p)
+}
+
+/// A stereo stream (one unit) whose sequence header declares
+/// `profiles` (primary, additional) and carries the given mixes.
+fn stereo_stream(profiles: [u8; 2], mixes: &[Vec<u8>]) -> Vec<u8> {
+    let mut header = b"iamf".to_vec();
+    header.extend(profiles);
+    let mut stream = obu(31, &header);
+    stream.extend(lpcm_codec_config());
+    stream.extend(stereo_element());
+    for mix in mixes {
+        stream.extend(mix);
+    }
+    stream.extend(frame_obu(0, &stereo_frames()));
+    stream
+}
+
+/// Like iamf-tools `IamfDecoder::Settings`, the default requested profiles
+/// are the IAMF v1.1 ones: a mix only the v2.0 profiles allow (two sub
+/// mixes) is skipped in favor of a later v1.1 mix.
+#[test]
+fn default_profiles_skip_v2_only_mix() {
+    let stream = stereo_stream(
+        [0, 1],
+        &[two_sub_mix_presentation(5, 1), mix_presentation_of(8, &[1])],
+    );
+    assert_eq!(
+        selected_mix_id(&stream, MixSelection::Auto, SoundSystem::A),
+        8
+    );
+    assert_eq!(
+        decode_all(&stream, SoundSystem::A).unwrap(),
+        s16le(&stereo_frames())
+    );
+    // Requesting every profile makes the v2.0 mix selectable.
+    let descriptors = Descriptors::collect(&stream).unwrap();
+    assert_eq!(
+        descriptors
+            .select_mix_presentation(MixSelection::Auto, SoundSystem::A, ProfileSet::all())
+            .unwrap(),
+        0
+    );
+}
+
+/// A stream declaring only IAMF v2.0 profiles is refused by default, and
+/// decodes once the caller opts in to them.
+#[test]
+fn v2_only_sequence_header_needs_opt_in() {
+    // Base-Advanced primary, Advanced1 additional.
+    let stream = stereo_stream([3, 4], &[mix_presentation_of(8, &[1])]);
+    assert!(matches!(
+        decode_all(&stream, SoundSystem::A),
+        Err(DecodeError::UnsupportedProfile(_))
+    ));
+    let mut settings = StreamSettings::default();
+    settings.requested_profiles = ProfileSet::all();
+    let mut decoder =
+        StreamDecoder::new_from_descriptors(&stream, settings, &DefaultFactory).unwrap();
+    decoder.decode(&stream).unwrap();
+    let mut out = Vec::new();
+    while let Some(unit) = decoder.get_output_temporal_unit().unwrap() {
+        out.extend(unit);
+    }
+    assert_eq!(out, s16le(&stereo_frames()));
 }
