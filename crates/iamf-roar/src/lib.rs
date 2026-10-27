@@ -56,7 +56,9 @@ use aom_roar::{
 };
 
 use iamf_dec::DecodeError;
-use iamf_dec::layout::SoundSystem;
+use iamf_dec::layout::{
+    LOUDSPEAKER_LAYOUT_7_1_5_4, LOUDSPEAKER_LAYOUT_9_1_6, LOUDSPEAKER_LAYOUT_10_2_9_3, SoundSystem,
+};
 use iamf_dec::renderer::{ElementFrame, ElementLayout, MixConfig, MixRenderer, MixRendererFactory};
 
 /// ROAR's maximum block size (`MAX_SAMPLES_PER_CHANNEL`).
@@ -148,12 +150,13 @@ fn target_layout(target: SoundSystem) -> Option<Layout> {
         SoundSystem::Mono => Layout::Mono,
         SoundSystem::Ext916 => Layout::Layout916,
         SoundSystem::Binaural => Layout::Binaural,
+        SoundSystem::Ext7154 => Layout::Layout7154,
         _ => return None,
     })
 }
 
-/// The ROAR input layout for an IAMF `loudspeaker_layout` (0..=8, and
-/// binaural input as stereo).
+/// The ROAR input layout for an IAMF `loudspeaker_layout` (0..=8,
+/// expanded parent layouts, and binaural input as stereo).
 fn input_layout(loudspeaker_layout: u8) -> Option<Layout> {
     Some(match loudspeaker_layout {
         0 => Layout::Mono,
@@ -165,6 +168,9 @@ fn input_layout(loudspeaker_layout: u8) -> Option<Layout> {
         6 => Layout::Layout712,
         7 => Layout::Layout714,
         8 => Layout::Layout312,
+        LOUDSPEAKER_LAYOUT_9_1_6 => Layout::Layout916,
+        LOUDSPEAKER_LAYOUT_10_2_9_3 => Layout::LayoutA293,
+        LOUDSPEAKER_LAYOUT_7_1_5_4 => Layout::Layout7154,
         _ => return None,
     })
 }
@@ -510,6 +516,31 @@ mod tests {
                 target.channels(),
                 "{target:?}"
             );
+            let bs_target = SoundSystem::from_bitstream_sound_system(n).unwrap();
+            assert_eq!(
+                target_layout(bs_target).unwrap().channels(),
+                bs_target.channels(),
+                "{bs_target:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn expanded_parent_layouts_render() {
+        for (layout_id, in_channels) in [
+            (LOUDSPEAKER_LAYOUT_9_1_6, 16),
+            (LOUDSPEAKER_LAYOUT_10_2_9_3, 24),
+            (LOUDSPEAKER_LAYOUT_7_1_5_4, 17),
+        ] {
+            let planar = vec![vec![0.125f32; 64]; in_channels];
+            for target in [SoundSystem::A, SoundSystem::Ext7154, SoundSystem::Binaural] {
+                let mut mix =
+                    RoarMix::new(target, 64, 48000, &[channels_spec(1, layout_id)]).unwrap();
+                let out = mix.render_unit(&[unit(1, &planar)]).unwrap();
+                assert_eq!(out.len(), target.channels());
+                assert!(out.iter().all(|ch| ch.len() == 64));
+                assert!(out.iter().flatten().any(|&s| s.abs() > 1e-4));
+            }
         }
     }
 

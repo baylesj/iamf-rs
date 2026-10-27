@@ -47,6 +47,10 @@ const VECTORS: &[&str] = &[
     "test_000088",
     "test_000090",
     "test_000092",
+    "test_000611",
+    "test_000828",
+    "test_000829",
+    "test_000830",
 ];
 
 fn vector(name: &str) -> Option<Vec<u8>> {
@@ -171,6 +175,7 @@ fn has_scene_based(name: &str) -> bool {
             | "test_000065"
             | "test_000066"
             | "test_000086"
+            | "test_000611"
     )
 }
 
@@ -178,8 +183,8 @@ fn has_scene_based(name: &str) -> bool {
 fn roar_matches_builtin_on_loudspeakers() {
     for name in VECTORS {
         let data = require_vectors!(vector(name), format_args!("{name}"));
-        for ss in 0..=13u8 {
-            let target = SoundSystem::from_u8(ss).unwrap();
+        for ss in 0..=14u8 {
+            let target = SoundSystem::from_bitstream_sound_system(ss).unwrap();
             let channels = target.channels();
             let Some(builtin) = decode(&data, target, Renderer::Builtin) else {
                 continue;

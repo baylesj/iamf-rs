@@ -16,8 +16,8 @@ use crate::channels::{
 use crate::demixer::Demixer;
 use crate::element::SubstreamPcm;
 use crate::layout::{
-    LOUDSPEAKER_LAYOUT_BINAURAL, LOUDSPEAKER_LAYOUT_STEREO, SoundSystem, loudspeaker_info,
-    loudspeaker_sound_system,
+    LOUDSPEAKER_LAYOUT_BINAURAL, LOUDSPEAKER_LAYOUT_EXPANDED, LOUDSPEAKER_LAYOUT_STEREO,
+    SoundSystem, expanded_loudspeaker_info, loudspeaker_info, loudspeaker_sound_system,
 };
 use crate::matrices::{HoaOrder, MatrixLayout};
 use crate::params::{ReconGainLayers, q78_db_to_linear};
@@ -74,6 +74,9 @@ pub struct ChannelReconstructor {
     /// The element carries binaural input, reconstructed as stereo, which
     /// renderers pass through instead of rendering.
     binaural_input: bool,
+    /// For expanded loudspeaker layouts (`loudspeaker_layout == 15`), the
+    /// parent channel count and decode-order → parent-channel scatter map.
+    expanded_scatter: Option<(usize, &'static [usize])>,
 }
 
 impl ChannelReconstructor {
@@ -120,11 +123,58 @@ impl ChannelReconstructor {
             rec.binaural_input = true;
             return Ok(rec);
         }
-        for layer in layers {
-            if layer.expanded_loudspeaker_layout.is_some() || layer.loudspeaker_layout > 8 {
-                return Err(DecodeError::Unimplemented(
-                    "expanded/reserved loudspeaker layouts",
+        // Expanded loudspeaker layouts (§3.6.2.2): must be a single layer
+        // (`loudspeaker_layout == 15`), reconstructed into its parent
+        // layout by scattering decoded channels into a zero-filled parent
+        // channel buffer.
+        if layers.iter().any(|l| {
+            l.loudspeaker_layout == LOUDSPEAKER_LAYOUT_EXPANDED
+                || l.expanded_loudspeaker_layout.is_some()
+        }) {
+            let [layer] = layers else {
+                return Err(DecodeError::InvalidDescriptors(
+                    "an expanded loudspeaker layer must be the only layer".into(),
                 ));
+            };
+            if layer.loudspeaker_layout != LOUDSPEAKER_LAYOUT_EXPANDED {
+                return Err(DecodeError::InvalidDescriptors(
+                    "expanded_loudspeaker_layout on non-expanded layer".into(),
+                ));
+            }
+            let Some(expanded) = layer.expanded_loudspeaker_layout else {
+                return Err(DecodeError::InvalidDescriptors(
+                    "missing expanded_loudspeaker_layout".into(),
+                ));
+            };
+            let Some(info) = expanded_loudspeaker_info(expanded) else {
+                return Err(DecodeError::Unimplemented(
+                    "reserved expanded loudspeaker layout",
+                ));
+            };
+            if layer.substream_count != info.substreams
+                || layer.coupled_substream_count != info.coupled_substreams
+            {
+                return Err(DecodeError::InvalidDescriptors(format!(
+                    "expanded layout {expanded} expects {}/{} substreams/coupled, got {}/{}",
+                    info.substreams,
+                    info.coupled_substreams,
+                    layer.substream_count,
+                    layer.coupled_substream_count
+                )));
+            }
+            return Ok(ChannelReconstructor {
+                demixer: Demixer::new(Vec::new(), Vec::new(), Vec::new()),
+                layer: 0,
+                layout: info.parent_speaker_layout,
+                input_channels: info.scatter_map.len(),
+                matrix: info.parent_matrix,
+                binaural_input: false,
+                expanded_scatter: Some((info.parent_channels, info.scatter_map)),
+            });
+        }
+        for layer in layers {
+            if layer.loudspeaker_layout > 8 {
+                return Err(DecodeError::Unimplemented("reserved loudspeaker layouts"));
             }
         }
 
@@ -202,6 +252,7 @@ impl ChannelReconstructor {
             input_channels,
             matrix,
             binaural_input: false,
+            expanded_scatter: None,
         })
     }
 
@@ -262,6 +313,14 @@ impl ChannelReconstructor {
                 self.input_channels,
                 planes.len()
             )));
+        }
+        if let Some((parent_channels, scatter_map)) = self.expanded_scatter {
+            let frames = planes.first().map_or(0, Vec::len);
+            let mut out = vec![vec![0.0f32; frames]; parent_channels];
+            for (plane, &dst) in planes[..self.input_channels].iter().zip(scatter_map) {
+                out[dst].clone_from(plane);
+            }
+            return Ok(out);
         }
         self.demixer.demix(&planes[..self.input_channels])
     }
@@ -536,5 +595,107 @@ mod tests {
             ),
             Err(DecodeError::InvalidDescriptors(_))
         ));
+    }
+
+    fn expanded_layer(expanded: Option<u8>, substreams: u8, coupled: u8) -> ChannelAudioLayer {
+        ChannelAudioLayer {
+            loudspeaker_layout: LOUDSPEAKER_LAYOUT_EXPANDED,
+            substream_count: substreams,
+            coupled_substream_count: coupled,
+            recon_gain_is_present: false,
+            output_gain: None,
+            expanded_loudspeaker_layout: expanded,
+        }
+    }
+
+    #[test]
+    fn expanded_layouts_all_20_variants_scatter_and_render() {
+        for expanded in 0..=19u8 {
+            let info = expanded_loudspeaker_info(expanded).unwrap();
+            let l = expanded_layer(Some(expanded), info.substreams, info.coupled_substreams);
+            let mut rec = ChannelReconstructor::new(&[l], SoundSystem::A).unwrap();
+            let in_ch = usize::from(info.substreams) + usize::from(info.coupled_substreams);
+            assert_eq!(rec.input_channels(), in_ch, "expanded {expanded}");
+            assert_eq!(
+                rec.layout(),
+                info.parent_speaker_layout,
+                "expanded {expanded}"
+            );
+            assert_eq!(rec.matrix(), info.parent_matrix, "expanded {expanded}");
+            assert!(
+                crate::matrices::M2M_TABLE
+                    .iter()
+                    .any(|m| m.input == rec.matrix() && m.output == SoundSystem::A.matrix_layout()),
+                "expanded {expanded} missing M2M matrix to stereo"
+            );
+
+            // Feed distinct values (ch + 1) per input channel and verify scatter.
+            let substreams: Vec<Vec<f32>> = (0..in_ch).map(|c| vec![(c + 1) as f32; 4]).collect();
+            let out = rec.process_frame(&substreams).unwrap();
+            assert_eq!(out.len(), info.parent_channels, "expanded {expanded}");
+            for (slot, plane) in out.iter().enumerate() {
+                let expected = info
+                    .scatter_map
+                    .iter()
+                    .position(|&dst| dst == slot)
+                    .map_or(0.0, |c| (c + 1) as f32);
+                assert_eq!(
+                    plane.as_slice(),
+                    &[expected; 4],
+                    "expanded {expanded} slot {slot}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn expanded_layout_validation_errors() {
+        // Missing expanded_loudspeaker_layout byte.
+        assert!(matches!(
+            ChannelReconstructor::new(&[expanded_layer(None, 1, 0)], SoundSystem::A),
+            Err(DecodeError::InvalidDescriptors(_))
+        ));
+        // Reserved expanded_loudspeaker_layout (20..=255).
+        assert!(matches!(
+            ChannelReconstructor::new(&[expanded_layer(Some(20), 1, 0)], SoundSystem::A),
+            Err(DecodeError::Unimplemented(_))
+        ));
+        // §3.6.2: expanded layout only allowed when num_layers == 1.
+        assert!(matches!(
+            ChannelReconstructor::new(
+                &[layer(1, 1, 1), expanded_layer(Some(0), 1, 0)],
+                SoundSystem::A
+            ),
+            Err(DecodeError::InvalidDescriptors(_))
+        ));
+        // Wrong substream / coupled counts for LFE (expects 1 substream, 0 coupled).
+        assert!(matches!(
+            ChannelReconstructor::new(&[expanded_layer(Some(0), 2, 0)], SoundSystem::A),
+            Err(DecodeError::InvalidDescriptors(_))
+        ));
+        assert!(matches!(
+            ChannelReconstructor::new(&[expanded_layer(Some(0), 1, 1)], SoundSystem::A),
+            Err(DecodeError::InvalidDescriptors(_))
+        ));
+    }
+
+    #[cfg(feature = "binaural")]
+    #[test]
+    fn expanded_parent_layouts_have_binaural_speaker_positions() {
+        for expanded in 0..=19u8 {
+            let info = expanded_loudspeaker_info(expanded).unwrap();
+            let rdr = crate::binaural::BinauralRenderer::new(
+                crate::binaural::BinauralInput::Speakers {
+                    loudspeaker_layout: info.parent_speaker_layout,
+                },
+                64,
+                48_000,
+            );
+            assert!(
+                rdr.is_ok(),
+                "expanded {expanded} parent layout {} failed binaural init: {rdr:?}",
+                info.parent_speaker_layout
+            );
+        }
     }
 }

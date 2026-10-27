@@ -25,6 +25,7 @@ DEFAULT_VECTORS=(
   test_000032 test_000033 test_000036 test_000038 test_000039 test_000042
   test_000048 test_000065 test_000066 test_000069 test_000070 test_000082
   test_000086 test_000088 test_000073 test_000090 test_000092 test_000079
+  test_000611 test_000828 test_000829 test_000830
 )
 
 # IAMF v2.0 (Base-Advanced / Advanced-1 profile) vectors, all LPCM unless

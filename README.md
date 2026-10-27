@@ -63,17 +63,20 @@ pure-Rust Opus decoder. That decoder is slow on real content (see
 
 ## Features
 
-- **Profiles:** IAMF v1.1 simple and base profiles. Profile checks follow the
-  iamf-tools `ProfileFilter` rules: requested profile sets, sequence header
-  checks, and per-mix limits.
+- **Profiles:** IAMF v1.1 simple, base, and base-enhanced profiles, plus IAMF
+  v2.0 profile filtering and expanded loudspeaker layouts. Profile checks
+  follow the iamf-tools `ProfileFilter` rules: requested profile sets,
+  sequence header checks, and per-mix limits.
 - **Codecs:** Opus, LPCM, FLAC, and AAC-LC. Opus uses a pure-Rust decoder, or
   libopus through the `opus-ffi` feature.
 - **Channel-based audio:** Scalable channel audio with demixing, recon gain,
-  output gain, and layer selection.
+  output gain, and layer selection, plus expanded loudspeaker layouts (`0..=19`,
+  covering `5.1.4`, `7.1.4`, `9.1.6`, `10.2.9.3` / 22.2, and `7.1.5.4` channel
+  subsets and full layouts).
 - **Scene-based audio:** Ambisonics in mono and projection modes, orders 1
   to 4.
-- **Loudspeaker rendering:** All 14 sound systems, with the libiamf v1.1 gain
-  matrices.
+- **Loudspeaker rendering:** All 15 sound systems (including `7.1.5.4`), with
+  the libiamf / OAR EAR gain matrices.
 - **Binaural rendering:** Headphone output (layout 14) at any supported sample
   rate. This renderer is a native port of
   [google/obr](https://github.com/google/obr).
@@ -103,8 +106,6 @@ pure-Rust Opus decoder. That decoder is slow on real content (see
 
 ## Limitations
 
-- Expanded loudspeaker layouts (base-enhanced profile) are not supported. The
-  profile filter recognizes them, but the decoder cannot decode them.
 - The decoder does not resample the output.
 - The decoder rejects mix presentations with more than one sub-mix as invalid.
   The v1.1 spec requires `num_sub_mixes` to be 1, and libiamf does the same.

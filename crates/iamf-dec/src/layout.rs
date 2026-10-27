@@ -48,6 +48,8 @@ pub enum SoundSystem {
     Ext916,
     /// Binaural headphone rendering (layout 14).
     Binaural,
+    /// Extended 7.1.5.4 layout (IAMF v2.0 `sound_system == 14`).
+    Ext7154,
 }
 
 impl TryFrom<u8> for SoundSystem {
@@ -81,6 +83,16 @@ impl SoundSystem {
         })
     }
 
+    /// Maps an IAMF bitstream `sound_system` value (§3.7.1, 0..=14) to a
+    /// [`SoundSystem`], where 14 is `7.1.5.4` ([`SoundSystem::Ext7154`]).
+    pub fn from_bitstream_sound_system(value: u8) -> Option<Self> {
+        match value {
+            0..=13 => Self::from_u8(value),
+            14 => Some(SoundSystem::Ext7154),
+            _ => None,
+        }
+    }
+
     /// Number of output audio channels for this sound system.
     pub fn channels(&self) -> usize {
         match self {
@@ -93,6 +105,7 @@ impl SoundSystem {
             SoundSystem::F | SoundSystem::J => 12,
             SoundSystem::G => 14,
             SoundSystem::Ext916 => 16,
+            SoundSystem::Ext7154 => 17,
             SoundSystem::H => 24,
         }
     }
@@ -115,6 +128,7 @@ impl SoundSystem {
             SoundSystem::Mono => MatrixLayout::Mono,
             SoundSystem::Ext916 => MatrixLayout::Iamf916,
             SoundSystem::Binaural => MatrixLayout::Binaural,
+            SoundSystem::Ext7154 => MatrixLayout::Iamf7154,
         }
     }
 }
@@ -155,6 +169,238 @@ pub(crate) const LOUDSPEAKER_LAYOUT_STEREO: u8 = 1;
 /// §3.7.4 `loudspeaker_layout` of a BINAURAL channel layer: pre-rendered
 /// headphone L/R signals.
 pub(crate) const LOUDSPEAKER_LAYOUT_BINAURAL: u8 = 9;
+
+/// §3.7.4 `loudspeaker_layout` indicating an `expanded_loudspeaker_layout` follows.
+pub const LOUDSPEAKER_LAYOUT_EXPANDED: u8 = 15;
+
+/// Internal speaker-layout ID for the 9.1.6 parent layout of expanded layouts 8..=12.
+pub const LOUDSPEAKER_LAYOUT_9_1_6: u8 = 16;
+
+/// Internal speaker-layout ID for the 10.2.9.3 (22.2) parent layout of expanded layouts 13..=15.
+pub const LOUDSPEAKER_LAYOUT_10_2_9_3: u8 = 17;
+
+/// Internal speaker-layout ID for the 7.1.5.4 parent layout of expanded layouts 16..=19.
+pub const LOUDSPEAKER_LAYOUT_7_1_5_4: u8 = 18;
+
+/// Static info for an expanded channel-based element (`loudspeaker_layout == 15`,
+/// `expanded_loudspeaker_layout` 0..=19, IAMF §3.6.2.2).
+///
+/// Each expanded layout is either a full parent layout (`9.1.6`, `10.2.9.3`,
+/// `7.1.5.4`) or a channel subset of a parent layout (`5.1.4`, `7.1.4`,
+/// `9.1.6`, `10.2.9.3`, `7.1.5.4`). Decoded substream channels (coupled
+/// pairs first, then uncoupled mono channels) are scattered into a
+/// zero-filled buffer of `parent_channels` planes at `scatter_map[i]`,
+/// producing a full parent-layout buffer ready for the parent's EAR matrix
+/// or virtual-loudspeaker binaural renderer.
+#[derive(Debug)]
+pub struct ExpandedLoudspeakerInfo {
+    /// Total channels in the parent layout.
+    pub parent_channels: usize,
+    /// Expected `substream_count` in the layer descriptor.
+    pub substreams: u8,
+    /// Expected `coupled_substream_count` in the layer descriptor.
+    pub coupled_substreams: u8,
+    /// Parent speaker layout ID (`4` = 5.1.4, `7` = 7.1.4,
+    /// [`LOUDSPEAKER_LAYOUT_9_1_6`], [`LOUDSPEAKER_LAYOUT_10_2_9_3`], or
+    /// [`LOUDSPEAKER_LAYOUT_7_1_5_4`]).
+    pub parent_speaker_layout: u8,
+    /// Parent layout key into the rendering matrix tables.
+    pub parent_matrix: MatrixLayout,
+    /// Destination channel index in the parent layout for each decoded
+    /// input channel (in decode order: coupled pairs first, then mono).
+    pub scatter_map: &'static [usize],
+}
+
+/// Expanded loudspeaker layouts 0..=19 (IAMF v1.1 Base-Enhanced 0..=12 and
+/// IAMF v2.0 13..=19).
+pub fn expanded_loudspeaker_info(expanded: u8) -> Option<&'static ExpandedLoudspeakerInfo> {
+    static INFOS: [ExpandedLoudspeakerInfo; 20] = [
+        // 0: LFE (in 7.1.4)
+        ExpandedLoudspeakerInfo {
+            parent_channels: 12,
+            substreams: 1,
+            coupled_substreams: 0,
+            parent_speaker_layout: 7,
+            parent_matrix: MatrixLayout::Iamf714,
+            scatter_map: &[3],
+        },
+        // 1: Stereo-S (Ls5, Rs5 in 5.1.4)
+        ExpandedLoudspeakerInfo {
+            parent_channels: 10,
+            substreams: 1,
+            coupled_substreams: 1,
+            parent_speaker_layout: 4,
+            parent_matrix: MatrixLayout::Iamf514,
+            scatter_map: &[4, 5],
+        },
+        // 2: Stereo-SS (Lss7, Rss7 in 7.1.4)
+        ExpandedLoudspeakerInfo {
+            parent_channels: 12,
+            substreams: 1,
+            coupled_substreams: 1,
+            parent_speaker_layout: 7,
+            parent_matrix: MatrixLayout::Iamf714,
+            scatter_map: &[4, 5],
+        },
+        // 3: Stereo-RS (Lrs7, Rrs7 in 7.1.4)
+        ExpandedLoudspeakerInfo {
+            parent_channels: 12,
+            substreams: 1,
+            coupled_substreams: 1,
+            parent_speaker_layout: 7,
+            parent_matrix: MatrixLayout::Iamf714,
+            scatter_map: &[6, 7],
+        },
+        // 4: Stereo-TF (Ltf4, Rtf4 in 7.1.4)
+        ExpandedLoudspeakerInfo {
+            parent_channels: 12,
+            substreams: 1,
+            coupled_substreams: 1,
+            parent_speaker_layout: 7,
+            parent_matrix: MatrixLayout::Iamf714,
+            scatter_map: &[8, 9],
+        },
+        // 5: Stereo-TB (Ltb4, Rtb4 in 7.1.4)
+        ExpandedLoudspeakerInfo {
+            parent_channels: 12,
+            substreams: 1,
+            coupled_substreams: 1,
+            parent_speaker_layout: 7,
+            parent_matrix: MatrixLayout::Iamf714,
+            scatter_map: &[10, 11],
+        },
+        // 6: Top-4ch (Ltf4, Rtf4, Ltb4, Rtb4 in 7.1.4)
+        ExpandedLoudspeakerInfo {
+            parent_channels: 12,
+            substreams: 2,
+            coupled_substreams: 2,
+            parent_speaker_layout: 7,
+            parent_matrix: MatrixLayout::Iamf714,
+            scatter_map: &[8, 9, 10, 11],
+        },
+        // 7: 3.0 (L7, R7, C in 7.1.4)
+        ExpandedLoudspeakerInfo {
+            parent_channels: 12,
+            substreams: 2,
+            coupled_substreams: 1,
+            parent_speaker_layout: 7,
+            parent_matrix: MatrixLayout::Iamf714,
+            scatter_map: &[0, 1, 2],
+        },
+        // 8: 9.1.6 (full 16-ch in 9.1.6: [FL, FR, FC, LFE, BL, BR, FLc, FRc, SiL, SiR, TpFL, TpFR, TpBL, TpBR, TpSiL, TpSiR])
+        ExpandedLoudspeakerInfo {
+            parent_channels: 16,
+            substreams: 9,
+            coupled_substreams: 7,
+            parent_speaker_layout: LOUDSPEAKER_LAYOUT_9_1_6,
+            parent_matrix: MatrixLayout::Iamf916,
+            scatter_map: &[6, 7, 0, 1, 8, 9, 4, 5, 10, 11, 14, 15, 12, 13, 2, 3],
+        },
+        // 9: Stereo-F (FL, FR in 9.1.6)
+        ExpandedLoudspeakerInfo {
+            parent_channels: 16,
+            substreams: 1,
+            coupled_substreams: 1,
+            parent_speaker_layout: LOUDSPEAKER_LAYOUT_9_1_6,
+            parent_matrix: MatrixLayout::Iamf916,
+            scatter_map: &[0, 1],
+        },
+        // 10: Stereo-Si (SiL, SiR in 9.1.6)
+        ExpandedLoudspeakerInfo {
+            parent_channels: 16,
+            substreams: 1,
+            coupled_substreams: 1,
+            parent_speaker_layout: LOUDSPEAKER_LAYOUT_9_1_6,
+            parent_matrix: MatrixLayout::Iamf916,
+            scatter_map: &[8, 9],
+        },
+        // 11: Stereo-TpSi (TpSiL, TpSiR in 9.1.6)
+        ExpandedLoudspeakerInfo {
+            parent_channels: 16,
+            substreams: 1,
+            coupled_substreams: 1,
+            parent_speaker_layout: LOUDSPEAKER_LAYOUT_9_1_6,
+            parent_matrix: MatrixLayout::Iamf916,
+            scatter_map: &[14, 15],
+        },
+        // 12: Top-6ch (TpFL, TpFR, TpSiL, TpSiR, TpBL, TpBR in 9.1.6)
+        ExpandedLoudspeakerInfo {
+            parent_channels: 16,
+            substreams: 3,
+            coupled_substreams: 3,
+            parent_speaker_layout: LOUDSPEAKER_LAYOUT_9_1_6,
+            parent_matrix: MatrixLayout::Iamf916,
+            scatter_map: &[10, 11, 14, 15, 12, 13],
+        },
+        // 13: 10.2.9.3 (full 24-ch in BS.2051-H)
+        ExpandedLoudspeakerInfo {
+            parent_channels: 24,
+            substreams: 16,
+            coupled_substreams: 8,
+            parent_speaker_layout: LOUDSPEAKER_LAYOUT_10_2_9_3,
+            parent_matrix: MatrixLayout::Bs2051H,
+            scatter_map: &[
+                6, 7, 0, 1, 10, 11, 4, 5, 12, 13, 18, 19, 16, 17, 22, 23, 2, 8, 14, 15, 20, 21, 3,
+                9,
+            ],
+        },
+        // 14: LFE-Pair (LFE1, LFE2 in 10.2.9.3)
+        ExpandedLoudspeakerInfo {
+            parent_channels: 24,
+            substreams: 2,
+            coupled_substreams: 0,
+            parent_speaker_layout: LOUDSPEAKER_LAYOUT_10_2_9_3,
+            parent_matrix: MatrixLayout::Bs2051H,
+            scatter_map: &[3, 9],
+        },
+        // 15: Bottom-3ch (BtFL, BtFR, BtFC in 10.2.9.3)
+        ExpandedLoudspeakerInfo {
+            parent_channels: 24,
+            substreams: 2,
+            coupled_substreams: 1,
+            parent_speaker_layout: LOUDSPEAKER_LAYOUT_10_2_9_3,
+            parent_matrix: MatrixLayout::Bs2051H,
+            scatter_map: &[22, 23, 21],
+        },
+        // 16: 7.1.5.4 (full 17-ch in 7.1.5.4: [L, R, C, LFE, Lss, Rss, Lrs, Rrs, Ltf, Rtf, TpC, Ltb, Rtb, BtFL, BtFR, BtBL, BtBR])
+        ExpandedLoudspeakerInfo {
+            parent_channels: 17,
+            substreams: 10,
+            coupled_substreams: 7,
+            parent_speaker_layout: LOUDSPEAKER_LAYOUT_7_1_5_4,
+            parent_matrix: MatrixLayout::Iamf7154,
+            scatter_map: &[0, 1, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 2, 10, 3],
+        },
+        // 17: Bottom-4ch (BtFL, BtFR, BtBL, BtBR in 7.1.5.4)
+        ExpandedLoudspeakerInfo {
+            parent_channels: 17,
+            substreams: 2,
+            coupled_substreams: 2,
+            parent_speaker_layout: LOUDSPEAKER_LAYOUT_7_1_5_4,
+            parent_matrix: MatrixLayout::Iamf7154,
+            scatter_map: &[13, 14, 15, 16],
+        },
+        // 18: Top-1ch (TpC in 7.1.5.4)
+        ExpandedLoudspeakerInfo {
+            parent_channels: 17,
+            substreams: 1,
+            coupled_substreams: 0,
+            parent_speaker_layout: LOUDSPEAKER_LAYOUT_7_1_5_4,
+            parent_matrix: MatrixLayout::Iamf7154,
+            scatter_map: &[10],
+        },
+        // 19: Top-5ch (Ltf4, Rtf4, Ltb4, Rtb4, TpC in 7.1.5.4)
+        ExpandedLoudspeakerInfo {
+            parent_channels: 17,
+            substreams: 3,
+            coupled_substreams: 2,
+            parent_speaker_layout: LOUDSPEAKER_LAYOUT_7_1_5_4,
+            parent_matrix: MatrixLayout::Iamf7154,
+            scatter_map: &[8, 9, 11, 12, 10],
+        },
+    ];
+    INFOS.get(usize::from(expanded))
+}
 
 /// Whether `config` is a scalable channel config carrying binaural input
 /// (any layer with loudspeaker_layout BINAURAL; §3.7.4 requires it to be

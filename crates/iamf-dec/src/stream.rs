@@ -385,7 +385,7 @@ pub(crate) fn select_mix_index(
             m.sub_mixes.iter().any(|sm| {
                 sm.layouts.iter().any(|(layout, _)| match layout {
                     Layout::LoudspeakersSsConvention { sound_system } => {
-                        SoundSystem::from_u8(*sound_system) == Some(other)
+                        SoundSystem::from_bitstream_sound_system(*sound_system) == Some(other)
                     }
                     Layout::Binaural | Layout::Reserved { .. } => false,
                 })
@@ -524,7 +524,7 @@ fn content_loudness_db(sub_mix: &SubMix, target: SoundSystem) -> Option<f32> {
     use iamf_obu::descriptors::Layout;
     let matches = |layout: &Layout| match layout {
         Layout::LoudspeakersSsConvention { sound_system } => {
-            SoundSystem::from_u8(*sound_system) == Some(target)
+            SoundSystem::from_bitstream_sound_system(*sound_system) == Some(target)
         }
         Layout::Binaural => target == SoundSystem::Binaural,
         Layout::Reserved { .. } => false,

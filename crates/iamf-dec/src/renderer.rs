@@ -37,11 +37,15 @@ use crate::layout::SoundSystem;
 pub enum ElementLayout {
     /// Channel-based: the IAMF `loudspeaker_layout` (§3.6.2) of the layer
     /// the decoder reconstructed, with planes in that layout's channel
-    /// order. The value 9 (BINAURAL) means pre-rendered binaural input
-    /// (two planes, left and right) that should be passed through, not
-    /// rendered.
+    /// order. Expanded layouts (`loudspeaker_layout == 15`) are
+    /// reconstructed into their parent layout (`4` = 5.1.4, `7` = 7.1.4,
+    /// [`crate::layout::LOUDSPEAKER_LAYOUT_9_1_6`],
+    /// [`crate::layout::LOUDSPEAKER_LAYOUT_10_2_9_3`], or
+    /// [`crate::layout::LOUDSPEAKER_LAYOUT_7_1_5_4`]). The value 9
+    /// (BINAURAL) means pre-rendered binaural input (two planes, left and
+    /// right) that should be passed through, not rendered.
     Channels {
-        /// IAMF `loudspeaker_layout` value.
+        /// IAMF `loudspeaker_layout` (or expanded parent layout ID).
         loudspeaker_layout: u8,
     },
     /// Scene-based: full-order ambisonics, `(order + 1)^2` planes in ACN
