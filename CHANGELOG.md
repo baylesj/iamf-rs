@@ -99,6 +99,51 @@ decode unchanged):
   and unmatched `ById` skip them; `ByIndex` reports
   `DecodeError::UnsupportedProfile`).
 
+IAMF v2.0 syntax parsing in `iamf-obu`, following the v2.0.0 spec and
+iamf-tools v3.0.0. The decoder still renders v1.1 profiles only: profile
+filtering drops mixes that use object-based or reserved audio elements,
+and conformant v1.1 streams decode unchanged.
+
+- New `metadata` module: Metadata OBU (type 24) payloads (ITU-T T.35,
+  IAMF tags; reserved `metadata_type`s kept opaque).
+- New `position` module: position parameter definitions and parameter
+  block payloads (polar, cartesian 8/16-bit, and their dual variants),
+  with the step, linear, bezier, inter-linear and inter-bezier animation
+  types. Azimuth and elevation are clipped as in iamf-tools.
+- Object-based audio elements (`AudioElementConfig::ObjectBased`,
+  element type 2). As in iamf-tools, they must have exactly one substream
+  and no parameters.
+- Reserved audio element types 3..=7 parse to
+  `AudioElementConfig::Extension` (previously an `InvalidDescriptor`
+  error).
+- The rendering-config extension: position parameter definitions,
+  `ElementGainOffsetConfig` and `BinauralFilterProfile`. An extension
+  that fails to parse is skipped as opaque, but one whose content
+  overruns `rendering_config_extension_size` is now an error (it used to
+  be skipped unread).
+- `MixPresentationOptionalFields`, read when the OBU header sets
+  `optional_fields_flag` (`MixPresentation::parse_with_optional_fields`);
+  such a mix presentation must carry the tags block.
+- Live loudness (`LoudnessInfo::LIVE`, `is_live`) and the sized
+  `layout_extension` region (previously skipped).
+- `ProfileVersion` (adds Base-Advanced, Advanced-1, Advanced-2),
+  `ExpandedLayout` (adds the 10.2.9.3 and 7.1.5.4 families), and
+  `HeadphonesRenderingMode` (world-locked and head-locked binaural).
+- Breaking and behavior changes:
+  - Reserved OBU types 25..=30 no longer return
+    `Error::ReservedObuType`; they parse as the new
+    `ObuType::Reserved(u8)` with an opaque payload, as v2.0 requires.
+  - `AudioElementConfig` is `#[non_exhaustive]` and gains the
+    `ObjectBased` and `Extension` variants.
+  - New public fields break struct literals:
+    `ObuHeader::type_specific_flag`;
+    `SubMixElement::binaural_filter_profile`, `position_params`,
+    `element_gain_offset`; `MixPresentation::optional_fields`;
+    `LoudnessInfo::layout_extension`.
+  - The OBU header's trimming fields are read only for audio frames. On
+    other OBU types the bit is v2.0's `type_specific_flag`
+    (`ObuHeader::optional_fields_flag`, `ObuHeader::is_key_frame`).
+
 ## 0.2.0 — 2026-08-25
 
 Spec-conformance and Chromium-integration hardening. The C ABI settings

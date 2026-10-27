@@ -22,6 +22,10 @@ pub enum Error {
         offset: usize,
     },
     /// A reserved OBU type (25..=30) was encountered.
+    ///
+    /// No longer produced by the OBU parser: IAMF v2.0 requires reserved
+    /// OBU types to be ignored, so they surface as
+    /// [`crate::ObuType::Reserved`]. Kept for API compatibility.
     ReservedObuType {
         /// The reserved type value.
         obu_type: u8,

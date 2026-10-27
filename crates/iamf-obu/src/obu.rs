@@ -20,15 +20,18 @@ pub enum ObuType {
     AudioFrame,
     /// Audio frame with an implicit substream ID of 0..=17 (types 6..=23).
     AudioFrameId(u8),
-    /// Metadata OBU (type 24, added after IAMF v1.1).
+    /// Metadata OBU (type 24, IAMF v2.0; see [`crate::metadata`]).
     Metadata,
     /// IA sequence header (type 31, §3.5).
     SequenceHeader,
+    /// A reserved OBU type (25..=30). IAMF v2.0 requires decoders to
+    /// ignore these (forward compatibility); the payload is opaque.
+    Reserved(u8),
 }
 
 impl ObuType {
-    fn from_raw(raw: u8, offset: usize) -> Result<Self> {
-        Ok(match raw {
+    fn from_raw(raw: u8) -> Self {
+        match raw {
             0 => ObuType::CodecConfig,
             1 => ObuType::AudioElement,
             2 => ObuType::MixPresentation,
@@ -37,15 +40,10 @@ impl ObuType {
             5 => ObuType::AudioFrame,
             6..=23 => ObuType::AudioFrameId(raw - 6),
             24 => ObuType::Metadata,
-            25..=30 => {
-                return Err(Error::ReservedObuType {
-                    obu_type: raw,
-                    offset,
-                });
-            }
             31 => ObuType::SequenceHeader,
-            _ => unreachable!("obu_type is a 5-bit field"),
-        })
+            // 25..=30; `raw` is a 5-bit field so nothing else reaches here.
+            _ => ObuType::Reserved(raw),
+        }
     }
 
     /// True for OBUs carrying coded audio (types 5..=23).
@@ -54,17 +52,23 @@ impl ObuType {
     }
 }
 
-/// Parsed OBU header per IAMF v1.1 §3.2.
+/// Parsed OBU header per IAMF §3.2.
 ///
-/// NOTE: post-v1.1 drafts (base-advanced/advanced profiles) reinterpret
-/// the optional-field bits for some OBU types; revisit when targeting
-/// those profiles.
+/// IAMF v2.0 renames v1.1's `obu_trimming_status_flag` to
+/// `type_specific_flag`: it signals trimming only for audio frames,
+/// `optional_fields_flag` for mix presentations and `is_not_key_frame` for
+/// temporal delimiters. Valid v1.1 streams only set it on audio frames, so
+/// this is bit-exact for them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObuHeader {
     /// The OBU's type (5-bit obu_type field).
     pub obu_type: ObuType,
     /// Whether this OBU is a redundant copy of an earlier descriptor.
     pub redundant_copy: bool,
+    /// The raw `type_specific_flag` bit (v1.1 `obu_trimming_status_flag`).
+    /// Prefer the typed accessors [`ObuHeader::optional_fields_flag`] and
+    /// [`ObuHeader::is_key_frame`].
+    pub type_specific_flag: bool,
     /// Trailing samples to trim; nonzero only when
     /// obu_trimming_status_flag was set (audio frames only).
     pub num_samples_to_trim_at_end: u32,
@@ -72,6 +76,20 @@ pub struct ObuHeader {
     pub num_samples_to_trim_at_start: u32,
     /// Size of the (skipped) extension header region, when present.
     pub extension_header_size: u32,
+}
+
+impl ObuHeader {
+    /// For mix presentation OBUs: whether `MixPresentationOptionalFields`
+    /// follow the sub-mixes (IAMF v2.0). False for every other OBU type.
+    pub fn optional_fields_flag(&self) -> bool {
+        self.obu_type == ObuType::MixPresentation && self.type_specific_flag
+    }
+
+    /// For temporal delimiter OBUs: whether the temporal unit is a key frame
+    /// (`!is_not_key_frame`, IAMF v2.0). True for every other OBU type.
+    pub fn is_key_frame(&self) -> bool {
+        !(self.obu_type == ObuType::TemporalDelimiter && self.type_specific_flag)
+    }
 }
 
 /// One OBU: its header plus a borrowed view of its payload bytes.
@@ -90,9 +108,10 @@ impl<'a> Obu<'a> {
     pub fn parse(reader: &mut ByteReader<'a>) -> Result<Self> {
         let header_offset = reader.position();
         let byte = reader.read_u8()?;
-        let obu_type = ObuType::from_raw(byte >> 3, header_offset)?;
+        let obu_type = ObuType::from_raw(byte >> 3);
         let redundant_copy = byte & 0x04 != 0;
-        let trimming_status_flag = byte & 0x02 != 0;
+        let type_specific_flag = byte & 0x02 != 0;
+        let trimming_status_flag = type_specific_flag && obu_type.is_audio_frame();
         let extension_flag = byte & 0x01 != 0;
 
         let obu_size = reader.read_leb128()? as usize;
@@ -120,6 +139,7 @@ impl<'a> Obu<'a> {
             header: ObuHeader {
                 obu_type,
                 redundant_copy,
+                type_specific_flag,
                 num_samples_to_trim_at_end: trim_end,
                 num_samples_to_trim_at_start: trim_start,
                 extension_header_size,
@@ -206,12 +226,45 @@ mod tests {
     }
 
     #[test]
-    fn reserved_type_rejected() {
-        let data = obu_bytes(25 << 3, &[]);
-        assert!(matches!(
-            Obu::parse(&mut ByteReader::new(&data)),
-            Err(Error::ReservedObuType { obu_type: 25, .. })
-        ));
+    fn reserved_types_are_opaque() {
+        for raw in 25..=30u8 {
+            let data = obu_bytes(raw << 3, &[0x01, 0x02]);
+            let obu = Obu::parse(&mut ByteReader::new(&data)).unwrap();
+            assert_eq!(obu.header.obu_type, ObuType::Reserved(raw));
+            assert_eq!(obu.payload, &[0x01, 0x02]);
+        }
+    }
+
+    #[test]
+    fn type_specific_flag_only_trims_audio_frames() {
+        // Mix presentation with the flag set: optional_fields_flag, and the
+        // body is NOT consumed as trimming fields.
+        let data = obu_bytes((2 << 3) | 0x02, &[0x40, 0x00]);
+        let obu = Obu::parse(&mut ByteReader::new(&data)).unwrap();
+        assert!(obu.header.type_specific_flag);
+        assert!(obu.header.optional_fields_flag());
+        assert_eq!(obu.header.num_samples_to_trim_at_end, 0);
+        assert_eq!(obu.payload, &[0x40, 0x00]);
+
+        // Temporal delimiter with the flag set: is_not_key_frame.
+        let data = obu_bytes((4 << 3) | 0x02, &[]);
+        let obu = Obu::parse(&mut ByteReader::new(&data)).unwrap();
+        assert!(!obu.header.is_key_frame());
+        assert!(!obu.header.optional_fields_flag());
+        let data = obu_bytes(4 << 3, &[]);
+        assert!(
+            Obu::parse(&mut ByteReader::new(&data))
+                .unwrap()
+                .header
+                .is_key_frame()
+        );
+
+        // Sequence header: reserved meaning, still no trimming read.
+        let data = obu_bytes((31 << 3) | 0x02, &[0x69]);
+        let obu = Obu::parse(&mut ByteReader::new(&data)).unwrap();
+        assert!(!obu.header.optional_fields_flag());
+        assert!(obu.header.is_key_frame());
+        assert_eq!(obu.payload, &[0x69]);
     }
 
     #[test]
@@ -236,9 +289,19 @@ mod tests {
     }
 
     #[test]
-    fn iterator_stops_after_error() {
+    fn iterator_passes_reserved_types_through() {
         let mut data = obu_bytes(31 << 3, &[0x00]);
         data.extend([25 << 3, 0x00]); // reserved type
+        data.extend(obu_bytes(0 << 3, &[]));
+        let obus: Vec<_> = ObuIter::new(&data).collect::<Result<_>>().unwrap();
+        assert_eq!(obus[1].header.obu_type, ObuType::Reserved(25));
+        assert_eq!(obus[2].header.obu_type, ObuType::CodecConfig);
+    }
+
+    #[test]
+    fn iterator_stops_after_error() {
+        let mut data = obu_bytes(31 << 3, &[0x00]);
+        data.extend([31 << 3, 0x04, 0xff]); // truncated body
         data.extend(obu_bytes(0 << 3, &[])); // never reached
         let results: Vec<_> = ObuIter::new(&data).collect();
         assert_eq!(results.len(), 2);
