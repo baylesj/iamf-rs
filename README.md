@@ -4,43 +4,19 @@
 [![License: BSD-3-Clause-Clear](https://img.shields.io/badge/license-BSD--3--Clause--Clear-blue.svg)](LICENSE)
 [![MSRV: 1.85](https://img.shields.io/badge/MSRV-1.85-orange.svg)](Cargo.toml)
 
-A pure-Rust decoder for [IAMF](https://aomediacodec.github.io/iamf/) (Immersive
-Audio Model and Formats / Eclipsa Audio), structured after the pipeline of the
+iamf-rs is a decoder for [IAMF](https://aomediacodec.github.io/iamf/)
+(Immersive Audio Model and Formats, also called Eclipsa Audio), written in
+Rust. It has the same pipeline as the
 [libiamf](https://github.com/AOMediaCodec/libiamf) reference decoder:
 
 ```
 OBU parser → codec decoders → element reconstructor → renderer → mixer → post-processor
 ```
 
-## Features
+The library decodes IAMF v1.1 simple and base profile streams. It also has a
+C ABI with the same shape as the iamf-tools decoder API that Chromium uses.
 
-- IAMF v1.1 simple & base profile decoding: OBUs, descriptors, parameter blocks
-- Profile validation with iamf-tools `ProfileFilter` semantics: requested
-  profile sets, sequence-header checks, per-mix capability limits
-- Codecs: Opus (pure-Rust, or libopus via `opus-ffi`), LPCM, FLAC, AAC-LC
-- Scalable channel audio: demixing, recon gains, output gain, layer selection
-- Ambisonics, mono and projection modes, orders 1–4
-- Rendering to all 14 loudspeaker sound systems (libiamf v1.1 gain matrices)
-- Binaural rendering for headphones — native port of [google/obr](https://github.com/google/obr) (layout 14), any supported sample rate
-- Animated mix gains (step/linear/bezier); demixing/recon-gain parameter
-  timelines at subblock granularity (blocks may span temporal units)
-- Optional loudness normalization and peak limiter (off by default,
-  matching the iamf-tools decoder), in both drivers and the C ABI
-- Batch and streaming decoders (partial-OBU input, reset/seek), byte-identical outputs
-- Mix presentation selection: automatic by layout, by id, or by index;
-  in-place mix/layout switching (`reset_with_new_mix`) that reuses codec state
-- Output options matching iamf-tools: channel ordering (IAMF or Android/WAVE), auto or explicit s16le/s32le, trimming control, selected-mix query
-- C ABI (`iamf-capi`) shaped after the iamf-tools API Chromium consumes
-- Bitstream consistency checks: temporal-delimiter alignment, per-unit
-  trim agreement, one codec config / frame size per mix
-- `#![forbid(unsafe_code)]` outside the FFI boundary; parser and full stream decoder fuzzed (CI smoke + local corpus)
-
-Not yet supported: expanded loudspeaker layouts (base-enhanced profile;
-they are profile-filtered but not decodable) and output-rate resampling.
-Multi-sub-mix presentations are rejected as invalid, matching the v1.1
-spec (`num_sub_mixes` must be 1) and libiamf.
-
-## Demo
+## Try the demo
 
 Put on headphones and run the terminal player:
 
@@ -48,113 +24,208 @@ Put on headphones and run the terminal player:
 cargo run --release -p iamfplay -- --demo
 ```
 
-`--demo` plays a generated third-order ambisonics scene — a bee orbiting
-your head with pings from fixed directions. Press `b` to flip between
-plain stereo and HRTF binaural mid-stream — the switch is a
-sample-aligned crossfade, so listen for the scene moving out of your
-head. Space pauses, `←`/`→` seek, `q` quits. The meters show the
-12-channel bed being folded into the 2 channels you hear.
+The demo plays a generated third-order ambisonics scene: a bee that circles
+your head, plus pings from fixed directions. The meters show how the player
+folds the 12-channel bed into the 2 channels that you hear.
 
-For real produced content (from the iamf-tools web demo):
+| Key       | Action                                        |
+| --------- | --------------------------------------------- |
+| `b`       | Switch between plain stereo and HRTF binaural |
+| `m`       | Go to the next mix presentation (if several)  |
+| Space     | Pause or resume                               |
+| `←` / `→` | Seek back or forward 2 seconds                |
+| `q`       | Quit                                          |
+
+The `b` switch is a sample-aligned crossfade. In binaural mode, the scene
+moves out of your head.
+
+To play real produced content from the iamf-tools web demo:
 
 ```sh
 tools/fetch_vectors.sh --demo
 cargo run --release -p iamfplay -- tests/demo/Animated_demo_3OA_and_2_0.iamf
 ```
 
-The player also accepts IAMF-in-MP4 files. (`7_1_4_Flac.iamf` in the
-same set is a one-speaker-at-a-time channel check — educational, but not
-much of a binaural showcase.)
+The player also accepts IAMF-in-MP4 files. The same download includes
+`7_1_4_Flac.iamf`, which plays one speaker at a time. It is a channel check,
+not a binaural showcase.
 
-Building `iamfplay` needs libopus (`brew install opus` /
-`apt install libopus-dev libasound2-dev`); pass `--no-default-features`
-to use the pure-Rust Opus decoder instead (slow, see issue #5).
+By default, `iamfplay` links libopus. Install it before you build:
 
-## Status (August 2026)
+```sh
+brew install opus                            # macOS
+sudo apt install libopus-dev libasound2-dev  # Debian or Ubuntu
+```
 
-Conformance: outputs are checked against the libiamf test-vector suite and
-against libiamf's and iamf-tools' own binaries — same-layout renders and
-lossless paths are bit-exact, everything else lands within a few LSB, and
-binaural matches obr within 2 LSB. Where the reference implementations
-disagree with each other, we match iamf-tools (what Chromium ships) and
-file it (issues #3, #4).
+If libopus is not available, build with `--no-default-features` to use the
+pure-Rust Opus decoder. That decoder is slow on real content (see
+[issue #5](https://github.com/baylesj/iamf-rs/issues/5)).
 
-Performance (Apple M-series, `cargo bench` / `tools/bench_compare.py`):
-faster than libiamf v1.1 on every measured path and 4–7× faster than
-iamf-tools' decoder, with the `opus-ffi` (libopus) codec path (1.6×
-faster than libiamf on Opus). The pure-Rust `opus-decoder` fallback is
-currently much slower on real content — its transforms are naive DFTs
-(issue #5) — so builds that care about Opus throughput should enable
-`opus-ffi`.
+## Features
+
+- **Profiles:** IAMF v1.1 simple and base profiles. Profile checks follow the
+  iamf-tools `ProfileFilter` rules: requested profile sets, sequence header
+  checks, and per-mix limits.
+- **Codecs:** Opus, LPCM, FLAC, and AAC-LC. Opus uses a pure-Rust decoder, or
+  libopus through the `opus-ffi` feature.
+- **Channel-based audio:** Scalable channel audio with demixing, recon gain,
+  output gain, and layer selection.
+- **Scene-based audio:** Ambisonics in mono and projection modes, orders 1
+  to 4.
+- **Loudspeaker rendering:** All 14 sound systems, with the libiamf v1.1 gain
+  matrices.
+- **Binaural rendering:** Headphone output (layout 14) at any supported sample
+  rate. This renderer is a native port of
+  [google/obr](https://github.com/google/obr).
+- **Parameters:** Animated mix gains (step, linear, and bezier). Demixing and
+  recon gain timelines work at subblock granularity, and a parameter block can
+  span temporal units.
+- **Loudness:** Optional loudness normalization and peak limiter. Both are off
+  by default, as in the iamf-tools decoder.
+- **Batch and streaming decoders:** Both give byte-identical output. The
+  streaming decoder accepts partial OBUs and supports reset and seek.
+- **Mix selection:** Select a mix presentation by layout, by ID, or by index.
+  `reset_with_new_mix` changes the mix or layout in place and keeps the codec
+  state.
+- **Output options:** The same options as iamf-tools: channel order (IAMF or
+  Android/WAVE), automatic or explicit s16le or s32le samples, trim control,
+  and a query for the selected mix.
+- **Bitstream checks:** Temporal delimiter alignment, the same trim values in
+  each temporal unit, and one codec config and frame size per mix.
+- **Memory safety:** All crates except the two FFI crates use
+  `#![forbid(unsafe_code)]`. CI fuzzes the parser, the streaming decoder, and
+  the C ABI.
+
+## Limitations
+
+- Expanded loudspeaker layouts (base-enhanced profile) are not supported. The
+  profile filter recognizes them, but the decoder cannot decode them.
+- The decoder does not resample the output.
+- The decoder rejects mix presentations with more than one sub-mix as invalid.
+  The v1.1 spec requires `num_sub_mixes` to be 1, and libiamf does the same.
+- The library does not demux ISO-BMFF (MP4) by design. In Chromium, the
+  demuxer supplies the descriptors and temporal units. `iamfplay` has its own
+  small MP4 reader.
+
+For open work, see the
+[issue tracker](https://github.com/baylesj/iamf-rs/issues). For the full
+history, see [CHANGELOG.md](CHANGELOG.md).
+
+## Conformance
+
+The test suite compares output against the libiamf test vectors and against
+the libiamf and iamf-tools binaries:
+
+- Same-layout renders and lossless paths are bit-exact.
+- Other paths are within a few LSB.
+- Binaural output matches obr within 2 LSB.
+
+When the reference implementations disagree, iamf-rs matches iamf-tools,
+because Chromium ships iamf-tools. Each disagreement or suspected upstream bug
+has an issue (for example,
+[#3](https://github.com/baylesj/iamf-rs/issues/3) and
+[#4](https://github.com/baylesj/iamf-rs/issues/4)).
+
+## Performance
+
+Measured in August 2026 on Apple M-series hardware with `cargo bench` and
+`tools/bench_compare.py`, with Opus decoded by libopus (`opus-ffi`):
+
+- Faster than libiamf v1.1 on every measured path. On Opus content, iamf-rs
+  is 1.6× faster.
+- 4–7× faster than the iamf-tools decoder.
+
+The pure-Rust Opus decoder is much slower on real content because its
+transforms are naive DFTs
+([issue #5](https://github.com/baylesj/iamf-rs/issues/5)). If Opus speed
+matters, enable `opus-ffi`.
 
 ## Crates
 
-| Crate | Purpose |
-| --- | --- |
-| `iamf-obu` | OBU framing and descriptor parsing of untrusted input. `#![forbid(unsafe_code)]`, fuzzed, no dependencies. |
-| `iamf-dec` | Pipeline stages: reconstruction, rendering, mixing, loudness/limiting, plus the batch and streaming decoders. Codec layer is pluggable via the `SubstreamDecoder` / `CodecFactory` traits. |
-| `iamf-codecs` | Feature-gated `SubstreamDecoder` implementations: LPCM, Opus (pure-Rust [opus-decoder](https://crates.io/crates/opus-decoder), or libopus via the `opus-ffi` feature), FLAC and AAC-LC (symphonia). |
-| `iamf-capi` | C ABI (`libiamf_rs` cdylib/staticlib + `include/iamf_rs.h`) over the streaming decoder. |
-| `tools/iamfdec` | CLI: inspect and decode/render standalone `.iamf` files to WAV. |
-| `tools/iamfplay` | Terminal player: live playback (`.iamf` or IAMF-in-MP4) with instant stereo ⇄ binaural toggle, channel meters, and a generated 3OA demo scene (`--demo`). Headphones recommended. |
-| `fuzz` | cargo-fuzz targets for the parser. |
+| Crate            | Purpose                                                    |
+| ---------------- | ---------------------------------------------------------- |
+| `iamf-obu`       | Parses OBUs and descriptors from untrusted input.          |
+| `iamf-dec`       | Reconstructs, renders, and mixes. Has both decoders.       |
+| `iamf-codecs`    | Codec adapters for LPCM, Opus, FLAC, and AAC-LC.           |
+| `opus-ffi`       | libopus bindings for the `opus-ffi` feature.               |
+| `iamf-capi`      | C ABI over the streaming decoder.                          |
+| `tools/iamfdec`  | CLI that inspects `.iamf` files and decodes them to WAV.   |
+| `tools/iamfplay` | Terminal player with a stereo and binaural toggle.         |
+| `fuzz`           | cargo-fuzz targets for the parser, decoder, and C ABI.     |
+
+`iamf-obu` has no dependencies. `iamf-dec` loads codecs through the
+`SubstreamDecoder` and `CodecFactory` traits, so an embedder can supply its
+own. `iamf-codecs` uses [opus-decoder](https://crates.io/crates/opus-decoder)
+for pure-Rust Opus and symphonia for FLAC and AAC-LC. `iamf-capi` builds
+`libiamf_rs` as a cdylib and a staticlib, with the header in
+[`crates/iamf-capi/include/iamf_rs.h`](crates/iamf-capi/include/iamf_rs.h).
+For more detail, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Cargo features
 
-Defaults include everything pure-Rust: all codecs (`pcm`, `opus`,
-`flac`, `aac`) and `binaural`. The one opt-in is `opus-ffi`, which
-decodes Opus through an external libopus (system or embedder-provided,
-e.g. Chromium's `third_party/opus`) — much faster than the pure-Rust
-path today (issue #5) and preferred by `DefaultFactory` when enabled.
+By default, the library crates enable all pure-Rust features: the `pcm`,
+`opus`, `flac`, and `aac` codecs, plus `binaural`.
 
-Embedders trim with `default-features = false` plus an explicit list.
-The Chromium-shaped build:
+The `opus-ffi` feature is opt-in. It decodes Opus through an external
+libopus, from the system or from the embedder (for example, Chromium's
+`third_party/opus`). When `opus-ffi` is on, `DefaultFactory` uses it instead
+of the pure-Rust decoder.
+
+To trim the build, set `default-features = false` and list the features that
+you need. This is the build that Chromium needs:
 
 ```sh
 cargo build -p iamf-capi --no-default-features --features pcm,opus-ffi
 ```
 
-resolves to only this repository's crates — no external Rust
-dependencies to vendor. Dropping `binaural` also drops the FFT stack and
-~1.8 MB of embedded HRIR filters; binaural output then falls back to
-stereo. CI checks these combinations.
+This build uses only the crates in this repository, so there are no
+external Rust dependencies to vendor. Turning off `binaural` also removes the
+FFT code and about 1.8 MB of embedded HRIR filters. Binaural output then falls
+back to stereo. CI checks these feature sets.
 
-## Scope
+## Use in Chromium
 
-Everything the pipeline needs for IAMF v1.1 simple/base(-enhanced-aware)
-playback is implemented: OBU/descriptor parsing, all four codecs,
-scalable-channel reconstruction, ambisonics (mono + projection),
-rendering to every sound system, HRTF binaural (obr port), profile
-validation, and the streaming decoder + C ABI Chromium-shaped surface.
-ISO-BMFF demuxing is deliberately out of scope for the library
-(Chromium's demuxer delivers descriptors and temporal units; `iamfplay`
-carries its own minimal MP4 reader). Remaining gaps and the full history
-live in `CHANGELOG.md`.
+[`examples/chromium/`](examples/chromium/) has a C++ adapter that implements
+the iamf-tools decoder interface on top of the iamf-rs C ABI. With this
+adapter, Chromium's `IamfAudioDecoder` can use iamf-rs instead of iamf-tools
+without other changes. CI compile-checks the adapter.
 
 ## Development
 
 ```sh
-cargo test                      # unit + conformance tests
-cargo bench -p iamfdec          # criterion decode benchmarks
-cargo clippy --all-targets      # lints (unsafe code is forbidden outside iamf-capi)
+cargo test                       # unit and conformance tests
+cargo bench -p iamfdec           # criterion decode benchmarks
+cargo clippy --all-targets       # lints
 cargo +nightly fuzz run parse_obu
 cargo run -p iamfdec -- file.iamf
 ```
 
-Conformance vectors go in `tests/vectors/` (git-ignored); populate with
-`tools/fetch_vectors.sh` (curated set), `tools/fetch_vectors.sh --all`, or
-specific names. `cargo test` and `cargo bench` pick them up automatically
-when present.
+Conformance vectors go in `tests/vectors/`, which git ignores. To download
+them, run one of these commands:
+
+```sh
+tools/fetch_vectors.sh               # curated set
+tools/fetch_vectors.sh --all         # all vectors (about 333, slow)
+tools/fetch_vectors.sh test_000123   # specific vectors
+```
+
+When the vectors are present, `cargo test` and `cargo bench` use them.
+
+Before you send a pull request, read [CONTRIBUTING.md](CONTRIBUTING.md). It
+lists the checks that CI runs.
 
 ## License
 
-BSD 3-Clause Clear License (see `LICENSE`), matching the reference
-implementations this project derives from. Parts of this codebase are
-ported from or derived from libiamf, google/obr, and iamf-tools — data
-tables were extracted mechanically and several DSP components are
-behavioral ports written with those sources as reference. See `NOTICE`
-for the full attribution list. The BSD 3-Clause Clear License grants no
-patent rights; the upstream projects publish separate patent licenses
-(AOM Patent License 1.0, OBR Patent License 1.0) covering the derived
-portions. This section is a good-faith summary, not legal advice — have
-counsel review before redistribution.
+iamf-rs uses the BSD 3-Clause Clear License (see [LICENSE](LICENSE)). The
+reference implementations that this project derives from use the same
+license.
+
+Parts of this code are ported from or derived from libiamf, google/obr, and
+iamf-tools. The data tables were extracted mechanically. Several DSP
+components are behavioral ports that were written with those sources as
+reference. For the full attribution list, see [NOTICE](NOTICE).
+
+The BSD 3-Clause Clear License grants no patent rights. The upstream projects
+publish separate patent licenses (AOM Patent License 1.0 and OBR Patent
+License 1.0) that cover the derived portions. This section is a good-faith
+summary, not legal advice. Get a legal review before you redistribute.
