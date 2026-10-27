@@ -22,7 +22,14 @@ use crate::reconstruct::{
     ChannelReconstructor, Reconstructed, deinterleave, reconstruct_ambisonics,
 };
 use crate::render::render;
+use crate::stream::TrimmingSettings;
 use crate::{CodecFactory, DecodeError};
+
+/// Error text for a sub mix without audio elements: §3.7 forbids
+/// num_audio_elements == 0, and like iamf-tools (ac2fff70b) such a sub mix
+/// is never rendered.
+pub(crate) const EMPTY_SUB_MIX: &str =
+    "sub mix has no audio elements (num_audio_elements SHALL NOT be 0)";
 
 /// All descriptor OBUs of an IA sequence, first copy wins for redundant
 /// re-transmissions — except that a non-redundant IA sequence header
@@ -162,6 +169,8 @@ pub struct PresentationDecoder {
     target: SoundSystem,
     /// See [`ParamIndex`].
     param_index: ParamIndex,
+    /// Which audio-frame trims to honor (both by default).
+    trimming: TrimmingSettings,
 }
 
 impl PresentationDecoder {
@@ -184,6 +193,10 @@ impl PresentationDecoder {
                 "IAMF v1.1 requires exactly one sub mix per mix presentation".into(),
             ));
         };
+        if sub_mix.elements.is_empty() {
+            // Would otherwise "render" zero channels at rate 0.
+            return Err(DecodeError::InvalidDescriptors(EMPTY_SUB_MIX.into()));
+        }
 
         let mut slots = Vec::new();
         for sub_element in &sub_mix.elements {
@@ -223,7 +236,20 @@ impl PresentationDecoder {
             output_gain_blocks: Vec::new(),
             target,
             param_index,
+            trimming: TrimmingSettings::default(),
         })
+    }
+
+    /// Selects which audio-frame trims (`num_samples_to_trim_at_start` /
+    /// `num_samples_to_trim_at_end`) are applied, mirroring
+    /// [`StreamSettings::trimming`](crate::stream::StreamSettings::trimming)
+    /// and iamf-tools `TrimmingSettings`. Both are applied by default;
+    /// disable them when an outer layer (e.g. an MP4 demuxer honoring
+    /// edts/elst) trims instead. Call before feeding any audio frames.
+    #[must_use]
+    pub fn with_trimming(mut self, trimming: TrimmingSettings) -> Self {
+        self.trimming = trimming;
+        self
     }
 
     /// Feeds one OBU: audio frames are decoded, demixing/recon-gain
@@ -290,6 +316,23 @@ impl PresentationDecoder {
     /// Routes one audio frame to the element that owns its substream.
     /// Returns whether any element consumed it.
     pub fn decode_frame(&mut self, frame: &AudioFrame<'_>) -> Result<bool, DecodeError> {
+        // Trims disabled via `with_trimming` are dropped before the element
+        // decoder records them, so every downstream stage (reconstruction,
+        // HRTF, gain timelines) sees the untrimmed timeline.
+        let adjusted;
+        let frame = if self.trimming.trim_beginning && self.trimming.trim_end {
+            frame
+        } else {
+            let mut untrimmed = frame.clone();
+            if !self.trimming.trim_beginning {
+                untrimmed.num_samples_to_trim_at_start = 0;
+            }
+            if !self.trimming.trim_end {
+                untrimmed.num_samples_to_trim_at_end = 0;
+            }
+            adjusted = untrimmed;
+            &adjusted
+        };
         for slot in &mut self.slots {
             if slot.decoder.decode_frame(frame)? {
                 return Ok(true);

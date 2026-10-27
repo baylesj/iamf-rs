@@ -33,6 +33,24 @@ conformance suite is byte-identical).
   C header constants to the Rust definitions.
 - CLI polish: `iamfdec` rejects unknown flags and parses args linearly;
   `iamfplay` prints `Display` errors.
+- iamf-tools v3.0.0 decoder-API parity (`TrimmingSettings`,
+  `OutputLayout::kIAMF_Binaural`). The streaming decoder and C ABI already
+  had both (trimming on by default, binaural = 14); this pins and exposes
+  them everywhere:
+  - C ABI (additive, header-only; no new symbols, `iamfrs_settings`
+    layout unchanged and now pinned by a test): `enum
+    iamfrs_output_layout` with `IAMFRS_LAYOUT_*` constants numbered like
+    `OutputLayout`, ending in `IAMFRS_LAYOUT_BINAURAL = 14` (also exported
+    as Rust constants). Docs tie `disable_trim_start` / `disable_trim_end`
+    to `TrimmingSettings` and correct `iamfrs_decoder_get_selected_layout`
+    (it reports the requested layout, binaural included).
+  - `PresentationDecoder::with_trimming(TrimmingSettings)` gives the
+    batch decoder the same knob as `StreamSettings::trimming`.
+  - `iamfdec`: `--no-trim-start` / `--no-trim-end`, `-s binaural`, and
+    `--loudness` finds a mix's binaural `loudness_info`.
+  - Chromium adapter: `static_assert`s pin every `OutputLayout` (incl.
+    `kIAMF_Binaural`), `OutputSampleType`, and `ChannelOrdering` value to
+    the C constants; the iamf-tools header snapshot is refreshed to v3.0.0.
 
 Descriptor-handling fixes ported from iamf-tools (conformant streams
 decode unchanged):
@@ -48,6 +66,18 @@ decode unchanged):
   previously the first copy won even if it disagreed. Applies to both
   drivers, the C ABI, and `iamfplay` via `Descriptors::collect`.
   Conformance vector test_000079 joins the curated set.
+
+Descriptor-handling fixes ported from iamf-tools (conformant streams
+decode unchanged):
+
+- A sub mix with no audio elements (§3.7: num_audio_elements SHALL NOT
+  be 0) is never rendered (iamf-tools ac2fff70b). Previously the parser
+  rejected the whole descriptor set (even when other mixes were valid),
+  and hand-built descriptors "rendered" zero channels at rate 0. Now the
+  mix parses, automatic and by-id selection skip it, and an explicit
+  `MixSelection::ByIndex` to it, `PresentationDecoder::new` on it, or a
+  stream offering nothing else fails with `InvalidDescriptors`
+  (`IAMFRS_ERR_CORRUPT_DATA` in the C ABI).
 
 ## 0.2.0 — 2026-08-25
 
