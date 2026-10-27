@@ -47,6 +47,22 @@ jobs:
           cargo check -p iamfplay --no-default-features
           # The Chromium-shaped minimal build.
           cargo check -p iamf-capi --no-default-features --features pcm,opus-ffi
+      - name: Workspace builds offline without ROAR
+        # ROAR is a git dependency of the excluded crates/iamf-roar only.
+        # If it ever enters the workspace graph again (even as an optional
+        # dependency), offline builds without a cached ROAR checkout and
+        # `cargo publish` break, so fail here.
+        run: |
+          if grep -q aom-roar Cargo.lock; then
+            echo "error: aom-roar is in the workspace Cargo.lock" >&2
+            exit 1
+          fi
+          cargo fetch --locked
+          cargo build --offline --locked --workspace --all-features
+          if cargo metadata --offline --locked --format-version 1 | grep -q aom-roar; then
+            echo "error: aom-roar is in the workspace dependency graph" >&2
+            exit 1
+          fi
       - name: Compile-check reference Chromium adapter
         run: |
           c++ -std=c++17 -fsyntax-only \
@@ -67,6 +83,36 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libopus-dev libasound2-dev
       - name: Check with the minimum supported Rust version
         run: cargo check --locked --workspace --all-features --all-targets
+
+  roar:
+    # crates/iamf-roar is outside the workspace (ROAR is a git dependency
+    # and needs Rust >= 1.97.1, which `stable` satisfies).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: crates/iamf-roar
+      - name: Install libopus (opus-ffi)
+        run: sudo apt-get update && sudo apt-get install -y libopus-dev
+      - name: Cache test vectors
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: tests/vectors
+          key: iamf-vectors-${{ hashFiles('tools/fetch_vectors.sh') }}
+      - name: Fetch conformance vectors
+        run: ./tools/fetch_vectors.sh
+      - run: cargo fmt --manifest-path crates/iamf-roar/Cargo.toml --check
+      - run: cargo clippy --manifest-path crates/iamf-roar/Cargo.toml --locked --all-targets --all-features -- -D warnings
+      - run: cargo test --manifest-path crates/iamf-roar/Cargo.toml --locked --all-features
+      - name: Docs build (warnings are errors)
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --manifest-path crates/iamf-roar/Cargo.toml --locked --no-deps --all-features
 
   audit:
     runs-on: ubuntu-latest

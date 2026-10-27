@@ -134,6 +134,26 @@ decode unchanged):
   mixes containing them are not selectable for those targets (`Auto`
   and unmatched `ById` skip them; `ByIndex` reports
   `DecodeError::UnsupportedProfile`).
+- External renderer hook: `iamf_dec::renderer` (`MixRendererFactory`,
+  `MixRenderer`, `MixConfig`, `ElementInfo`, `ElementLayout`,
+  `ElementFrame`) and `StreamDecoder::new_from_descriptors_with_renderer`
+  let another crate replace the streaming decoder's render-and-mix step.
+  Decoding, reconstruction, parameter timing, gains, loudness, limiter
+  and quantization stay in the decoder; the builtin path is unchanged
+  (conformance byte-identical) and `StreamSettings` stays `Copy`. New
+  `DecodeError::UnsupportedRenderer` for a refused or failed external
+  renderer (C ABI: `IAMFRS_ERR_UNSUPPORTED`; the C ABI itself always uses
+  the builtin renderer).
+- New unpublished crate `crates/iamf-roar` (excluded from the workspace,
+  own `Cargo.lock`, Rust 1.97.1): renders through AOM's ROAR, pinned to
+  AOMediaCodec/roar@45ca492, via the hook, plus an `iamfdec-roar` CLI
+  with `iamfdec`'s decode options. ROAR matches the builtin bit-exactly
+  (or ≥ 141 dB) on every curated vector × loudspeaker layout except the
+  documented OAR downmix-renderer cases. Scene-based elements to sound
+  system H are refused because of an upstream ROAR 22.2 LFE bug
+  (`ARCHITECTURE.md`, "Renderer backends"). Nothing in the workspace
+  depends on ROAR, and CI checks that the workspace lockfile never picks
+  it up.
 
 IAMF v2.0 syntax parsing in `iamf-obu`, following the v2.0.0 spec and
 iamf-tools v3.0.0. The decoder still renders v1.1 profiles only: profile

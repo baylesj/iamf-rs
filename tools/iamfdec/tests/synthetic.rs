@@ -4,14 +4,20 @@
 //! consistency, duplicated parameter IDs, redundant sequence headers that
 //! disagree with the canonical one, mix presentations whose sub mix has
 //! no audio elements, §7.4.1 mix selection among several mix
-//! presentations, binaural-input element passthrough, and the default
-//! (IAMF v1.1) requested profiles.
+//! presentations, binaural-input element passthrough, the default
+//! (IAMF v1.1) requested profiles, and the external renderer hook
+//! (`iamf_dec::renderer`).
+
+use std::sync::{Arc, Mutex};
 
 use iamf_codecs::DefaultFactory;
 use iamf_dec::DecodeError;
 use iamf_dec::layout::SoundSystem;
 use iamf_dec::presentation::{Descriptors, PresentationDecoder};
 use iamf_dec::profile::ProfileSet;
+use iamf_dec::renderer::{
+    ElementFrame, ElementInfo, ElementLayout, MixConfig, MixRenderer, MixRendererFactory,
+};
 use iamf_dec::stream::{MixSelection, StreamDecoder, StreamSettings};
 use iamf_obu::ObuIter;
 
@@ -756,4 +762,212 @@ fn v2_only_sequence_header_needs_opt_in() {
         out.extend(unit);
     }
     assert_eq!(out, s16le(&stereo_frames()));
+}
+
+/// What [`FakeFactory`] saw: one entry per created renderer, and one per
+/// rendered temporal unit.
+#[derive(Debug, Default)]
+struct RendererLog {
+    /// (target, sample_rate, frame_size, elements) per created renderer.
+    configs: Vec<(SoundSystem, u32, u32, Vec<ElementInfo>)>,
+    units: Vec<UnitRecord>,
+}
+
+/// One rendered temporal unit, as [`FakeRenderer`] saw it.
+#[derive(Debug)]
+struct UnitRecord {
+    ids: Vec<u32>,
+    demixing_modes: Vec<Option<u8>>,
+    plane_counts: Vec<usize>,
+    len: usize,
+    /// Sum of the first element's first plane.
+    first_plane_sum: f32,
+}
+
+/// An external renderer that records its inputs and renders every output
+/// channel as a constant 0.25.
+struct FakeFactory {
+    log: Arc<Mutex<RendererLog>>,
+    refuse: bool,
+}
+
+struct FakeRenderer {
+    log: Arc<Mutex<RendererLog>>,
+    channels: usize,
+}
+
+impl MixRendererFactory for FakeFactory {
+    fn create(&self, config: &MixConfig<'_>) -> Result<Box<dyn MixRenderer>, DecodeError> {
+        self.log.lock().unwrap().configs.push((
+            config.target,
+            config.sample_rate,
+            config.frame_size,
+            config.elements.to_vec(),
+        ));
+        if self.refuse {
+            return Err(DecodeError::UnsupportedRenderer("refused".into()));
+        }
+        Ok(Box::new(FakeRenderer {
+            log: Arc::clone(&self.log),
+            channels: config.target.channels(),
+        }))
+    }
+}
+
+impl MixRenderer for FakeRenderer {
+    fn render(&mut self, elements: &[ElementFrame<'_>]) -> Result<Vec<Vec<f32>>, DecodeError> {
+        let len = elements[0].planes[0].len();
+        self.log.lock().unwrap().units.push(UnitRecord {
+            ids: elements.iter().map(|e| e.audio_element_id).collect(),
+            demixing_modes: elements.iter().map(|e| e.demixing_mode).collect(),
+            plane_counts: elements.iter().map(|e| e.planes.len()).collect(),
+            len,
+            first_plane_sum: elements[0].planes[0].iter().sum(),
+        });
+        Ok(vec![vec![0.25; len]; self.channels])
+    }
+}
+
+fn fake_decoder(
+    data: &[u8],
+    layout: SoundSystem,
+    refuse: bool,
+) -> (StreamDecoder, Arc<Mutex<RendererLog>>) {
+    let log = Arc::new(Mutex::new(RendererLog::default()));
+    let mut settings = StreamSettings::default();
+    settings.layout = layout;
+    // headphones_rendering_mode 2 (head-locked) is allowed only by the IAMF
+    // v2.0 profiles, which the default request leaves out.
+    settings.requested_profiles = ProfileSet::all();
+    let decoder = StreamDecoder::new_from_descriptors_with_renderer(
+        data,
+        settings,
+        &DefaultFactory,
+        Arc::new(FakeFactory {
+            log: Arc::clone(&log),
+            refuse,
+        }),
+    )
+    .unwrap();
+    (decoder, log)
+}
+
+/// Stereo + 5.1 scalable element (demixing parameter 7) in a one-element
+/// mix with `rendering_mode`, followed by one temporal unit.
+fn scalable_stream(rendering_mode: u8, layout_byte: u8) -> Vec<u8> {
+    let mut data = descriptors(
+        scalable_element(7),
+        single_element_mix(42, 1, rendering_mode, layout_byte),
+    );
+    data.extend(demix_block(7, FRAME as u32, &[2]));
+    push_unit(&mut data, 0);
+    data
+}
+
+/// Layer selection for an external renderer: binaural output with
+/// headphones_rendering_mode 1 (world-locked) or 2 (head-locked) hands it
+/// the highest layer (5.1 here), whatever the `binaural` feature; mode 0
+/// and loudspeaker targets select like the builtin renderer.
+#[test]
+fn external_renderer_layer_selection() {
+    for (layout, mode, expected_layout, expected_planes) in [
+        (SoundSystem::Binaural, 0, 1, 2),
+        (SoundSystem::Binaural, 1, 2, 6),
+        (SoundSystem::Binaural, 2, 2, 6),
+        (SoundSystem::A, 1, 1, 2),
+        (SoundSystem::B, 0, 2, 6),
+    ] {
+        let data = scalable_stream(mode, BINAURAL_LAYOUT);
+        let (mut decoder, log) = fake_decoder(&data, layout, false);
+        decoder.decode(&data).unwrap();
+        let out = decoder.get_output_temporal_unit().unwrap().unwrap();
+        assert_eq!(
+            out.len(),
+            FRAME * layout.channels() * 2,
+            "{layout:?} mode {mode}"
+        );
+
+        let log = log.lock().unwrap();
+        let [(target, sample_rate, frame_size, elements)] = log.configs.as_slice() else {
+            panic!("expected one renderer, got {:?}", log.configs);
+        };
+        assert_eq!(*target, layout);
+        assert_eq!(*sample_rate, 48000);
+        assert_eq!(*frame_size, FRAME as u32);
+        let [element] = elements.as_slice() else {
+            panic!("expected one element");
+        };
+        assert_eq!(element.audio_element_id, 1);
+        assert_eq!(element.headphones_rendering_mode, mode);
+        assert_eq!(element.default_demixing_mode, Some(0));
+        assert_eq!(
+            element.layout,
+            ElementLayout::Channels {
+                loudspeaker_layout: expected_layout
+            },
+            "{layout:?} mode {mode}"
+        );
+        let [unit] = log.units.as_slice() else {
+            panic!("expected one unit");
+        };
+        assert_eq!(unit.ids, [1]);
+        assert_eq!(unit.demixing_modes, [Some(2)]);
+        assert_eq!(unit.plane_counts, [expected_planes]);
+        assert_eq!(unit.len, FRAME);
+    }
+}
+
+/// The external renderer's planes become the output (after output gain,
+/// trimming and quantization), the element mix gain is applied to its
+/// inputs, refusals surface from `get_output_temporal_unit`, and a reset
+/// creates a fresh renderer.
+#[test]
+fn external_renderer_output_gain_and_lifecycle() {
+    let head = descriptors(stereo_element(), single_element_mix(42, 1, 0, SS_A));
+    let frames: Vec<i16> = (0..FRAME).flat_map(|_| [8192i16, -8192]).collect();
+    let mut plain = head.clone();
+    plain.extend(frame_obu(0, &frames));
+    let mut gained = head.clone();
+    gained.extend(mix_gain_block(100, FRAME as u32, -256 * 6)); // -6 dB
+    gained.extend(frame_obu(0, &frames));
+
+    let render = |data: &[u8]| {
+        let (mut decoder, log) = fake_decoder(data, SoundSystem::A, false);
+        decoder.decode(data).unwrap();
+        let out = decoder.get_output_temporal_unit().unwrap().unwrap();
+        let sum = log.lock().unwrap().units[0].first_plane_sum;
+        (out, sum)
+    };
+    let (out, plain_sum) = render(&plain);
+    let expected = iamf_dec::post::quantize_s16(0.25).to_le_bytes();
+    assert_eq!(out.len(), FRAME * 2 * 2);
+    assert!(out.chunks_exact(2).all(|s| s == expected));
+    let (_, gained_sum) = render(&gained);
+    let ratio = gained_sum / plain_sum;
+    assert!(
+        (ratio - 10f32.powf(-6.0 / 20.0)).abs() < 1e-3,
+        "ratio {ratio}"
+    );
+
+    // Refusal, then a reset retries with a fresh renderer.
+    let (mut decoder, log) = fake_decoder(&plain, SoundSystem::A, true);
+    decoder.decode(&plain).unwrap();
+    assert!(matches!(
+        decoder.get_output_temporal_unit(),
+        Err(DecodeError::UnsupportedRenderer(_))
+    ));
+    decoder.reset();
+    decoder.decode(&plain).unwrap();
+    assert!(decoder.get_output_temporal_unit().is_err());
+    assert_eq!(log.lock().unwrap().configs.len(), 2);
+
+    // reset_with_new_mix keeps using the external renderer.
+    let (mut decoder, log) = fake_decoder(&plain, SoundSystem::A, false);
+    decoder
+        .reset_with_new_mix(MixSelection::Auto, Some(SoundSystem::B), &DefaultFactory)
+        .unwrap();
+    decoder.decode(&plain).unwrap();
+    let out = decoder.get_output_temporal_unit().unwrap().unwrap();
+    assert_eq!(out.len(), FRAME * 6 * 2);
+    assert_eq!(log.lock().unwrap().configs[0].0, SoundSystem::B);
 }

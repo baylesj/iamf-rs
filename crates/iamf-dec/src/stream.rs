@@ -4,6 +4,7 @@
 //! and pull decoded temporal units as interleaved little-endian PCM.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use iamf_obu::descriptors::{AudioElement, AudioElementConfig, CodecConfig, ElementParam, SubMix};
 use iamf_obu::{AudioFrame, ByteReader, Error, Obu, ObuType};
@@ -19,8 +20,13 @@ use crate::params::{
 use crate::post::{LIMITER_LOOKAHEAD, LIMITER_THRESHOLD_DB, PeakLimiter};
 use crate::presentation::{Descriptors, EMPTY_SUB_MIX};
 use crate::profile::ProfileSet;
-use crate::reconstruct::{ChannelReconstructor, ambisonics_from_planes, deinterleave};
+use crate::reconstruct::{
+    ChannelReconstructor, Reconstructed, ambisonics_from_planes, deinterleave,
+};
 use crate::render::render;
+use crate::renderer::{
+    ElementFrame, ElementInfo, ElementLayout, MixConfig, MixRenderer, MixRendererFactory,
+};
 use crate::{CodecFactory, DecodeError, DecodedFrame, SubstreamDecoder};
 
 /// Output PCM encoding (iamf-tools `OutputSampleType`).
@@ -144,6 +150,54 @@ impl Default for StreamSettings {
             loudness_target_db: None,
             enable_limiter: false,
         }
+    }
+}
+
+/// External render-step state (see [`crate::renderer`]): the factory, and
+/// the renderer it created for the current configuration. The renderer is
+/// created at the first temporal unit with audio, when the output sample
+/// rate is known, and dropped on reset.
+struct ExternalRenderer {
+    factory: Arc<dyn MixRendererFactory>,
+    renderer: Option<Box<dyn MixRenderer>>,
+}
+
+/// What an external renderer gets for one element of one temporal unit.
+struct ExternalInput {
+    info: ElementInfo,
+    demixing_mode: Option<u8>,
+    planes: Vec<Vec<f32>>,
+}
+
+impl ExternalRenderer {
+    /// Renders one temporal unit, creating the renderer first if needed.
+    fn render_unit(
+        &mut self,
+        target: SoundSystem,
+        sample_rate: u32,
+        frame_size: u32,
+        inputs: &[ExternalInput],
+    ) -> Result<Vec<Vec<f32>>, DecodeError> {
+        if self.renderer.is_none() {
+            let elements: Vec<ElementInfo> = inputs.iter().map(|i| i.info.clone()).collect();
+            let config = MixConfig {
+                target,
+                sample_rate,
+                frame_size,
+                elements: &elements,
+            };
+            self.renderer = Some(self.factory.create(&config)?);
+        }
+        let renderer = self.renderer.as_mut().expect("created above");
+        let frames: Vec<ElementFrame<'_>> = inputs
+            .iter()
+            .map(|i| ElementFrame {
+                audio_element_id: i.info.audio_element_id,
+                demixing_mode: i.demixing_mode,
+                planes: &i.planes,
+            })
+            .collect();
+        renderer.render(&frames)
     }
 }
 
@@ -438,6 +492,32 @@ fn binauralize_unit(
     ])
 }
 
+/// The slot's channel reconstructor, created on first use with the
+/// element's default demixing info.
+fn slot_reconstructor<'a>(
+    reconstructor: &'a mut Option<ChannelReconstructor>,
+    element: &AudioElement,
+    layers: &[iamf_obu::descriptors::ChannelAudioLayer],
+    target: SoundSystem,
+    force_highest: bool,
+) -> Result<&'a mut ChannelReconstructor, DecodeError> {
+    if reconstructor.is_none() {
+        let mut rec = ChannelReconstructor::with_layer_selection(layers, target, force_highest)?;
+        for param in &element.params {
+            if let ElementParam::Demixing {
+                default_demixing_mode,
+                default_weight_index,
+                ..
+            } = param
+            {
+                rec.set_default_demixing(*default_demixing_mode, *default_weight_index)?;
+            }
+        }
+        *reconstructor = Some(rec);
+    }
+    Ok(reconstructor.as_mut().expect("created above"))
+}
+
 /// The selected layout's `loudness_info` integrated loudness, in dB
 /// (Q7.8 → dB). Falls back to the first measured layout when none matches.
 fn content_loudness_db(sub_mix: &SubMix, target: SoundSystem) -> Option<f32> {
@@ -492,6 +572,8 @@ pub struct StreamDecoder {
     ended: bool,
     /// Parsed descriptors, retained for [`StreamDecoder::reset_with_new_mix`].
     parsed: Descriptors,
+    /// External render step replacing the builtin renderer, if any.
+    external: Option<ExternalRenderer>,
 }
 
 impl StreamDecoder {
@@ -503,7 +585,21 @@ impl StreamDecoder {
         factory: &dyn CodecFactory,
     ) -> Result<Self, DecodeError> {
         let parsed = Descriptors::collect(descriptors)?;
-        Self::from_parsed(parsed, settings, factory, &mut Vec::new())
+        Self::from_parsed(parsed, settings, factory, &mut Vec::new(), None)
+    }
+
+    /// Like [`StreamDecoder::new_from_descriptors`], but renders through
+    /// an external renderer from `renderer` instead of the builtin one
+    /// (see [`crate::renderer`]). The factory is kept for the decoder's
+    /// lifetime, including across [`StreamDecoder::reset_with_new_mix`].
+    pub fn new_from_descriptors_with_renderer(
+        descriptors: &[u8],
+        settings: StreamSettings,
+        factory: &dyn CodecFactory,
+        renderer: Arc<dyn MixRendererFactory>,
+    ) -> Result<Self, DecodeError> {
+        let parsed = Descriptors::collect(descriptors)?;
+        Self::from_parsed(parsed, settings, factory, &mut Vec::new(), Some(renderer))
     }
 
     /// Builds a configured decoder, harvesting matching codec decoders from
@@ -513,6 +609,7 @@ impl StreamDecoder {
         settings: StreamSettings,
         factory: &dyn CodecFactory,
         reuse: &mut Vec<(u32, Vec<Box<dyn SubstreamDecoder>>)>,
+        renderer: Option<Arc<dyn MixRendererFactory>>,
     ) -> Result<Self, DecodeError> {
         if parsed.mix_presentations.is_empty() {
             return Err(DecodeError::InvalidDescriptors(
@@ -686,6 +783,10 @@ impl StreamDecoder {
             frame_size,
             ended: false,
             parsed,
+            external: renderer.map(|factory| ExternalRenderer {
+                factory,
+                renderer: None,
+            }),
         })
     }
 
@@ -869,6 +970,8 @@ impl StreamDecoder {
         let mut mixed: Vec<Vec<f32>> = vec![Vec::new(); out_channels];
         let mut trim: Option<(u32, u32)> = None;
         let mut unit_len: Option<usize> = None;
+        let external = self.external.is_some();
+        let mut external_inputs: Vec<ExternalInput> = Vec::new();
 
         for slot in &mut self.slots {
             let frames: Vec<FramePcm> = slot
@@ -910,34 +1013,32 @@ impl StreamDecoder {
             }
 
             // Binaural input is already headphone audio: never HRTF it.
-            let hrtf = cfg!(feature = "binaural")
-                && self.target == SoundSystem::Binaural
-                && slot.headphones_rendering_mode == 1
-                && !is_binaural_input(&slot.element.config);
-            // Not if-let-else: the ambisonics arm is a peer case, not a
-            // fallback.
-            #[allow(clippy::single_match_else)]
-            let rendered = match &slot.element.config {
+            let binaural_input = is_binaural_input(&slot.element.config);
+            let headphones = self.target == SoundSystem::Binaural && !binaural_input;
+            let hrtf =
+                cfg!(feature = "binaural") && headphones && slot.headphones_rendering_mode == 1;
+            // Layer selection: the builtin renderer binauralizes the highest
+            // layer only for mode 1 (with the `binaural` feature; otherwise
+            // it renders stereo). An external renderer binauralizes modes 1
+            // (world-locked) and 2 (head-locked) itself, so it always gets
+            // the highest layer for them, whatever the features.
+            let force_highest = if external {
+                headphones && matches!(slot.headphones_rendering_mode, 1 | 2)
+            } else {
+                hrtf
+            };
+            // Reconstruction (shared by both render paths): demixing/recon
+            // gain for channel-based elements, ACN planes for scene-based
+            // ones.
+            let reconstructed = match &slot.element.config {
                 AudioElementConfig::ChannelBased { layers } => {
-                    if slot.reconstructor.is_none() {
-                        let mut rec =
-                            ChannelReconstructor::with_layer_selection(layers, self.target, hrtf)?;
-                        for param in &slot.element.params {
-                            if let ElementParam::Demixing {
-                                default_demixing_mode,
-                                default_weight_index,
-                                ..
-                            } = param
-                            {
-                                rec.set_default_demixing(
-                                    *default_demixing_mode,
-                                    *default_weight_index,
-                                )?;
-                            }
-                        }
-                        slot.reconstructor = Some(rec);
-                    }
-                    let rec = slot.reconstructor.as_mut().unwrap();
+                    let rec = slot_reconstructor(
+                        &mut slot.reconstructor,
+                        &slot.element,
+                        layers,
+                        self.target,
+                        force_highest,
+                    )?;
                     if let Some(mode) = dmx_mode {
                         rec.set_demixing_mode(mode)?;
                     }
@@ -945,72 +1046,119 @@ impl StreamDecoder {
                         rec.set_recon_gains(recon);
                     }
                     let planar = rec.process_frame(&planes)?;
-                    #[cfg(feature = "binaural")]
-                    let rendered = if rec.is_binaural_input() {
-                        // Passthrough (target is binaural or stereo).
-                        planar
-                    } else if hrtf {
-                        let layout = rec.layout();
-                        binauralize_unit(
-                            &mut slot.binaural,
-                            crate::binaural::BinauralInput::Speakers {
-                                loudspeaker_layout: layout,
-                            },
-                            &planar,
-                            frame_len,
-                            slot.sample_rate,
-                        )?
-                    } else {
-                        let reconstructed = crate::reconstruct::Reconstructed::Channels {
-                            matrix: rec.matrix(),
-                            planar,
-                        };
-                        render(&reconstructed, target_matrix)?
-                    };
-                    #[cfg(not(feature = "binaural"))]
-                    let rendered = if rec.is_binaural_input() {
-                        planar
-                    } else {
-                        let reconstructed = crate::reconstruct::Reconstructed::Channels {
-                            matrix: rec.matrix(),
-                            planar,
-                        };
-                        render(&reconstructed, target_matrix)?
-                    };
-                    rendered
+                    Reconstructed::Channels {
+                        matrix: rec.matrix(),
+                        planar,
+                    }
                 }
-                _ => {
-                    let reconstructed = ambisonics_from_planes(&slot.element.config, planes)?;
-                    #[cfg(feature = "binaural")]
-                    let rendered = if hrtf {
-                        let hoa = reconstructed.planar();
-                        let order = crate::reconstruct::hoa_order_index(hoa.len());
-                        binauralize_unit(
-                            &mut slot.binaural,
-                            crate::binaural::BinauralInput::Hoa { order },
-                            hoa,
-                            frame_len,
-                            slot.sample_rate,
-                        )?
-                    } else {
-                        render(&reconstructed, target_matrix)?
-                    };
-                    #[cfg(not(feature = "binaural"))]
-                    let rendered = render(&reconstructed, target_matrix)?;
-                    rendered
-                }
+                _ => ambisonics_from_planes(&slot.element.config, planes)?,
             };
 
             // Per-sample element mix gain over the untrimmed unit.
             let gains: Vec<f32> = (0..frame_len)
                 .map(|_| slot.gain_cursor.next(slot.gain_default))
                 .collect();
+
+            if external {
+                // The external renderer mixes the whole sub-mix at once, so
+                // the gain is applied to the element input (renderers are
+                // linear, so this equals gaining the rendered element).
+                let layout = match (&reconstructed, &slot.reconstructor) {
+                    (Reconstructed::Channels { .. }, Some(rec)) => ElementLayout::Channels {
+                        loudspeaker_layout: if binaural_input {
+                            LOUDSPEAKER_LAYOUT_BINAURAL
+                        } else {
+                            rec.layout()
+                        },
+                    },
+                    _ => ElementLayout::Ambisonics {
+                        order: reconstructed.planar().len().isqrt().saturating_sub(1) as u8,
+                    },
+                };
+                let default_demixing_mode = slot.element.params.iter().find_map(|p| match p {
+                    ElementParam::Demixing {
+                        default_demixing_mode,
+                        ..
+                    } => Some(*default_demixing_mode),
+                    _ => None,
+                });
+                let mut planes = reconstructed.into_planar();
+                for plane in &mut planes {
+                    for (s, &g) in plane.iter_mut().zip(&gains) {
+                        *s *= g;
+                    }
+                }
+                external_inputs.push(ExternalInput {
+                    info: ElementInfo {
+                        audio_element_id: slot.element.audio_element_id,
+                        layout,
+                        headphones_rendering_mode: slot.headphones_rendering_mode,
+                        default_demixing_mode,
+                    },
+                    demixing_mode: dmx_mode,
+                    planes,
+                });
+                continue;
+            }
+
+            // Builtin renderer: binaural input passes through unchanged (the
+            // target is binaural or stereo, see `layout::can_render_to`);
+            // everything else uses the libiamf gain matrices, or the
+            // obr-style binaural renderer for headphones_rendering_mode 1.
+            #[cfg(feature = "binaural")]
+            let rendered = if binaural_input {
+                reconstructed.into_planar()
+            } else if hrtf {
+                let input = match &slot.reconstructor {
+                    Some(rec) if matches!(reconstructed, Reconstructed::Channels { .. }) => {
+                        crate::binaural::BinauralInput::Speakers {
+                            loudspeaker_layout: rec.layout(),
+                        }
+                    }
+                    _ => crate::binaural::BinauralInput::Hoa {
+                        order: crate::reconstruct::hoa_order_index(reconstructed.planar().len()),
+                    },
+                };
+                binauralize_unit(
+                    &mut slot.binaural,
+                    input,
+                    reconstructed.planar(),
+                    frame_len,
+                    slot.sample_rate,
+                )?
+            } else {
+                render(&reconstructed, target_matrix)?
+            };
+            #[cfg(not(feature = "binaural"))]
+            let rendered = if binaural_input {
+                reconstructed.into_planar()
+            } else {
+                render(&reconstructed, target_matrix)?
+            };
+
             for (mix_plane, rendered_plane) in mixed.iter_mut().zip(&rendered) {
                 if mix_plane.len() < rendered_plane.len() {
                     mix_plane.resize(rendered_plane.len(), 0.0);
                 }
                 for ((o, &s), &g) in mix_plane.iter_mut().zip(rendered_plane).zip(&gains) {
                     *o += g * s;
+                }
+            }
+        }
+
+        // A unit without samples has nothing to render; skipping it also
+        // keeps an external renderer from being sized by an empty unit.
+        if unit_len.unwrap_or(0) > 0 {
+            let sample_rate = self.sample_rate();
+            let frame_size = self.frame_size;
+            let target = self.target;
+            if let Some(external) = &mut self.external {
+                mixed = external.render_unit(target, sample_rate, frame_size, &external_inputs)?;
+                if mixed.len() != out_channels {
+                    return Err(DecodeError::UnsupportedRenderer(format!(
+                        "external renderer returned {} channels, {target:?} has {out_channels}",
+                        mixed.len()
+                    )));
                 }
             }
         }
@@ -1134,6 +1282,9 @@ impl StreamDecoder {
         self.ended = false;
         self.output_cursor = GainCursor::default();
         self.limiter = None;
+        if let Some(external) = &mut self.external {
+            external.renderer = None;
+        }
         for slot in &mut self.slots {
             for q in &mut slot.queues {
                 q.clear();
@@ -1178,11 +1329,15 @@ impl StreamDecoder {
             .collect();
         self.param_index.clear();
         self.pending.clear();
+        // The external renderer factory survives a failed reconfiguration
+        // so that a later successful one keeps using it.
+        let renderer = self.external.as_ref().map(|e| Arc::clone(&e.factory));
         match Self::from_parsed(
             std::mem::take(&mut self.parsed),
             settings,
             factory,
             &mut reuse,
+            renderer,
         ) {
             Ok(next) => {
                 *self = next;

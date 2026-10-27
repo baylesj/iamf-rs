@@ -1,0 +1,57 @@
+[package]
+name = "iamf-roar"
+description = "ROAR (AOM's Rust Open Audio Renderer) as an external renderer for the iamf-dec streaming decoder"
+version = "0.2.0"
+edition = "2024"
+# ROAR itself needs Rust 1.97.1, above the main workspace's 1.85 MSRV.
+rust-version = "1.97.1"
+license = "BSD-3-Clause-Clear"
+repository = "https://github.com/baylesj/iamf-rs"
+# ROAR is a git dependency (not on crates.io), so this crate cannot be
+# published. It is excluded from the main workspace (see the root
+# Cargo.toml) so that ROAR never enters the workspace's dependency graph.
+publish = false
+
+[dependencies]
+iamf-dec = { path = "../iamf-dec" }
+iamf-codecs = { path = "../iamf-codecs", features = ["pcm", "opus", "flac", "aac"] }
+aom-roar = { git = "https://github.com/AOMediaCodec/roar", rev = "45ca4926b7965c77576a8a911fa66cac84f4daea" }
+
+[features]
+# Use libopus (FFI) instead of the pure-Rust Opus decoder, like iamfdec's
+# feature of the same name.
+opus-ffi = ["iamf-codecs/opus-ffi"]
+
+[dev-dependencies]
+iamf-obu = { path = "../iamf-obu" }
+
+[[bin]]
+name = "iamfdec-roar"
+path = "src/bin/iamfdec-roar.rs"
+
+# The main workspace's lint set (this crate is outside the workspace, so it
+# cannot inherit `[workspace.lints]`).
+[lints.rust]
+unsafe_code = "forbid"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+unused_qualifications = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+cast_lossless = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+doc_markdown = "allow"
+module_name_repetitions = "allow"
+similar_names = "allow"
+too_many_lines = "allow"
+unreadable_literal = "allow"
+many_single_char_names = "allow"
+float_cmp = "allow"

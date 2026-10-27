@@ -9,7 +9,10 @@ members = [
     "tools/iamfdec",
     "tools/iamfplay",
 ]
-exclude = ["fuzz"]
+# `crates/iamf-roar` depends on ROAR, a git dependency that needs Rust
+# 1.97.1. It has its own Cargo.lock so ROAR never enters this workspace's
+# dependency graph (offline builds and `cargo publish` stay possible).
+exclude = ["fuzz", "crates/iamf-roar"]
 
 [workspace.package]
 version = "0.2.0"
