@@ -90,6 +90,7 @@ version = "0.2.0"
 dependencies = [
  "iamf-dec",
  "iamf-obu",
+ "iamf-opus-ffi",
  "opus-decoder",
  "symphonia-bundle-flac",
  "symphonia-codec-aac",
@@ -118,6 +119,13 @@ dependencies = [
 [[package]]
 name = "iamf-obu"
 version = "0.2.0"
+
+[[package]]
+name = "iamf-opus-ffi"
+version = "0.2.0"
+dependencies = [
+ "pkg-config",
+]
 
 [[package]]
 name = "jobserver"
@@ -192,6 +200,12 @@ checksum = "15ae32c275dabb0cd2c863460bf349e9abc3568ba2abf0f9eb7b7d2edeeed07e"
 dependencies = [
  "thiserror",
 ]
+
+[[package]]
+name = "pkg-config"
+version = "0.3.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "primal-check"

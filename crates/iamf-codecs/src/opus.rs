@@ -40,10 +40,20 @@ impl OpusSubstreamDecoder {
 
 impl SubstreamDecoder for OpusSubstreamDecoder {
     fn decode(&mut self, packet: &[u8], out: &mut DecodedFrame) -> Result<(), DecodeError> {
-        let samples_per_channel = self
-            .decoder
-            .decode_float(packet, &mut self.buffer, false)
-            .map_err(|e| DecodeError::CorruptPacket(format!("opus: {e:?}")))?;
+        // Guard against arithmetic panics in the upstream `opus-decoder`
+        // crate on adversarial bitstreams (e.g. `extract_collapse_mask`
+        // shift overflow when overflow-checks are enabled).
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.decoder.decode_float(packet, &mut self.buffer, false)
+        }));
+        let samples_per_channel = match res {
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => return Err(DecodeError::CorruptPacket(format!("opus: {e:?}"))),
+            Err(_) => {
+                self.reset();
+                return Err(DecodeError::CorruptPacket("opus: decoder panic".into()));
+            }
+        };
         crate::opus_common::emit(&self.buffer, samples_per_channel, self.channels, out);
         Ok(())
     }
