@@ -55,7 +55,7 @@ fn render_case(vector: &str, layout_index: usize, sound_system: u8, tolerance: i
         require_vectors!(files, format_args!("{vector} + rendered reference"));
 
     let descriptors = Descriptors::collect(&data).unwrap();
-    let target = SoundSystem::from_u8(sound_system).unwrap();
+    let target = SoundSystem::from_bitstream_sound_system(sound_system).unwrap();
     let mut decoder = PresentationDecoder::new(&descriptors, 0, target, &DefaultFactory).unwrap();
     for obu in ObuIter::new(&data).map(Result::unwrap) {
         decoder.process_obu(&obu).unwrap();
@@ -204,7 +204,7 @@ fn extended_sound_systems_render_sanely() {
     );
     let render = |sound_system: u8| {
         let descriptors = Descriptors::collect(&data).unwrap();
-        let target = SoundSystem::from_u8(sound_system).unwrap();
+        let target = SoundSystem::from_bitstream_sound_system(sound_system).unwrap();
         let mut decoder =
             PresentationDecoder::new(&descriptors, 0, target, &DefaultFactory).unwrap();
         for obu in ObuIter::new(&data).map(Result::unwrap) {
@@ -214,8 +214,15 @@ fn extended_sound_systems_render_sanely() {
     };
     let stereo = render(0);
     let frames = stereo.interleaved.len() / stereo.channels;
-    // E (4+5+1), F (3+7+0), G (4+9+0), H (9+10+3), 9.1.6.
-    for (sound_system, channels) in [(4u8, 11usize), (5, 12), (6, 14), (7, 24), (13, 16)] {
+    // E (4+5+1), F (3+7+0), G (4+9+0), H (9+10+3), 9.1.6, 7.1.5.4.
+    for (sound_system, channels) in [
+        (4u8, 11usize),
+        (5, 12),
+        (6, 14),
+        (7, 24),
+        (13, 16),
+        (14, 17),
+    ] {
         let mix = render(sound_system);
         assert_eq!(mix.channels, channels, "sound system {sound_system}");
         assert_eq!(
@@ -257,4 +264,35 @@ fn binaural_matches_stereo_fallback() {
         };
         assert_eq!(render(14), render(0), "{vector}: binaural != stereo");
     }
+}
+
+/// Base-Enhanced expanded layout: Stereo-F (`expanded_loudspeaker_layout == 9`,
+/// parent 9.1.6) rendered to stereo and 9.1.6.
+#[test]
+fn expanded_stereo_f_to_stereo_and_916() {
+    render_case("test_000611", 0, 0, 1);
+    render_case("test_000611", 1, 13, 1);
+}
+
+/// IAMF v2.0 expanded layout: LFE-Pair (`expanded_loudspeaker_layout == 14`,
+/// parent 10.2.9.3 / Sound System H) rendered to stereo and 22.2.
+#[test]
+fn expanded_lfe_pair_to_stereo_and_22_2() {
+    render_case("test_000828", 0, 0, 0);
+    render_case("test_000828", 1, 7, 1);
+}
+
+/// IAMF v2.0 expanded layout: Bottom-3ch (`expanded_loudspeaker_layout == 15`,
+/// parent 10.2.9.3) rendered to stereo and 7.1.2.
+#[test]
+fn expanded_bottom_3ch_to_stereo_and_712() {
+    render_case("test_000829", 0, 0, 1);
+    render_case("test_000829", 1, 10, 1);
+}
+
+/// IAMF v2.0 expanded layout: Bottom-4ch (`expanded_loudspeaker_layout == 17`,
+/// parent 7.1.5.4) rendered to `sound_system == 14` (`7.1.5.4`).
+#[test]
+fn expanded_bottom_4ch_to_7154() {
+    render_case("test_000830", 1, 14, 1);
 }
