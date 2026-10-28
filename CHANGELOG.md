@@ -200,25 +200,17 @@ and conformant v1.1 streams decode unchanged.
     other OBU types the bit is v2.0's `type_specific_flag`
     (`ObuHeader::optional_fields_flag`, `ObuHeader::is_key_frame`).
 
-Conformance fixes found by running all 333 libiamf test vectors. These
-change decoding behavior on the affected streams:
+Found by running all 333 libiamf test vectors:
 
-- Reserved OBU types 25 to 30 are skipped instead of rejected.
-- Trim fields are read only on audio frame OBUs. On other OBU types the same
-  header bit has a different meaning (for example, optional fields on IAMF v2
-  descriptors), which iamf-rs does not parse.
-- Audio element type 2 (object-based, IAMF v2) and reserved types 3 to 7 are
-  parsed by their declared size and not decoded. This adds the
-  `AudioElementConfig::Extension` variant, a breaking change for code that
-  matches `AudioElementConfig` exhaustively.
-- A malformed descriptor OBU other than the sequence header is skipped, as in
-  iamf-tools. A bad sequence header still fails.
-- Tests and tools: the default vector set adds test_000116, 000120, 000129,
-  and 000851, which cover the cases above. `tools/bench_iamf_tools` compares
-  iamf-rs with iamf-tools in one process (results in
-  `docs/iamf-tools-comparison.md`). `fetch_vectors.sh` can copy vectors and
-  all reference renders from local checkouts (`LIBIAMF_TESTS_DIR`,
-  `IAMF_DEMO_DIR`) and fetches loudspeaker renders for layouts 0 to 9.
+- A malformed descriptor OBU other than the sequence header is skipped, as
+  in iamf-tools. A bad sequence header still fails.
+- The default vector set adds test_000116, 000120, and 000129 (OBUs a
+  decoder must skip), and `stream.rs` decodes them end to end.
+- `tools/bench_iamf_tools` compares iamf-rs with iamf-tools in one process
+  (results in `docs/iamf-tools-comparison.md`). `fetch_vectors.sh` can copy
+  vectors and all reference renders from local checkouts
+  (`LIBIAMF_TESTS_DIR`, `IAMF_DEMO_DIR`) and fetches loudspeaker renders
+  for layouts 0 to 9.
 
 ## 0.2.0 — 2026-08-25
 

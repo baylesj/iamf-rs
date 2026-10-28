@@ -94,6 +94,13 @@ run.
 The machine was a shared AMD EPYC 7B13 with clang 21.1.8 (`-O3`, libstdc++)
 and rustc 1.93.1 (default release profile), no LTO on either side.
 
+The tables were measured with iamf-rs at main 19520a8. A rerun on top of
+231a56d (expanded layouts, v2 parsing, and §7.4.1 mix selection) gave the same
+output and the same per-frame allocations, and one more allocation at creation
+for iamf-rs. The machine was busier during that rerun, so both decoders were
+slower, but the speedups stayed in a similar range: LPCM 4.6x to 9.8x, Opus
+1.2x to 2.0x.
+
 ## Caveats
 
 - One shared machine with no CPU pinning. Speedups moved by up to 17% between
@@ -106,10 +113,9 @@ and rustc 1.93.1 (default release profile), no LTO on either side.
 
 ## Related changes
 
-Running all 333 libiamf vectors through the parser for this work found four
-gaps, fixed in the same change: reserved OBU types, the trim bit on non-audio
-OBUs, object-based and reserved audio element types, and malformed
-descriptors. See the CHANGELOG. Checking decoded output against every
+Running all 333 libiamf vectors through the parser for this work found that
+iamf-rs rejected streams with a malformed descriptor that iamf-tools skips.
+That is fixed in the same change. Checking decoded output against every
 reference render is a separate effort.
 
 ## Running it
