@@ -353,3 +353,56 @@ fn android_channel_ordering() {
         }
     }
 }
+
+/// Decodes `name` end to end and checks that it produces samples.
+fn decode_to_samples(name: &str, data: &[u8]) {
+    let mut settings = StreamSettings::default();
+    settings.sample_type = Some(OutputSampleType::Int16LittleEndian);
+    let mut decoder = match StreamDecoder::new_from_descriptors(data, settings, &DefaultFactory) {
+        Ok(d) => d,
+        Err(e) => panic!("{name} failed to create decoder: {e}"),
+    };
+    decoder.decode(data).expect(name);
+    decoder.signal_end_of_decoding();
+    let mut out = Vec::new();
+    while decoder.is_temporal_unit_available() {
+        if let Some(samples) = decoder.get_output_temporal_unit().expect(name) {
+            out.extend(samples);
+        }
+    }
+    assert!(!out.is_empty(), "{name} produced no decoded samples");
+}
+
+/// Streams with reserved OBU types (000116), an audio element type iamf-rs
+/// does not decode (000120), and a malformed non-header descriptor (000129).
+/// These are in the default fetch set, so CI runs them. (test_000851, the
+/// type-specific header flag on a descriptor, is a Base-Advanced profile
+/// stream, which iamf-rs does not support; the parse test covers it.)
+#[test]
+fn decodes_vectors_with_reserved_or_bypassed_obus() {
+    for name in ["test_000116", "test_000120", "test_000129"] {
+        let data = require_vectors!(vector(name), format_args!("{name}"));
+        decode_to_samples(name, &data);
+    }
+}
+
+/// More streams of the same kinds, run when `fetch_vectors.sh --all` has
+/// fetched them.
+#[test]
+fn decodes_more_vectors_with_reserved_or_bypassed_obus_when_present() {
+    for name in [
+        "test_000119",
+        "test_000121",
+        "test_000122",
+        "test_000130",
+        "test_000502",
+        "test_000710",
+        "test_000711",
+    ] {
+        let Some(data) = vector(name) else {
+            eprintln!("SKIPPED: {name} missing; run tools/fetch_vectors.sh --all");
+            continue;
+        };
+        decode_to_samples(name, &data);
+    }
+}

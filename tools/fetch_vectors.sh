@@ -18,7 +18,8 @@ DEST="$(cd "$(dirname "$0")/.." && pwd)/tests/vectors"
 
 # Curated spread: LPCM/Opus/AAC-LC codecs, channel- and scene-based
 # elements (ambisonics MONO and PROJECTION: 000042/000048), a redundant
-# sequence header ahead of the canonical one (000079), plus two
+# sequence header ahead of the canonical one (000079), streams with OBUs a
+# decoder must skip (000116, 000120, 000129), plus two
 # should-fail-to-decode cases (000007, 000025).
 DEFAULT_VECTORS=(
   test_000002 test_000005 test_000007 test_000024 test_000025 test_000026
@@ -26,6 +27,7 @@ DEFAULT_VECTORS=(
   test_000048 test_000065 test_000066 test_000069 test_000070 test_000082
   test_000086 test_000088 test_000073 test_000090 test_000092 test_000079
   test_000611 test_000828 test_000829 test_000830
+  test_000116 test_000120 test_000129
 )
 
 # IAMF v2.0 (Base-Advanced / Advanced-1 profile) vectors, all LPCM unless
@@ -44,6 +46,13 @@ V2_VECTORS=(
   test_000855 test_000912 test_001100 test_001101 test_001102 test_001103
 )
 
+# Optional local seeds, copied instead of downloaded when set:
+#   LIBIAMF_TESTS_DIR  a libiamf checkout's tests/ directory (copies every
+#                      rendered WAV for each vector, including binaural)
+#   IAMF_DEMO_DIR      an iamf-tools checkout's gh_pages/web_demo/data/
+LOCAL_TESTS_DIR="${LIBIAMF_TESTS_DIR:-}"
+LOCAL_DEMO_DIR="${IAMF_DEMO_DIR:-}"
+
 if [[ "${1:-}" == "--demo" ]]; then
   # Produced demo content shipped with the iamf-tools web demo (the
   # gh_pages/ directory of its main branch): 7.1.4 music in three codecs
@@ -55,7 +64,10 @@ if [[ "${1:-}" == "--demo" ]]; then
     Animated_demo_3OA Animated_demo_3OA_and_2_0; do
     out="$DEMO_DEST/$name.iamf"
     [[ -s "$out" ]] && continue
-    if curl -fsSL "$DEMO_URL/$name.iamf" -o "$out"; then
+    if [[ -n "$LOCAL_DEMO_DIR" && -s "$LOCAL_DEMO_DIR/$name.iamf" ]]; then
+      cp --reflink=auto "$LOCAL_DEMO_DIR/$name.iamf" "$out" 2>/dev/null || cp "$LOCAL_DEMO_DIR/$name.iamf" "$out"
+      echo "copied $name.iamf from $LOCAL_DEMO_DIR"
+    elif curl -fsSL "$DEMO_URL/$name.iamf" -o "$out"; then
       echo "fetched $name.iamf"
     else
       echo "MISSING $name.iamf" >&2
@@ -68,13 +80,18 @@ fi
 
 if [[ "${1:-}" == "--all" ]]; then
   echo "Listing all vectors..."
-  vectors=$(curl -fsSL "$API_URL?per_page=100" --get --data-urlencode "ref=main" |
-    grep -oE '"name": *"test_[0-9_a-z]+\.iamf"' | sed -E 's/.*"(test_[^"]+)\.iamf"/\1/')
-  # The contents API paginates implicitly by directory listing; fall back to
-  # the git tree API which returns everything in one call.
-  if [[ $(echo "$vectors" | wc -l) -lt 100 ]]; then
-    vectors=$(curl -fsSL "https://api.github.com/repos/AOMediaCodec/libiamf/git/trees/main?recursive=1" |
-      grep -oE '"path": *"tests/test_[0-9_a-z]+\.iamf"' | sed -E 's|.*"tests/(test_[^"]+)\.iamf"|\1|')
+  if [[ -n "$LOCAL_TESTS_DIR" && -d "$LOCAL_TESTS_DIR" ]]; then
+    echo "Found local tests dir: $LOCAL_TESTS_DIR"
+    vectors=$(ls "$LOCAL_TESTS_DIR" | grep -oE '^test_[0-9_a-z]+\.iamf$' | sed -E 's/\.iamf$//' | sort -u)
+  else
+    vectors=$(curl -fsSL "$API_URL?per_page=100" --get --data-urlencode "ref=main" |
+      grep -oE '"name": *"test_[0-9_a-z]+\.iamf"' | sed -E 's/.*"(test_[^"]+)\.iamf"/\1/')
+    # The contents API paginates implicitly by directory listing; fall back to
+    # the git tree API which returns everything in one call.
+    if [[ $(echo "$vectors" | wc -l) -lt 100 ]]; then
+      vectors=$(curl -fsSL "https://api.github.com/repos/AOMediaCodec/libiamf/git/trees/main?recursive=1" |
+        grep -oE '"path": *"tests/test_[0-9_a-z]+\.iamf"' | sed -E 's|.*"tests/(test_[^"]+)\.iamf"|\1|')
+    fi
   fi
   set -- $vectors
 elif [[ "${1:-}" == "--v2" ]]; then
@@ -86,10 +103,32 @@ fi
 mkdir -p "$DEST"
 ok=0 fail=0
 for name in "$@"; do
+  if [[ -n "$LOCAL_TESTS_DIR" && -s "$LOCAL_TESTS_DIR/$name.iamf" ]]; then
+    # Copy all rendered WAVs, .iamf, and .textproto for this vector from local seed.
+    for f in "$LOCAL_TESTS_DIR/${name}_rendered_"*.wav; do
+      [[ -e "$f" ]] || continue
+      base="$(basename "$f")"
+      [[ -s "$DEST/$base" ]] && continue
+      cp --reflink=auto "$f" "$DEST/$base" 2>/dev/null || cp "$f" "$DEST/$base"
+    done
+    for ext in iamf textproto; do
+      src="$LOCAL_TESTS_DIR/$name.$ext"
+      out="$DEST/$name.$ext"
+      if [[ -s "$src" && ! -s "$out" ]]; then
+        cp --reflink=auto "$src" "$out" 2>/dev/null || cp "$src" "$out"
+      fi
+    done
+    if [[ -s "$DEST/$name.iamf" ]]; then
+      ok=$((ok + 1))
+      continue
+    fi
+  fi
+
+  # Remote fetch fallback:
   # Rendered reference WAVs (used by render conformance tests). All current
   # vectors use mix presentation id 42 / sub mix 0; missing layouts 404
   # harmlessly.
-  for layout in 0 1 2; do
+  for layout in 0 1 2 3 4 5 6 7 8 9; do
     ref="${name}_rendered_id_42_sub_mix_0_layout_${layout}.wav"
     [[ -s "$DEST/$ref" ]] && continue
     curl -fsSL "$BASE_URL/$ref" -o "$DEST/$ref" 2>/dev/null || rm -f "$DEST/$ref"
