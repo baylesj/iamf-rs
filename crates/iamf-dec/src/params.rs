@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use iamf_obu::descriptors::{
     AudioElement, ChannelAudioLayer, ElementParam, ParamDefinition, SubMix,
 };
+use iamf_obu::position::{PositionData, PositionParamType};
 use iamf_obu::{ByteReader, Error};
 
 use crate::DecodeError;
@@ -22,6 +23,7 @@ pub(crate) enum ParamKind {
     ReconGain,
     ElementMixGain,
     OutputMixGain,
+    Position(PositionParamType),
 }
 
 /// parameter_id → every consumer of that id. IAMF requires unique
@@ -29,61 +31,72 @@ pub(crate) enum ParamKind {
 /// dropping one consumer's updates.
 pub(crate) type ParamIndex = HashMap<u32, Vec<(usize, ParamKind, ParamDefinition)>>;
 
-/// Builds the parameter index for one sub mix: demixing/recon-gain
-/// definitions of each element, per-element mix gains, and the output mix
-/// gain (registered under slot 0). Slot indices follow `sub_mix.elements`
-/// order.
+/// Builds the parameter index across all sub-mixes: demixing/recon-gain/position
+/// definitions of each element, per-element mix gains (registered under the flat
+/// element slot index across `sub_mixes`), and each sub-mix's output mix gain
+/// (registered under its sub-mix index `0..sub_mixes.len()`).
 pub(crate) fn build_param_index(
-    sub_mix: &SubMix,
+    sub_mixes: &[SubMix],
     elements: &[AudioElement],
 ) -> Result<ParamIndex, DecodeError> {
     let mut index = ParamIndex::new();
-    for (slot, sub_element) in sub_mix.elements.iter().enumerate() {
-        let element = elements
-            .iter()
-            .find(|e| e.audio_element_id == sub_element.audio_element_id)
-            .ok_or_else(|| {
-                DecodeError::InvalidDescriptors(format!(
-                    "mix references unknown element {}",
-                    sub_element.audio_element_id
-                ))
-            })?;
-        for param in &element.params {
-            match param {
-                ElementParam::Demixing { base, .. } => {
-                    index.entry(base.parameter_id).or_default().push((
-                        slot,
-                        ParamKind::Demixing,
-                        base.clone(),
-                    ));
+    let mut slot = 0usize;
+    for (sm_idx, sub_mix) in sub_mixes.iter().enumerate() {
+        for sub_element in &sub_mix.elements {
+            let element = elements
+                .iter()
+                .find(|e| e.audio_element_id == sub_element.audio_element_id)
+                .ok_or_else(|| {
+                    DecodeError::InvalidDescriptors(format!(
+                        "mix references unknown element {}",
+                        sub_element.audio_element_id
+                    ))
+                })?;
+            for param in &element.params {
+                match param {
+                    ElementParam::Demixing { base, .. } => {
+                        index.entry(base.parameter_id).or_default().push((
+                            slot,
+                            ParamKind::Demixing,
+                            base.clone(),
+                        ));
+                    }
+                    ElementParam::ReconGain(base) => {
+                        index.entry(base.parameter_id).or_default().push((
+                            slot,
+                            ParamKind::ReconGain,
+                            base.clone(),
+                        ));
+                    }
+                    ElementParam::Unknown { .. } => {}
                 }
-                ElementParam::ReconGain(base) => {
-                    index.entry(base.parameter_id).or_default().push((
-                        slot,
-                        ParamKind::ReconGain,
-                        base.clone(),
-                    ));
-                }
-                ElementParam::Unknown { .. } => {}
             }
+            for pos_def in &sub_element.position_params {
+                index.entry(pos_def.base.parameter_id).or_default().push((
+                    slot,
+                    ParamKind::Position(pos_def.param_type),
+                    pos_def.base.clone(),
+                ));
+            }
+            index
+                .entry(sub_element.element_mix_gain.base.parameter_id)
+                .or_default()
+                .push((
+                    slot,
+                    ParamKind::ElementMixGain,
+                    sub_element.element_mix_gain.base.clone(),
+                ));
+            slot += 1;
         }
         index
-            .entry(sub_element.element_mix_gain.base.parameter_id)
+            .entry(sub_mix.output_mix_gain.base.parameter_id)
             .or_default()
             .push((
-                slot,
-                ParamKind::ElementMixGain,
-                sub_element.element_mix_gain.base.clone(),
+                sm_idx,
+                ParamKind::OutputMixGain,
+                sub_mix.output_mix_gain.base.clone(),
             ));
     }
-    index
-        .entry(sub_mix.output_mix_gain.base.parameter_id)
-        .or_default()
-        .push((
-            0,
-            ParamKind::OutputMixGain,
-            sub_mix.output_mix_gain.base.clone(),
-        ));
     Ok(index)
 }
 
@@ -99,6 +112,8 @@ pub enum ParamContext<'a> {
     /// Channel layers of the owning element; recon gain data exists only
     /// for layers with `recon_gain_is_present`.
     ReconGain(&'a [ChannelAudioLayer]),
+    /// Object position parameter definition context.
+    Position(PositionParamType),
 }
 
 /// §3.10.2 animated mix gain over one subblock. Values are Q7.8 dB.
@@ -128,6 +143,20 @@ pub enum MixGainAnimation {
         /// Normalized time of control point (0..=255).
         control_relative_time: u8,
     },
+    /// Linear ramp whose start gain is inherited from the previous subblock's end gain.
+    InterLinear {
+        /// Ending gain in Q7.8 dB.
+        end: i16,
+    },
+    /// Bezier curve whose start gain is inherited from the previous subblock's end gain.
+    InterBezier {
+        /// Ending gain in Q7.8 dB.
+        end: i16,
+        /// Control point gain in Q7.8 dB.
+        control: i16,
+        /// Normalized time of control point (0..=255).
+        control_relative_time: u8,
+    },
 }
 
 /// Q7.8 dB → linear gain.
@@ -136,6 +165,51 @@ pub fn q78_db_to_linear(q: i16) -> f32 {
 }
 
 impl MixGainAnimation {
+    /// Resolves [`MixGainAnimation::InterLinear`] and [`MixGainAnimation::InterBezier`]
+    /// using `prev_end` (the ending Q7.8 dB gain of the preceding subblock, or
+    /// `default_mix_gain` at the start of the stream or after a gap), returning
+    /// the resolved animation and the updated `prev_end` value.
+    pub fn resolve(&self, prev_end: i16) -> (Self, i16) {
+        match *self {
+            Self::Step { start } => (Self::Step { start }, start),
+            Self::Linear { start, end } => (Self::Linear { start, end }, end),
+            Self::Bezier {
+                start,
+                end,
+                control,
+                control_relative_time,
+            } => (
+                Self::Bezier {
+                    start,
+                    end,
+                    control,
+                    control_relative_time,
+                },
+                end,
+            ),
+            Self::InterLinear { end } => (
+                Self::Linear {
+                    start: prev_end,
+                    end,
+                },
+                end,
+            ),
+            Self::InterBezier {
+                end,
+                control,
+                control_relative_time,
+            } => (
+                Self::Bezier {
+                    start: prev_end,
+                    end,
+                    control,
+                    control_relative_time,
+                },
+                end,
+            ),
+        }
+    }
+
     /// Linear gain at sample `i` of a subblock of `duration` samples.
     /// Matches libiamf: endpoints are converted to linear first and
     /// interpolated in the linear domain (`mix_gain_bezier_linear` /
@@ -196,6 +270,19 @@ impl From<&MixGainAnimation> for LinearAnimation {
                 control: f64::from(q78_db_to_linear(control)),
                 control_time: f64::from(control_relative_time) / 255.0,
             },
+            MixGainAnimation::InterLinear { end } => LinearAnimation::Step {
+                gain: q78_db_to_linear(end),
+            },
+            MixGainAnimation::InterBezier {
+                end,
+                control,
+                control_relative_time,
+            } => LinearAnimation::Bezier {
+                start: f64::from(q78_db_to_linear(end)),
+                end: f64::from(q78_db_to_linear(end)),
+                control: f64::from(q78_db_to_linear(control)),
+                control_time: f64::from(control_relative_time) / 255.0,
+            },
         }
     }
 }
@@ -249,6 +336,8 @@ pub enum SubblockData {
     },
     /// Recon gain layers payload.
     ReconGain(ReconGainLayers),
+    /// Object position animation payload.
+    Position(PositionData),
 }
 
 /// A single subblock within a parameter block.
@@ -343,6 +432,12 @@ impl ParameterBlock {
                 ParamContext::ReconGain(layers) => {
                     SubblockData::ReconGain(parse_recon_gain(&mut r, layers)?)
                 }
+                ParamContext::Position(param_type) => {
+                    let offset = r.position();
+                    let pos = PositionData::parse(&mut r, *param_type)?;
+                    crate::objects::validate_position_data(*param_type, &pos, offset)?;
+                    SubblockData::Position(pos)
+                }
             };
             subblocks.push(ParameterSubblock {
                 duration: subblock_duration,
@@ -363,6 +458,8 @@ fn parse_mix_gain(r: &mut ByteReader<'_>) -> Result<MixGainAnimation, Error> {
     const STEP: u32 = 0;
     const LINEAR: u32 = 1;
     const BEZIER: u32 = 2;
+    const INTER_LINEAR: u32 = 3;
+    const INTER_BEZIER: u32 = 4;
     match r.read_leb128()? {
         STEP => Ok(MixGainAnimation::Step {
             start: r.read_i16_be()?,
@@ -373,6 +470,14 @@ fn parse_mix_gain(r: &mut ByteReader<'_>) -> Result<MixGainAnimation, Error> {
         }),
         BEZIER => Ok(MixGainAnimation::Bezier {
             start: r.read_i16_be()?,
+            end: r.read_i16_be()?,
+            control: r.read_i16_be()?,
+            control_relative_time: r.read_u8()?,
+        }),
+        INTER_LINEAR => Ok(MixGainAnimation::InterLinear {
+            end: r.read_i16_be()?,
+        }),
+        INTER_BEZIER => Ok(MixGainAnimation::InterBezier {
             end: r.read_i16_be()?,
             control: r.read_i16_be()?,
             control_relative_time: r.read_u8()?,

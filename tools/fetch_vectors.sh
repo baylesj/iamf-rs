@@ -94,6 +94,10 @@ for name in "$@"; do
     [[ -s "$DEST/$ref" ]] && continue
     curl -fsSL "$BASE_URL/$ref" -o "$DEST/$ref" 2>/dev/null || rm -f "$DEST/$ref"
   done
+  bin_ref="${name}_rendered_binaural.wav"
+  if [[ ! -s "$DEST/$bin_ref" ]]; then
+    curl -fsSL "$BASE_URL/$bin_ref" -o "$DEST/$bin_ref" 2>/dev/null || rm -f "$DEST/$bin_ref"
+  fi
   for ext in iamf textproto; do
     out="$DEST/$name.$ext"
     if [[ -s "$out" ]]; then

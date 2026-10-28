@@ -51,15 +51,19 @@
 use aom_roar::{
     AudioElementConfig, BinauralFilterProfile, ChannelBasedConfig, Config, DownmixInfo,
     DownmixMode, ElementRenderingConfig, GroupId, HeadphonesRenderingMode, HighOrderAmbisonics,
-    Layout, OarError, PlanarBufferMut, PlanarBufferRef, RoarRenderer, SampleRate, Samples,
-    SceneBasedConfig,
+    Layout, OarError, ObjectBasedConfig, ObjectPosition, PlanarBufferMut, PlanarBufferRef,
+    PolarCoordinate, RoarRenderer, SampleRate, Samples, SceneBasedConfig,
 };
 
 use iamf_dec::DecodeError;
 use iamf_dec::layout::{
     LOUDSPEAKER_LAYOUT_7_1_5_4, LOUDSPEAKER_LAYOUT_9_1_6, LOUDSPEAKER_LAYOUT_10_2_9_3, SoundSystem,
 };
-use iamf_dec::renderer::{ElementFrame, ElementLayout, MixConfig, MixRenderer, MixRendererFactory};
+use iamf_dec::objects::PolarCoord;
+use iamf_dec::renderer::{
+    BinauralFilterProfile as IamfFilterProfile, ElementFrame, ElementLayout, MixConfig,
+    MixRenderer, MixRendererFactory,
+};
 
 /// ROAR's maximum block size (`MAX_SAMPLES_PER_CHANNEL`).
 const MAX_BLOCK: usize = 16384;
@@ -92,6 +96,7 @@ impl MixRendererFactory for RoarRendererFactory {
                         default_dmixp_mode: info.default_demixing_mode,
                     },
                     ElementLayout::Ambisonics { order } => ElementKind::Hoa { order },
+                    ElementLayout::Objects { num_objects } => ElementKind::Objects { num_objects },
                     other => {
                         return Err(DecodeError::UnsupportedRenderer(format!(
                             "ROAR adapter does not handle element layout {other:?}"
@@ -102,6 +107,7 @@ impl MixRendererFactory for RoarRendererFactory {
                     id: info.audio_element_id,
                     kind,
                     headphones_rendering_mode: info.headphones_rendering_mode,
+                    binaural_filter_profile: info.binaural_filter_profile,
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -121,6 +127,7 @@ impl MixRenderer for RoarMix {
             .map(|e| UnitInput {
                 id: e.audio_element_id,
                 dmixp_mode: e.demixing_mode,
+                object_positions: e.object_positions,
                 planar: e.planes,
             })
             .collect();
@@ -221,6 +228,8 @@ enum ElementKind {
     },
     /// Scene-based, ACN-ordered planes of the given order.
     Hoa { order: u8 },
+    /// Object-based, `num_objects` mono planes.
+    Objects { num_objects: u8 },
 }
 
 /// One element of the mix, as configured at creation.
@@ -231,6 +240,8 @@ struct ElementSpec {
     kind: ElementKind,
     /// §3.8.2 headphones_rendering_mode (binaural target only).
     headphones_rendering_mode: u8,
+    /// §3.8.2 binaural_filter_profile (binaural target only).
+    binaural_filter_profile: IamfFilterProfile,
 }
 
 /// One element's audio for one temporal unit (mix gain already applied).
@@ -240,6 +251,8 @@ struct UnitInput<'a> {
     /// Demixing mode that applies to this unit, if a parameter block
     /// covers it.
     dmixp_mode: Option<u8>,
+    /// Polar positions for each object of an object-based element.
+    object_positions: &'a [PolarCoord],
     /// Planar element channels, one plane per channel, all unit-length.
     planar: &'a [Vec<f32>],
 }
@@ -322,14 +335,18 @@ impl RoarMix {
                     ..
                 }
             );
-            let rendering_config = binaural.then(|| ElementRenderingConfig {
+            let rendering_config = binaural.then_some(ElementRenderingConfig {
                 headphones_rendering_mode: match spec.headphones_rendering_mode {
                     _ if passthrough => HeadphonesRenderingMode::WorldLockedRestricted,
                     1 => HeadphonesRenderingMode::WorldLocked,
                     2 => HeadphonesRenderingMode::HeadLocked,
                     _ => HeadphonesRenderingMode::WorldLockedRestricted,
                 },
-                binaural_filter_profile: BinauralFilterProfile::default(),
+                binaural_filter_profile: match spec.binaural_filter_profile {
+                    IamfFilterProfile::Direct => BinauralFilterProfile::Direct,
+                    IamfFilterProfile::Reverberant => BinauralFilterProfile::Reverberant,
+                    _ => BinauralFilterProfile::Ambient,
+                },
             });
             let (element_config, downmix_active) = match spec.kind {
                 ElementKind::Channels {
@@ -370,6 +387,13 @@ impl RoarMix {
                         false,
                     )
                 }
+                ElementKind::Objects { num_objects } => (
+                    AudioElementConfig::ObjectBased(ObjectBasedConfig {
+                        num_objects: u32::from(num_objects),
+                        rendering_config,
+                    }),
+                    false,
+                ),
             };
             renderer
                 .add_element(group, spec.id, &element_config)
@@ -425,6 +449,21 @@ impl RoarMix {
         let mut padded: Vec<Vec<Vec<f32>>> = Vec::new();
         let mut pos = 0usize;
         while pos < unit_len {
+            for input in inputs {
+                if !input.object_positions.is_empty() {
+                    let coords = input
+                        .object_positions
+                        .iter()
+                        .map(|p| {
+                            PolarCoordinate::new_from_floats(p.azimuth, p.elevation, p.distance)
+                                .map_err(|e| roar_error("object position", e))
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    self.renderer
+                        .update_element_positions(input.id, &ObjectPosition::Polar(coords), samples)
+                        .map_err(|e| roar_error("update object positions", e))?;
+                }
+            }
             let n = block.min(unit_len - pos);
             if n < block {
                 padded = inputs
@@ -488,6 +527,7 @@ mod tests {
                 default_dmixp_mode: None,
             },
             headphones_rendering_mode: 0,
+            binaural_filter_profile: IamfFilterProfile::default(),
         }
     }
 
@@ -495,6 +535,7 @@ mod tests {
         UnitInput {
             id,
             dmixp_mode: None,
+            object_positions: &[],
             planar,
         }
     }
@@ -595,6 +636,7 @@ mod tests {
             id: 1,
             kind: ElementKind::Hoa { order: 1 },
             headphones_rendering_mode: 0,
+            binaural_filter_profile: IamfFilterProfile::default(),
         };
         assert!(matches!(
             RoarMix::new(SoundSystem::H, 960, 48000, &[hoa]),

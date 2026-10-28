@@ -122,6 +122,49 @@ fn hrtf_foa_matches_obr() {
     hrtf_case("test_000038", "test_000038_mode1_binaural_ref.wav", 4);
 }
 
+fn v2_binaural_case(vector: &str, tolerance: i32) {
+    let dir = vectors_dir();
+    let iamf_path = dir.join(format!("{vector}.iamf"));
+    let ref_path = dir.join(format!("{vector}_rendered_binaural.wav"));
+    let files = std::fs::read(&iamf_path).ok().zip(
+        std::fs::read(&ref_path)
+            .ok()
+            .map(|_| read_wav_s16(&ref_path)),
+    );
+    let (data, reference) =
+        require_vectors!(files, format_args!("{vector} + rendered_binaural.wav"));
+    let ours = decode_binaural(&data);
+    assert_eq!(ours.len(), reference.len(), "{vector}: sample count");
+    let max_diff = ours
+        .iter()
+        .zip(&reference)
+        .map(|(&a, &b)| (i32::from(a) - i32::from(b)).abs())
+        .max()
+        .unwrap_or(0);
+    assert!(
+        max_diff <= tolerance,
+        "{vector}: max diff {max_diff} exceeds {tolerance}"
+    );
+}
+
+#[test]
+fn v2_binaural_objects_mono_polar_and_cart8() {
+    v2_binaural_case("test_000812", 4);
+}
+
+#[test]
+fn v2_binaural_lfe_and_dual_polar_objects() {
+    v2_binaural_case("test_000912", 4);
+}
+
+#[test]
+fn v2_binaural_head_locked_and_filter_profiles() {
+    v2_binaural_case("test_001100", 4);
+    v2_binaural_case("test_001101", 4);
+    v2_binaural_case("test_001102", 4);
+    v2_binaural_case("test_001103", 4);
+}
+
 /// Streaming binaural must match the batch pipeline byte-for-byte.
 #[test]
 fn hrtf_stream_matches_batch() {
@@ -148,4 +191,34 @@ fn hrtf_stream_matches_batch() {
     }
     assert_eq!(streamed.len(), batch.len());
     assert!(streamed == batch, "stream/batch binaural mismatch");
+}
+
+#[test]
+fn v2_binaural_stream_matches_batch() {
+    for v2_vec in ["test_000812", "test_001103"] {
+        let Some(v2_data) = std::fs::read(vectors_dir().join(format!("{v2_vec}.iamf"))).ok() else {
+            continue;
+        };
+        let v2_batch: Vec<u8> = decode_binaural(&v2_data)
+            .iter()
+            .flat_map(|s| s.to_le_bytes())
+            .collect();
+        let mut v2_settings = StreamSettings::default();
+        v2_settings.layout = SoundSystem::Binaural;
+        v2_settings.requested_profiles = iamf_dec::profile::ProfileSet::all();
+        let mut v2_dec =
+            StreamDecoder::new_from_descriptors(&v2_data, v2_settings, &DefaultFactory).unwrap();
+        let mut v2_streamed = Vec::new();
+        for chunk in v2_data.chunks(4096) {
+            v2_dec.decode(chunk).unwrap();
+            while v2_dec.is_temporal_unit_available() {
+                v2_streamed.extend(v2_dec.get_output_temporal_unit().unwrap().unwrap());
+            }
+        }
+        assert_eq!(v2_streamed.len(), v2_batch.len(), "{v2_vec} length");
+        assert!(
+            v2_streamed == v2_batch,
+            "{v2_vec} stream/batch binaural mismatch"
+        );
+    }
 }

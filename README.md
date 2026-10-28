@@ -13,7 +13,7 @@ Rust. It has the same pipeline as the
 OBU parser → codec decoders → element reconstructor → renderer → mixer → post-processor
 ```
 
-The library decodes IAMF v1.1 simple and base profile streams. It also has a
+The library decodes IAMF v1.1 and v2.0 streams. It also has a
 C ABI with the same shape as the iamf-tools decoder API that Chromium uses.
 
 ## Try the demo
@@ -63,8 +63,8 @@ pure-Rust Opus decoder. That decoder is slow on real content (see
 
 ## Features
 
-- **Profiles:** IAMF v1.1 simple, base, and base-enhanced profiles, plus IAMF
-  v2.0 profile filtering and expanded loudspeaker layouts. Profile checks
+- **Profiles:** IAMF v1.1 (simple, base, and base-enhanced) and v2.0
+  (base-advanced, advanced-1, and advanced-2) profiles. Profile checks
   follow the iamf-tools `ProfileFilter` rules: requested profile sets,
   sequence header checks, and per-mix limits.
 - **Codecs:** Opus, LPCM, FLAC, and AAC-LC. Opus uses a pure-Rust decoder, or
@@ -73,21 +73,30 @@ pure-Rust Opus decoder. That decoder is slow on real content (see
   output gain, and layer selection, plus expanded loudspeaker layouts (`0..=19`,
   covering `5.1.4`, `7.1.4`, `9.1.6`, `10.2.9.3` / 22.2, and `7.1.5.4` channel
   subsets and full layouts).
-- **Scene-based audio:** Ambisonics in mono and projection modes, orders 1
+- **Scene-based audio:** Ambisonics in mono and projection modes, orders 0
   to 4.
+- **Object-based audio:** 1- and 2-object audio elements with polar (`Polar`,
+  `DualPolar`) and allocentric cartesian (`Cartesian8`, `Cartesian16`,
+  `DualCartesian8`, `DualCartesian16`) position parameters, ITU-R BS.2127 §10
+  allocentric-to-polar sector mapping, layer-wise 2D VBAP / DBAP loudspeaker
+  panning (matching OAR / ROAR `olr`), and 3rd-order ambisonic HRTF binaural
+  encoding.
 - **Loudspeaker rendering:** All 15 sound systems (including `7.1.5.4`), with
   the libiamf / OAR EAR gain matrices.
 - **Binaural rendering:** Headphone output (layout 14) at any supported sample
-  rate. This renderer is a native port of
-  [google/obr](https://github.com/google/obr).
+  rate for channel-based, scene-based, and object-based elements, with
+  `Ambient`, `Direct`, and `Reverberant` filter profiles and both world-locked
+  (`mode == 1`) and head-locked (`mode == 2`) rendering. This renderer is a
+  native port of [google/obr](https://github.com/google/obr).
 - **Custom renderers:** The streaming decoder can hand the render step to
   an external renderer through a small hook. The separate `iamf-roar` crate
   uses it to render through [ROAR](https://github.com/AOMediaCodec/roar),
   AOM's Rust Open Audio Renderer. For how ROAR compares to the builtin
   renderer, see [ARCHITECTURE.md](ARCHITECTURE.md).
-- **Parameters:** Animated mix gains (step, linear, and bezier). Demixing and
-  recon gain timelines work at subblock granularity, and a parameter block can
-  span temporal units.
+- **Parameters:** Animated mix gains and object positions (`Step`, `Linear`,
+  `Bezier`, `InterLinear`, and `InterBezier`). Demixing, recon gain, mix gain,
+  and object position timelines work at subblock granularity, and parameter
+  blocks can span temporal units or have mid-stream gaps.
 - **Loudness:** Optional loudness normalization and peak limiter. Both are off
   by default, as in the iamf-tools decoder.
 - **Batch and streaming decoders:** Both give byte-identical output. The
@@ -107,8 +116,6 @@ pure-Rust Opus decoder. That decoder is slow on real content (see
 ## Limitations
 
 - The decoder does not resample the output.
-- The decoder rejects mix presentations with more than one sub-mix as invalid.
-  The v1.1 spec requires `num_sub_mixes` to be 1, and libiamf does the same.
 - The library does not demux ISO-BMFF (MP4) by design. In Chromium, the
   demuxer supplies the descriptors and temporal units. `iamfplay` has its own
   small MP4 reader.

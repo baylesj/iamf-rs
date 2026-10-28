@@ -55,6 +55,7 @@ fn stream_decode_with(
     settings.sample_type = Some(OutputSampleType::Int16LittleEndian);
     settings.mix_selection = MixSelection::ByIndex(0);
     settings.trimming = trimming;
+    settings.requested_profiles = iamf_dec::profile::ProfileSet::all();
     let mut decoder = StreamDecoder::new_from_descriptors(data, settings, &DefaultFactory).unwrap();
     let mut out = Vec::new();
     let mut pos = 0usize;
@@ -169,6 +170,17 @@ fn stream_matches_batch_redundant_sequence_header() {
 #[test]
 fn stream_matches_batch_expanded_layout() {
     equivalence_case("test_000611", 13);
+}
+
+#[test]
+fn stream_matches_batch_v2_objects_and_params() {
+    equivalence_case("test_000800", 0);
+    equivalence_case("test_000802", 11);
+    equivalence_case("test_000806", 8);
+    equivalence_case("test_000845", 0);
+    equivalence_case("test_000845", 1);
+    equivalence_case("test_000850", 0);
+    equivalence_case("test_000853", 0);
 }
 
 /// Vectors marked `is_valid_to_decode: false` must be rejected, not

@@ -29,6 +29,7 @@
 
 use crate::DecodeError;
 use crate::layout::SoundSystem;
+pub use iamf_obu::descriptors::BinauralFilterProfile;
 
 /// The channel format of one element's planes, as handed to a
 /// [`MixRenderer`].
@@ -55,6 +56,11 @@ pub enum ElementLayout {
         /// Ambisonics order (0 to 4).
         order: u8,
     },
+    /// Object-based: `num_objects` mono object planes (`1` or `2`).
+    Objects {
+        /// Number of audio objects (`1` or `2`).
+        num_objects: u8,
+    },
 }
 
 /// Static description of one audio element of the selected sub-mix.
@@ -70,6 +76,9 @@ pub struct ElementInfo {
     /// when the target is [`SoundSystem::Binaural`]. For modes 1 and 2
     /// the decoder reconstructs the element's highest layer.
     pub headphones_rendering_mode: u8,
+    /// §3.8.2 `binaural_filter_profile` from the sub-mix (`Ambient`,
+    /// `Direct`, or `Reverberant`).
+    pub binaural_filter_profile: BinauralFilterProfile,
     /// `default_demixing_mode` of the element's demixing parameter
     /// definition, if it has one.
     pub default_demixing_mode: Option<u8>,
@@ -102,6 +111,9 @@ pub struct ElementFrame<'a> {
     /// The demixing mode (`dmixp_mode`) a parameter block assigns to this
     /// unit, if any.
     pub demixing_mode: Option<u8>,
+    /// Polar positions for each object of an object-based element at the
+    /// start of this unit (empty for channel-based and scene-based elements).
+    pub object_positions: &'a [crate::objects::PolarCoord],
     /// One plane per channel, all of the unit's (untrimmed) length. The
     /// element mix gain, including animation, is already applied.
     pub planes: &'a [Vec<f32>],

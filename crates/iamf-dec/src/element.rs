@@ -185,6 +185,11 @@ impl ElementDecoder {
         Ok(true)
     }
 
+    /// Number of temporal units decoded so far.
+    pub(crate) fn decoded_units(&self) -> usize {
+        self.outputs.first().map_or(0, |s| s.frames.len())
+    }
+
     /// Finishes decoding and yields trimmed per-substream PCM.
     pub fn finish(self) -> Vec<SubstreamPcm> {
         self.outputs.iter().map(SubstreamFrames::trimmed).collect()
