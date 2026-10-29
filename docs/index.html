@@ -314,6 +314,9 @@
       .session-bar[data-backend="cpp"] {
         --grp: var(--amber);
       }
+      .session-bar[data-backend="none"] {
+        --grp: var(--orange-bright);
+      }
       .sb-cell {
         display: flex;
         flex-direction: column;
@@ -337,9 +340,10 @@
         min-height: 28px;
         font-size: 14px;
       }
-      .sb-backend { flex: 1.4 1 16rem; }
-      .sb-profile { flex: 1 1 12rem; }
-      .sb-stream { flex: 1.2 1 14rem; }
+      .sb-backend { flex: 1.2 1 14rem; }
+      .sb-profile { flex: 1.1 1 13rem; }
+      .sb-stream { flex: 1.3 1 15rem; }
+      .sb-flag { flex: 1.1 1 14rem; }
 
       .code-snippet {
         position: relative;
@@ -423,20 +427,26 @@
           <span class="sb-caption">active chromium decoder</span>
           <div class="sb-body">
             <span id="backend-dot" class="dot"></span>
-            <strong id="backend-name">Probing browser...</strong>
+            <strong id="backend-name">Probing pipeline...</strong>
           </div>
         </div>
         <div class="sb-cell sb-profile">
-          <span class="sb-caption">iamf profile support</span>
+          <span class="sb-caption">actual pipeline profiles</span>
           <div class="sb-body">
-            <span id="profile-summary" class="mono soft">—</span>
+            <span id="profile-summary" class="mono soft">Checking iacb box parser...</span>
           </div>
         </div>
         <div class="sb-cell sb-stream">
-          <span class="sb-caption">pipeline verification</span>
+          <span class="sb-caption">v2.0 object decode probe</span>
           <div class="sb-body">
             <span id="verify-dot" class="dot"></span>
-            <span id="verify-text" class="soft">Running v2.0 MSE decode probe...</span>
+            <span id="verify-text" class="soft">Testing IAMF v2.0 (profile 3)...</span>
+          </div>
+        </div>
+        <div class="sb-cell sb-flag">
+          <span class="sb-caption">chrome flag</span>
+          <div class="sb-body">
+            <code>chrome://flags/#iamf-rs-audio-decoding</code>
           </div>
         </div>
       </section>
@@ -464,7 +474,7 @@
         <h2 class="label" id="lbl-player"><span class="n">01</span>player</h2>
         <div class="stack">
           <p class="soft">
-            Select an IAMF-in-MP4 stream to append into a browser <code>MediaSource</code> buffer. The IAMF v2.0 streams use <code>primary_profile = 3</code> (Base-Advanced object-based audio), which decodes exclusively in <code>iamf-rs</code>.
+            Select an IAMF-in-MP4 stream to append into a browser <code>MediaSource</code> buffer. The IAMF v2.0 streams use <code>primary_profile = 3</code> (Base-Advanced object-based audio), which decodes exclusively when <code>iamf-rs</code> is active; stock Chrome (<code>iamf_tools</code> C++) rejects IAMF v2.0 in <code>mp4::IamfSpecificBox</code>.
           </p>
           <div class="seg" role="group" aria-label="Stream selection">
             <button type="button" class="track-btn on" data-file="media/iamf_v2_object_orbit.mp4" data-mime='audio/mp4; codecs="iamf.003.003.ipcm"' data-label="360° Object Orbit (v2.0)">
@@ -490,15 +500,15 @@
         <h2 class="label" id="lbl-probe"><span class="n">02</span>probe</h2>
         <div class="stack">
           <p class="soft">
-            Live <code>MediaSource.isTypeSupported()</code> results in this browser. In Chromium, profiles <code>000</code> and <code>001</code> are supported by both <code>iamf-rs</code> and <code>iamf_tools</code>, while profiles <code>002</code>–<code>005</code> (v1.1 Base-Enhanced and v2.0 Base-Advanced / Advanced-1) are enabled only when <code>iamf-rs</code> is active.
+            Live browser capability and pipeline checks. Note that stock Chrome's MIME parser (<code>crbug.com/438106645</code>) accepts any <code>iamf.000..255.*</code> string in <code>isTypeSupported()</code>, even though its C++ <code>iamf_tools</code> demuxer and decoder only support profiles <code>000</code> and <code>001</code>. The <strong>Pipeline decode</strong> column below reflects actual MP4 <code>iacb</code> box + decoder support.
           </p>
           <table>
             <thead>
               <tr>
-                <th>Profile</th>
+                <th>Profile / Check</th>
                 <th>Codec parameter</th>
-                <th>Required backend</th>
-                <th>Browser status</th>
+                <th>isTypeSupported()</th>
+                <th>Actual pipeline decode</th>
               </tr>
             </thead>
             <tbody id="probe-tbody"></tbody>
@@ -510,13 +520,13 @@
         <h2 class="label" id="lbl-builds"><span class="n">03</span>builds</h2>
         <div class="stack">
           <p class="soft">
-            Pre-built Chromium release binaries with <code>iamf-rs</code> enabled by default. Pass <code>--disable-features=IamfRsAudioDecoding</code> at launch to switch to the C++ <code>iamf_tools</code> backend and compare behavior on this page.
+            Pre-built Chromium release binaries with <code>iamf-rs</code> enabled by default. You can toggle between <code>iamf-rs</code> (Rust) and <code>iamf_tools</code> (C++) at any time via <code>chrome://flags/#iamf-rs-audio-decoding</code> or with <code>--disable-features=IamfRsAudioDecoding</code>.
           </p>
           <div class="actions">
             <a class="btn" href="https://github.com/baylesj/iamf-rs/releases/download/tpac-2026-demo/chrome-iamf-linux-x64.zip">Download Linux x64 (182 MB)</a>
             <a class="btn quiet" href="https://github.com/baylesj/iamf-rs/releases/download/tpac-2026-demo/chrome-iamf-mac-arm64.zip">Download macOS arm64 (184 MB)</a>
           </div>
-          <pre class="code-snippet"><code># Linux x64 (iamf-rs is enabled by default):
+          <pre class="code-snippet"><code># Linux x64 (iamf-rs enabled by default):
 unzip chrome-iamf-linux-x64.zip &amp;&amp; cd chrome-iamf-linux-x64
 ./chrome https://baylesj.github.io/iamf-rs/
 
@@ -524,8 +534,8 @@ unzip chrome-iamf-linux-x64.zip &amp;&amp; cd chrome-iamf-linux-x64
 unzip chrome-iamf-mac-arm64.zip &amp;&amp; xattr -cr Chromium.app
 ./Chromium.app/Contents/MacOS/Chromium https://baylesj.github.io/iamf-rs/
 
-# Switch to C++ iamf_tools for side-by-side comparison:
-./chrome --disable-features=IamfRsAudioDecoding https://baylesj.github.io/iamf-rs/</code></pre>
+# Toggle in-browser via chrome://flags:
+chrome://flags/#iamf-rs-audio-decoding</code></pre>
         </div>
       </section>
 
@@ -542,14 +552,15 @@ unzip chrome-iamf-mac-arm64.zip &amp;&amp; xattr -cr Chromium.app
 
     <script>
       const PROBES = [
-        { name: "Simple + Opus (v1.0)", codec: 'audio/mp4; codecs="iamf.000.000.Opus"', backend: "iamf-rs / iamf_tools" },
-        { name: "Simple + FLAC (v1.0)", codec: 'audio/mp4; codecs="iamf.000.000.fLaC"', backend: "iamf-rs / iamf_tools" },
-        { name: "Simple + AAC-LC (v1.0)", codec: 'audio/mp4; codecs="iamf.000.000.mp4a.40.2"', backend: "iamf-rs / iamf_tools" },
-        { name: "Simple + LPCM (v1.0)", codec: 'audio/mp4; codecs="iamf.000.000.ipcm"', backend: "iamf-rs / iamf_tools" },
-        { name: "Base + Opus (v1.0)", codec: 'audio/mp4; codecs="iamf.001.001.Opus"', backend: "iamf-rs / iamf_tools" },
-        { name: "Base-Enhanced (v1.1)", codec: 'audio/mp4; codecs="iamf.002.002.ipcm"', backend: "iamf-rs only" },
-        { name: "Base-Advanced Objects (v2.0)", codec: 'audio/mp4; codecs="iamf.003.003.ipcm"', backend: "iamf-rs only" },
-        { name: "Advanced-1 (v2.0)", codec: 'audio/mp4; codecs="iamf.004.004.ipcm"', backend: "iamf-rs only" }
+        { name: "iamf-rs Explicit Marker", codec: 'audio/mp4; codecs="iamf-rs"', minProfile: 2 },
+        { name: "Simple + Opus (v1.0)", codec: 'audio/mp4; codecs="iamf.000.000.Opus"', minProfile: 0 },
+        { name: "Simple + FLAC (v1.0)", codec: 'audio/mp4; codecs="iamf.000.000.fLaC"', minProfile: 0 },
+        { name: "Simple + AAC-LC (v1.0)", codec: 'audio/mp4; codecs="iamf.000.000.mp4a.40.2"', minProfile: 0 },
+        { name: "Simple + LPCM (v1.0)", codec: 'audio/mp4; codecs="iamf.000.000.ipcm"', minProfile: 0 },
+        { name: "Base + Opus (v1.0)", codec: 'audio/mp4; codecs="iamf.001.001.Opus"', minProfile: 1 },
+        { name: "Base-Enhanced (v1.1)", codec: 'audio/mp4; codecs="iamf.002.002.ipcm"', minProfile: 2 },
+        { name: "Base-Advanced Objects (v2.0)", codec: 'audio/mp4; codecs="iamf.003.003.ipcm"', minProfile: 3 },
+        { name: "Advanced-1 (v2.0)", codec: 'audio/mp4; codecs="iamf.004.004.ipcm"', minProfile: 4 }
       ];
 
       const eventLog = document.getElementById("event-log");
@@ -564,89 +575,134 @@ unzip chrome-iamf-mac-arm64.zip &amp;&amp; xattr -cr Chromium.app
 
       const hasMSE = typeof window.MediaSource !== "undefined";
       const v1Supported = hasMSE && MediaSource.isTypeSupported('audio/mp4; codecs="iamf.000.000.Opus"');
-      const v2Supported = hasMSE && MediaSource.isTypeSupported('audio/mp4; codecs="iamf.003.003.ipcm"');
+      // Only our iamf-rs prototype build with kIamfRsAudioDecoding enabled accepts 'iamf-rs'
+      const rustMarkerSupported = hasMSE && MediaSource.isTypeSupported('audio/mp4; codecs="iamf-rs"');
 
       const decoderBar = document.getElementById("decoder-bar");
       const backendDot = document.getElementById("backend-dot");
       const backendName = document.getElementById("backend-name");
       const profileSummary = document.getElementById("profile-summary");
-
-      if (v2Supported) {
-        decoderBar.dataset.backend = "rust";
-        backendDot.className = "dot ok";
-        backendName.textContent = "iamf-rs (Pure Rust)";
-        profileSummary.textContent = "v1.0, v1.1, v2.0 (profiles 000–005)";
-        logEvent("probe", "Detected active decoder: iamf-rs (Pure Rust) via IAMF v2.0 profile support");
-      } else if (v1Supported) {
-        decoderBar.dataset.backend = "cpp";
-        backendDot.className = "dot warn";
-        backendName.textContent = "iamf_tools (C++)";
-        profileSummary.textContent = "v1.0 Simple & Base only (000–001)";
-        logEvent("probe", "Detected active decoder: iamf_tools (C++). Launch without --disable-features=IamfRsAudioDecoding to use iamf-rs.");
-      } else {
-        decoderBar.dataset.backend = "none";
-        backendDot.className = "dot err";
-        backendName.textContent = "No IAMF decoder active";
-        profileSummary.textContent = "Unsupported in this browser";
-        logEvent("probe", "IAMF is not enabled in this browser. Download the Chromium demo build below.", true);
-      }
-
+      const verifyDot = document.getElementById("verify-dot");
+      const verifyText = document.getElementById("verify-text");
       const tbody = document.getElementById("probe-tbody");
-      for (const p of PROBES) {
-        const ok = hasMSE && MediaSource.isTypeSupported(p.codec);
-        const tr = document.createElement("tr");
-        const shortCodec = p.codec.replace('audio/mp4; codecs=', '').replaceAll('"', '');
-        tr.innerHTML = `
-          <td>${p.name}</td>
-          <td class="mono">${shortCodec}</td>
-          <td class="soft">${p.backend}</td>
-          <td><span class="dot ${ok ? 'ok' : 'err'}"></span>${ok ? 'Supported' : 'Unsupported'}</td>
-        `;
-        tbody.appendChild(tr);
+
+      function renderProbeTable(rustPipelineVerified) {
+        tbody.innerHTML = "";
+        for (const p of PROBES) {
+          const mimeOk = hasMSE && MediaSource.isTypeSupported(p.codec);
+          const pipelineOk = p.minProfile <= 1 ? v1Supported : rustPipelineVerified;
+          const tr = document.createElement("tr");
+          const shortCodec = p.codec.replace('audio/mp4; codecs=', '').replaceAll('"', '');
+          tr.innerHTML = `
+            <td>${p.name}</td>
+            <td class="mono">${shortCodec}</td>
+            <td><span class="dot ${mimeOk ? 'ok' : 'err'}"></span>${mimeOk ? 'true' : 'false'}</td>
+            <td><span class="dot ${pipelineOk ? 'ok' : 'err'}"></span>${pipelineOk ? (p.minProfile >= 2 ? 'Supported (iamf-rs)' : 'Supported') : (v1Supported ? 'Rejected by iamf_tools (C++)' : 'Unsupported')}</td>
+          `;
+          tbody.appendChild(tr);
+        }
       }
 
-      // Run an actual offscreen MSE + IamfAudioDecoder pipeline probe on media/iamf_v2_object_orbit.mp4
-      // to confirm that the Rust decoder initializes and decodes IAMF v2.0 frames in the media pipeline.
-      async function verifyRustPipeline() {
-        const verifyDot = document.getElementById("verify-dot");
-        const verifyText = document.getElementById("verify-text");
-        if (!hasMSE || !v1Supported) {
+      function setBackendStatus(mode, reason) {
+        if (mode === "rust") {
+          decoderBar.dataset.backend = "rust";
+          backendDot.className = "dot ok";
+          backendName.textContent = "iamf-rs (Pure Rust)";
+          profileSummary.textContent = "v1.0, v1.1, v2.0 (profiles 000–005)";
+          verifyDot.className = "dot ok";
+          verifyText.textContent = reason;
+          renderProbeTable(true);
+        } else if (mode === "cpp") {
+          decoderBar.dataset.backend = "cpp";
+          backendDot.className = "dot warn";
+          backendName.textContent = "iamf_tools (C++ / Stock Chrome)";
+          profileSummary.textContent = "v1.0 Simple & Base only (000–001)";
+          verifyDot.className = "dot warn";
+          verifyText.textContent = reason;
+          renderProbeTable(false);
+        } else {
+          decoderBar.dataset.backend = "none";
+          backendDot.className = "dot err";
+          backendName.textContent = "No IAMF decoder active";
+          profileSummary.textContent = "Unsupported in this browser";
           verifyDot.className = "dot err";
-          verifyText.textContent = "MSE IAMF unavailable";
+          verifyText.textContent = reason;
+          renderProbeTable(false);
+        }
+      }
+
+      // Initial synchronous status before async MSE pipeline probe completes:
+      if (!v1Supported) {
+        setBackendStatus("none", "MSE IAMF unavailable");
+      } else if (rustMarkerSupported) {
+        setBackendStatus("rust", "iamf-rs codec marker active; verifying MSE pipeline...");
+      } else {
+        setBackendStatus("cpp", "Checking MSE pipeline for IAMF v2.0 support...");
+      }
+
+      // Run an actual offscreen MSE + MP4StreamParser + IamfAudioDecoder probe on media/iamf_v2_object_orbit.mp4.
+      // Stock Chrome (155.x) and iamf_tools C++ reject primary_profile = 3 inside IamfSpecificBox::ReadOBU,
+      // resulting in sb.buffered.length === 0 and an HTMLMediaElement / SourceBuffer error.
+      async function verifyRustPipeline() {
+        if (!hasMSE || !v1Supported) {
+          logEvent("probe", "IAMF is not enabled in this browser.", true);
           return;
         }
         try {
           const resp = await fetch("media/iamf_v2_object_orbit.mp4");
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
           const buf = await resp.arrayBuffer();
           const probeAudio = document.createElement("audio");
           probeAudio.muted = true;
           const ms = new MediaSource();
           probeAudio.src = URL.createObjectURL(ms);
           await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error("timeout waiting for loadedmetadata")), 2500);
+            probeAudio.addEventListener("error", () => {
+              clearTimeout(timer);
+              reject(new Error(probeAudio.error ? probeAudio.error.message || `code ${probeAudio.error.code}` : "media error"));
+            }, { once: true });
             ms.addEventListener("sourceopen", () => {
               try {
                 const sb = ms.addSourceBuffer('audio/mp4; codecs="iamf.003.003.ipcm"');
-                sb.addEventListener("updateend", () => {
-                  if (probeAudio.error) reject(probeAudio.error);
-                  else resolve();
+                sb.addEventListener("error", () => {
+                  clearTimeout(timer);
+                  reject(new Error("SourceBuffer rejected IAMF v2.0 iacb box"));
                 }, { once: true });
-                probeAudio.addEventListener("error", () => reject(probeAudio.error), { once: true });
-                sb.appendBuffer(buf.slice(0, 8192));
+                probeAudio.addEventListener("loadedmetadata", () => {
+                  clearTimeout(timer);
+                  if (sb.buffered.length > 0 && probeAudio.duration > 0) {
+                    resolve();
+                  } else {
+                    reject(new Error("empty buffered range"));
+                  }
+                }, { once: true });
+                sb.addEventListener("updateend", () => {
+                  if (probeAudio.error || sb.buffered.length === 0) {
+                    clearTimeout(timer);
+                    reject(new Error("MP4StreamParser rejected IAMF v2.0 primary_profile=3"));
+                  }
+                }, { once: true });
+                sb.appendBuffer(buf.slice(0, 16384));
               } catch (e) {
+                clearTimeout(timer);
                 reject(e);
               }
             }, { once: true });
           });
-          verifyDot.className = "dot ok";
-          verifyText.textContent = "Verified iamf-rs v2.0 decode in pipeline";
-          decoderBar.dataset.backend = "rust";
-          backendDot.className = "dot ok";
-          backendName.textContent = "iamf-rs (Pure Rust)";
-          logEvent("verify", "Offscreen MSE pipeline decoded IAMF v2.0 (Base-Advanced Object) header via iamf-rs.");
+          setBackendStatus("rust", "Verified iamf-rs v2.0 decode in pipeline");
+          logEvent("verify", "Verified active decoder: iamf-rs (Pure Rust) decoded IAMF v2.0 (primary_profile=3) in MSE pipeline.");
         } catch (e) {
-          verifyDot.className = "dot warn";
-          verifyText.textContent = v1Supported ? "v2.0 rejected (running C++ iamf_tools)" : "Pipeline decode unavailable";
-          logEvent("verify", "IAMF v2.0 probe rejected by pipeline (C++ iamf_tools active).", true);
+          setBackendStatus("cpp", "IAMF v2.0 rejected (running C++ iamf_tools)");
+          logEvent("verify", `Detected C++ iamf_tools (stock Chrome or flag disabled): ${e.message}. Defaulting player to IAMF v1.1 7.1.4 stream.`, true);
+          // Automatically switch the default pre-loaded track to IAMF v1.1 7.1.4 so playback works in C++ iamf_tools too!
+          const v1Btn = document.querySelector('.track-btn[data-file*="714"]');
+          const firstBtn = document.querySelector('.track-btn');
+          if (v1Btn && firstBtn && firstBtn.classList.contains("on") && player.paused) {
+            document.querySelectorAll(".track-btn").forEach(b => b.classList.remove("on"));
+            v1Btn.classList.add("on");
+            loadTrack(v1Btn.dataset.file, v1Btn.dataset.mime, v1Btn.dataset.label, false);
+          }
         }
       }
       verifyRustPipeline();
@@ -756,10 +812,10 @@ unzip chrome-iamf-mac-arm64.zip &amp;&amp; xattr -cr Chromium.app
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             const buf = await resp.arrayBuffer();
             sb.addEventListener("updateend", () => {
-              if (player.error) {
-                const msg = player.error.message || `code ${player.error.code}`;
+              if (player.error || sb.buffered.length === 0) {
+                const msg = (player.error && player.error.message) || "MP4StreamParser rejected stream (IAMF v2.0 requires iamf-rs)";
                 statusEl.textContent = `Decode error: ${msg}`;
-                logEvent("error", `MediaElement decode error: ${msg}`, true);
+                logEvent("error", `${label}: ${msg}`, true);
                 return;
               }
               if (ms.readyState === "open") ms.endOfStream();
