@@ -10,6 +10,15 @@ fn vectors_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/vectors")
 }
 
+/// True when the vector is strictly valid (no intentional bitstream syntax errors).
+fn is_strictly_valid(iamf_path: &std::path::Path) -> bool {
+    let textproto = iamf_path.with_extension("textproto");
+    match std::fs::read_to_string(textproto) {
+        Ok(text) => !text.contains("is_valid: false"),
+        Err(_) => true,
+    }
+}
+
 /// True when the vector's textproto marks it decodable by a compliant
 /// decoder. Vectors without a textproto are treated as should-pass.
 fn is_valid_to_decode(iamf_path: &std::path::Path) -> bool {
@@ -53,7 +62,8 @@ fn parse_fetched_vectors() {
     for path in &paths {
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         let data = std::fs::read(path).unwrap();
-        let should_pass = is_valid_to_decode(path);
+        let strictly_valid = is_strictly_valid(path);
+        let should_decode = is_valid_to_decode(path);
 
         let mut counts = [0usize; 4]; // seq header, codec config, element, mix
         let mut error = None;
@@ -72,17 +82,26 @@ fn parse_fetched_vectors() {
                 Ok(Some(descriptors::Descriptor::MixPresentation(_))) => counts[3] += 1,
                 Ok(None) => {}
                 Err(e) => {
-                    error = Some(format!("descriptor: {e}"));
-                    break;
+                    if strictly_valid {
+                        error = Some(format!("descriptor: {e}"));
+                        break;
+                    }
+                    // Non-header malformed descriptor OBUs in should_decode streams
+                    // are bypassed, matching libiamf behavior.
                 }
             }
         }
 
-        if should_pass {
+        if strictly_valid {
             assert_eq!(error, None, "{name} failed");
             assert!(
                 counts.iter().all(|&c| c > 0),
                 "{name}: missing descriptors (seq/codec/element/mix = {counts:?})"
+            );
+        } else if should_decode {
+            assert!(
+                counts.iter().all(|&c| c > 0),
+                "{name}: missing valid descriptors (seq/codec/element/mix = {counts:?})"
             );
         }
         // Should-fail vectors exercise semantic violations; syntax-level

@@ -200,6 +200,18 @@ and conformant v1.1 streams decode unchanged.
     other OBU types the bit is v2.0's `type_specific_flag`
     (`ObuHeader::optional_fields_flag`, `ObuHeader::is_key_frame`).
 
+Found by running all 333 libiamf test vectors:
+
+- A malformed descriptor OBU other than the sequence header is skipped, as
+  in iamf-tools. A bad sequence header still fails.
+- The default vector set adds test_000116, 000120, and 000129 (OBUs a
+  decoder must skip), and `stream.rs` decodes them end to end.
+- `tools/bench_iamf_tools` compares iamf-rs with iamf-tools in one process
+  (results in `docs/iamf-tools-comparison.md`). `fetch_vectors.sh` can copy
+  vectors and all reference renders from local checkouts
+  (`LIBIAMF_TESTS_DIR`, `IAMF_DEMO_DIR`) and fetches loudspeaker renders
+  for layouts 0 to 9.
+
 ## 0.2.0 — 2026-08-25
 
 Spec-conformance and Chromium-integration hardening. The C ABI settings

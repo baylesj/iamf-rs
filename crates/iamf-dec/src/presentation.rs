@@ -63,9 +63,17 @@ impl Descriptors {
                     obu_type,
                     ObuType::ParameterBlock | ObuType::TemporalDelimiter
                 );
-            match descriptors::parse(&obu)
-                .map_err(|e| DecodeError::InvalidDescriptors(e.to_string()))?
-            {
+            // Like iamf-tools (DescriptorObuParser::ProcessDescriptorObus), a
+            // malformed descriptor other than the sequence header is skipped;
+            // a malformed sequence header fails the stream.
+            let parsed = match descriptors::parse(&obu) {
+                Ok(parsed) => parsed,
+                Err(e) if obu_type == ObuType::SequenceHeader => {
+                    return Err(DecodeError::InvalidDescriptors(e.to_string()));
+                }
+                Err(_) => continue,
+            };
+            match parsed {
                 // §3.2: a redundant copy received without its non-redundant
                 // original SHALL be processed as non-redundant, so it is
                 // stored; but when the canonical (non-redundant) header then
