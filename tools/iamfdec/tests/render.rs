@@ -347,7 +347,7 @@ fn v2_object_dual_cart16_to_stereo_and_714() {
 /// IAMF v2.0 two codec configs and two sub-mixes (`test_000845`).
 #[test]
 fn v2_two_sub_mixes_and_codec_configs() {
-    render_case("test_000845", 0, 0, 1);
+    render_case("test_000845", 0, 0, 2);
 }
 
 /// IAMF v2.0 Metadata OBUs (`test_000849`), spanning parameter blocks

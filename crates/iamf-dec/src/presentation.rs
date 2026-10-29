@@ -184,11 +184,14 @@ struct ElementSlot {
     decoder: ElementDecoder,
     /// §3.8.2: 0 = stereo fallback for headphones, 1/2 = HRTF binaural.
     headphones_rendering_mode: u8,
+    #[cfg_attr(not(feature = "binaural"), allow(dead_code))]
     binaural_filter_profile: descriptors::BinauralFilterProfile,
     /// Default element mix gain in Q7.8 dB.
     gain_db: i16,
-    /// Linear default element mix gain.
+    /// Linear default element mix gain (including `element_gain_offset`).
     gain: f32,
+    /// Linear default `ElementGainOffsetConfig` multiplier (`1.0` if absent).
+    gain_offset: f32,
     /// Parameter rate of the element mix gain parameter.
     gain_rate: u32,
     /// Animated mix gain blocks, in `(unit_index, block)` arrival order.
@@ -286,20 +289,7 @@ impl PresentationDecoder {
             }
         }
 
-        let selected_sm = mix
-            .sub_mixes
-            .iter()
-            .find(|sm| {
-                sm.layouts.iter().any(|(layout, _)| match layout {
-                    descriptors::Layout::LoudspeakersSsConvention { sound_system } => {
-                        SoundSystem::from_bitstream_sound_system(*sound_system) == Some(target)
-                    }
-                    descriptors::Layout::Binaural => target == SoundSystem::Binaural,
-                    descriptors::Layout::Reserved { .. } => false,
-                })
-            })
-            .unwrap_or(&mix.sub_mixes[0]);
-        let active_sub_mixes = std::slice::from_ref(selected_sm);
+        let active_sub_mixes = mix.sub_mixes.as_slice();
 
         let mut slots = Vec::new();
         let mut sub_mixes = Vec::with_capacity(active_sub_mixes.len());
@@ -312,6 +302,15 @@ impl PresentationDecoder {
                     .codec_config(element.codec_config_id)
                     .expect("validated above");
                 let decoder = ElementDecoder::new(element, codec_config, factory)?;
+                let gain_offset = match sub_element.element_gain_offset {
+                    Some(
+                        descriptors::ElementGainOffsetConfig::Value { offset }
+                        | descriptors::ElementGainOffsetConfig::Range {
+                            default: offset, ..
+                        },
+                    ) => q78_db_to_linear(offset),
+                    _ => 1.0,
+                };
                 slots.push(ElementSlot {
                     sub_mix_index: sm_idx,
                     element: element.clone(),
@@ -319,7 +318,9 @@ impl PresentationDecoder {
                     headphones_rendering_mode: sub_element.headphones_rendering_mode,
                     binaural_filter_profile: sub_element.binaural_filter_profile,
                     gain_db: sub_element.element_mix_gain.default_mix_gain,
-                    gain: q78_db_to_linear(sub_element.element_mix_gain.default_mix_gain),
+                    gain: q78_db_to_linear(sub_element.element_mix_gain.default_mix_gain)
+                        * gain_offset,
+                    gain_offset,
                     gain_rate: sub_element.element_mix_gain.base.parameter_rate,
                     gain_blocks: Vec::new(),
                     dmx_blocks: Vec::new(),
@@ -483,6 +484,7 @@ impl PresentationDecoder {
             let sm_idx = slot.sub_mix_index;
             let gain_db = slot.gain_db;
             let gain = slot.gain;
+            let gain_offset = slot.gain_offset;
             let gain_rate = slot.gain_rate;
             let gain_blocks = std::mem::take(&mut slot.gain_blocks);
             let (slot_output, rate, trim_map) = reconstruct_slot(slot, target)?;
@@ -514,7 +516,7 @@ impl PresentationDecoder {
                         for (t, (o, &s)) in
                             mix_plane.iter_mut().zip(rendered_plane.iter()).enumerate()
                         {
-                            *o += track.get(t).copied().unwrap_or(gain) * s;
+                            *o += track.get(t).copied().map_or(gain, |g| g * gain_offset) * s;
                         }
                     }
                     None => {
@@ -604,10 +606,8 @@ fn evaluate_gain_track(
     let mut pos = 0usize;
     let mut prev_end_db = default_gain_db;
     'blocks: for (unit_index, block) in blocks {
-        if let Some(&unit_start) = unit_offsets.get(*unit_index)
-            && unit_start > pos
-        {
-            pos = unit_start;
+        if unit_offsets.get(*unit_index).is_some_and(|&u| u > pos) {
+            pos = unit_offsets[*unit_index];
             prev_end_db = default_gain_db;
         }
         for sb in &block.subblocks {
@@ -1033,7 +1033,7 @@ fn reconstruct_slot(
                 usize::from(*num_objects),
             )?;
             let mut planar: Vec<Vec<f32>> = vec![Vec::new(); speaker_target.channels()];
-            for k in 0..unit_count {
+            for (k, unit_pos) in unit_positions.iter().enumerate().take(unit_count) {
                 let mut planes = Vec::new();
                 for sub in &substreams {
                     let frame = &sub.frames[k];
@@ -1042,7 +1042,7 @@ fn reconstruct_slot(
                         usize::from(sub.channels.max(1)),
                     ));
                 }
-                let out = obj_renderer.process_frame(&planes, &unit_positions[k]);
+                let out = obj_renderer.process_frame(&planes, unit_pos);
                 let count = out.first().map_or(0, Vec::len);
                 let r =
                     substreams[0].frames[k].kept_range(usize::from(substreams[0].channels.max(1)));

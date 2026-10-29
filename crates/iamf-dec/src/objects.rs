@@ -1241,23 +1241,22 @@ impl CustomGainCalculator {
                 continue;
             };
 
-            if layer_cnt >= 0
-                && ele_key.abs() > 1e-5
-                && let LayerPanner::Multi { ref vbap, .. } = layer.panner
-                && !vbap.is_convex_hull
-            {
-                let mut max_az = -360.0f32;
-                for sp in &vbap.target_speakers {
-                    max_az = max_az.max(sp.azimuth);
-                }
-                if coord.azimuth.abs() > max_az {
-                    new_elevation =
-                        ele_key * (1.0 - ((coord.azimuth.abs() - max_az) / (180.0 - max_az)));
-                    let sub_gains = self.layerwise_gains(new_elevation);
-                    for (sub_el, sub_g) in sub_gains {
-                        layer_gains.push((sub_el, sub_g * ele_val));
+            if let LayerPanner::Multi { ref vbap, .. } = layer.panner {
+                let check_hull = layer_cnt >= 0 && ele_key.abs() > 1e-5 && !vbap.is_convex_hull;
+                if check_hull {
+                    let mut max_az = -360.0f32;
+                    for sp in &vbap.target_speakers {
+                        max_az = max_az.max(sp.azimuth);
                     }
-                    continue;
+                    if coord.azimuth.abs() > max_az {
+                        new_elevation =
+                            ele_key * (1.0 - ((coord.azimuth.abs() - max_az) / (180.0 - max_az)));
+                        let sub_gains = self.layerwise_gains(new_elevation);
+                        for (sub_el, sub_g) in sub_gains {
+                            layer_gains.push((sub_el, sub_g * ele_val));
+                        }
+                        continue;
+                    }
                 }
             }
 
@@ -1389,17 +1388,17 @@ impl ObjectLoudspeakerRenderer {
         }
 
         let num_objs = objects.len().min(self.prev_gains.len());
-        for obj_idx in 0..num_objs {
+        for (obj_idx, obj_plane) in objects.iter().enumerate().take(num_objs) {
             let pos = positions.get(obj_idx).copied().unwrap_or_default();
             self.calc.calculate_gains(pos, &mut self.curr_gains);
 
-            let in_ch = &objects[obj_idx][..unit_len];
+            let in_ch = &obj_plane[..unit_len];
             if let Some(ref mut prev) = self.prev_gains[obj_idx] {
                 let inv_len = 1.0 / (unit_len as f32);
-                for spk in 0..self.num_speakers {
+                for (spk, out_plane) in output.iter_mut().enumerate().take(self.num_speakers) {
                     let g0 = prev[spk];
                     let g1 = self.curr_gains[spk];
-                    let out_ch = &mut output[spk][..unit_len];
+                    let out_ch = &mut out_plane[..unit_len];
                     if (g1 - g0).abs() < 1e-9 {
                         if g1 != 0.0 {
                             for (dst, &src) in out_ch.iter_mut().zip(in_ch.iter()) {
@@ -1416,10 +1415,10 @@ impl ObjectLoudspeakerRenderer {
                 }
                 prev.copy_from_slice(&self.curr_gains);
             } else {
-                for spk in 0..self.num_speakers {
+                for (spk, out_plane) in output.iter_mut().enumerate().take(self.num_speakers) {
                     let g = self.curr_gains[spk];
                     if g != 0.0 {
-                        let out_ch = &mut output[spk][..unit_len];
+                        let out_ch = &mut out_plane[..unit_len];
                         for (dst, &src) in out_ch.iter_mut().zip(in_ch.iter()) {
                             *dst += src * g;
                         }

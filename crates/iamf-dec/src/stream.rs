@@ -500,6 +500,7 @@ struct SlotState {
     #[cfg(feature = "binaural")]
     binaural: Option<crate::binaural::BinauralRenderer>,
     gain_default: f32,
+    gain_offset: f32,
     gain_cursor: GainCursor,
     sample_rate: u32,
     samples_decoded: usize,
@@ -801,23 +802,7 @@ impl StreamDecoder {
             }
         }
 
-        let selected_sm = mix
-            .sub_mixes
-            .iter()
-            .find(|sm| {
-                sm.layouts.iter().any(|(layout, _)| match layout {
-                    iamf_obu::descriptors::Layout::LoudspeakersSsConvention { sound_system } => {
-                        SoundSystem::from_bitstream_sound_system(*sound_system)
-                            == Some(settings.layout)
-                    }
-                    iamf_obu::descriptors::Layout::Binaural => {
-                        settings.layout == SoundSystem::Binaural
-                    }
-                    iamf_obu::descriptors::Layout::Reserved { .. } => false,
-                })
-            })
-            .unwrap_or(&mix.sub_mixes[0]);
-        let active_sub_mixes = std::slice::from_ref(selected_sm);
+        let active_sub_mixes = mix.sub_mixes.as_slice();
 
         let mut slots = Vec::new();
         let mut sub_mixes = Vec::with_capacity(active_sub_mixes.len());
@@ -869,6 +854,16 @@ impl StreamDecoder {
                 };
 
                 let queues = vec![VecDeque::new(); channels.len()];
+                let gain_offset = match sub_element.element_gain_offset {
+                    Some(
+                        iamf_obu::descriptors::ElementGainOffsetConfig::Value { offset }
+                        | iamf_obu::descriptors::ElementGainOffsetConfig::Range {
+                            default: offset,
+                            ..
+                        },
+                    ) => crate::params::q78_db_to_linear(offset),
+                    _ => 1.0,
+                };
                 slots.push(SlotState {
                     sub_mix_index: sm_idx,
                     element: element.clone(),
@@ -889,6 +884,7 @@ impl StreamDecoder {
                     gain_default: crate::params::q78_db_to_linear(
                         sub_element.element_mix_gain.default_mix_gain,
                     ),
+                    gain_offset,
                     gain_cursor: GainCursor::new(sub_element.element_mix_gain.default_mix_gain),
                     sample_rate: 0,
                     samples_decoded: 0,
@@ -1205,7 +1201,7 @@ impl StreamDecoder {
 
             // Per-sample element mix gain over the untrimmed unit.
             let gains: Vec<f32> = (0..frame_len)
-                .map(|_| slot.gain_cursor.next(slot.gain_default))
+                .map(|_| slot.gain_cursor.next(slot.gain_default) * slot.gain_offset)
                 .collect();
 
             // Binaural input is already headphone audio: never HRTF it.
