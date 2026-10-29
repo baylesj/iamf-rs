@@ -166,6 +166,7 @@ struct ExternalRenderer {
 struct ExternalInput {
     info: ElementInfo,
     demixing_mode: Option<u8>,
+    object_positions: Vec<crate::objects::PolarCoord>,
     planes: Vec<Vec<f32>>,
 }
 
@@ -194,6 +195,7 @@ impl ExternalRenderer {
             .map(|i| ElementFrame {
                 audio_element_id: i.info.audio_element_id,
                 demixing_mode: i.demixing_mode,
+                object_positions: &i.object_positions,
                 planes: &i.planes,
             })
             .collect();
@@ -405,21 +407,64 @@ pub(crate) fn select_mix_index(
 /// Per-sample animated gain cursor: consumes subblocks in arrival order,
 /// falling back to the default gain when exhausted. Animations are stored
 /// with endpoints pre-converted to linear gain.
-#[derive(Default)]
 struct GainCursor {
+    default_db: i16,
+    prev_end_db: i16,
+    in_gap: bool,
+    samples_pushed: usize,
     queue: VecDeque<(crate::params::LinearAnimation, usize, usize)>,
 }
 
 impl GainCursor {
-    fn push(&mut self, anim: &crate::params::MixGainAnimation, duration: usize) {
-        if duration > 0 {
+    fn new(default_db: i16) -> Self {
+        Self {
+            default_db,
+            prev_end_db: default_db,
+            in_gap: false,
+            samples_pushed: 0,
+            queue: VecDeque::new(),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.prev_end_db = self.default_db;
+        self.in_gap = false;
+        self.samples_pushed = 0;
+        self.queue.clear();
+    }
+
+    fn advance_to(&mut self, target_samples: usize) {
+        if target_samples > self.samples_pushed {
+            let gap = target_samples - self.samples_pushed;
+            self.prev_end_db = self.default_db;
+            self.in_gap = false;
+            let step = crate::params::MixGainAnimation::Step {
+                start: self.default_db,
+            };
             self.queue
-                .push_back((crate::params::LinearAnimation::from(anim), duration, 0));
+                .push_back((crate::params::LinearAnimation::from(&step), gap, 0));
+            self.samples_pushed = target_samples;
+        }
+    }
+
+    fn push(&mut self, anim: &crate::params::MixGainAnimation, duration: usize) {
+        if self.in_gap {
+            self.prev_end_db = self.default_db;
+            self.in_gap = false;
+        }
+        let (resolved, end_db) = anim.resolve(self.prev_end_db);
+        self.prev_end_db = end_db;
+        if duration > 0 {
+            self.samples_pushed += duration;
+            self.queue
+                .push_back((crate::params::LinearAnimation::from(&resolved), duration, 0));
         }
     }
 
     fn next(&mut self, default: f32) -> f32 {
         let Some((anim, duration, pos)) = self.queue.front_mut() else {
+            self.in_gap = true;
+            self.samples_pushed += 1;
             return default;
         };
         let gain = anim.evaluate_at(*duration, *pos);
@@ -432,6 +477,7 @@ impl GainCursor {
 }
 
 struct SlotState {
+    sub_mix_index: usize,
     element: AudioElement,
     codec_config: CodecConfig,
     substream_ids: Vec<u32>,
@@ -443,14 +489,21 @@ struct SlotState {
     dmx_cursor: ParamCursor<u8>,
     /// Recon-gain timeline.
     recon_cursor: ParamCursor<ReconGainLayers>,
+    /// Object position timeline (`Some` for object-based elements).
+    position_cursor: Option<crate::objects::PositionCursor>,
+    /// Builtin loudspeaker panner for object-based elements.
+    object_renderer: Option<crate::objects::ObjectLoudspeakerRenderer>,
     reconstructor: Option<ChannelReconstructor>,
-    /// §3.8.2: 0 = stereo fallback for headphones, 1 = HRTF binaural.
+    /// §3.8.2: 0 = stereo fallback for headphones, 1/2 = HRTF binaural.
     headphones_rendering_mode: u8,
+    binaural_filter_profile: iamf_obu::descriptors::BinauralFilterProfile,
     #[cfg(feature = "binaural")]
     binaural: Option<crate::binaural::BinauralRenderer>,
     gain_default: f32,
+    gain_offset: f32,
     gain_cursor: GainCursor,
     sample_rate: u32,
+    samples_decoded: usize,
 }
 
 impl SlotState {
@@ -459,19 +512,30 @@ impl SlotState {
     }
 }
 
+struct SubMixState {
+    output_gain_default: f32,
+    output_cursor: GainCursor,
+    /// Constant linear gain from loudness normalization (1.0 when off).
+    norm_gain: f32,
+    /// External render step replacing the builtin renderer for this sub-mix, if any.
+    external: Option<ExternalRenderer>,
+}
+
 /// Feeds one temporal unit's planes through a slot's stateful binaural
 /// renderer (created on first use with this unit's frame length).
 #[cfg(feature = "binaural")]
 fn binauralize_unit(
     renderer: &mut Option<crate::binaural::BinauralRenderer>,
     input: crate::binaural::BinauralInput,
+    profile: crate::binaural::FilterProfile,
     planes: &[Vec<f32>],
     frame_len: usize,
     sample_rate: u32,
 ) -> Result<Vec<Vec<f32>>, DecodeError> {
     if renderer.is_none() {
-        *renderer = Some(crate::binaural::BinauralRenderer::new(
+        *renderer = Some(crate::binaural::BinauralRenderer::with_profile(
             input,
+            profile,
             frame_len,
             sample_rate,
         )?);
@@ -486,6 +550,44 @@ fn binauralize_unit(
         })
         .collect();
     let [l, right] = r.process(&chunk)?;
+    Ok(vec![
+        l[..frame_len.min(l.len())].to_vec(),
+        right[..frame_len.min(right.len())].to_vec(),
+    ])
+}
+
+/// Feeds one temporal unit's object planes and positions through a slot's
+/// stateful binaural renderer.
+#[cfg(feature = "binaural")]
+fn binauralize_objects_unit(
+    renderer: &mut Option<crate::binaural::BinauralRenderer>,
+    num_objects: u8,
+    profile: crate::binaural::FilterProfile,
+    planes: &[Vec<f32>],
+    positions: &[crate::objects::PolarCoord],
+    frame_len: usize,
+    sample_rate: u32,
+) -> Result<Vec<Vec<f32>>, DecodeError> {
+    if renderer.is_none() {
+        *renderer = Some(crate::binaural::BinauralRenderer::with_profile(
+            crate::binaural::BinauralInput::Objects {
+                num_objects: usize::from(num_objects),
+            },
+            profile,
+            frame_len,
+            sample_rate,
+        )?);
+    }
+    let r = renderer.as_mut().expect("created above");
+    let chunk: Vec<Vec<f32>> = planes
+        .iter()
+        .map(|p| {
+            let mut c = p.clone();
+            c.resize(frame_len.max(p.len()), 0.0);
+            c
+        })
+        .collect();
+    let [l, right] = r.process_objects(&chunk, positions)?;
     Ok(vec![
         l[..frame_len.min(l.len())].to_vec(),
         right[..frame_len.min(right.len())].to_vec(),
@@ -550,6 +652,7 @@ impl core::fmt::Debug for StreamDecoder {
 /// Streaming IAMF decoder for one mix presentation and output layout.
 pub struct StreamDecoder {
     slots: Vec<SlotState>,
+    sub_mixes: Vec<SubMixState>,
     /// See [`ParamIndex`].
     param_index: ParamIndex,
     target: SoundSystem,
@@ -559,10 +662,6 @@ pub struct StreamDecoder {
     permutation: Vec<usize>,
     settings: StreamSettings,
     selected_mix_id: u32,
-    output_gain_default: f32,
-    output_cursor: GainCursor,
-    /// Constant linear gain from loudness normalization (1.0 when off).
-    norm_gain: f32,
     /// Streaming peak limiter, created at the first pulled unit (it needs
     /// the resolved sample rate).
     limiter: Option<PeakLimiter>,
@@ -572,8 +671,6 @@ pub struct StreamDecoder {
     ended: bool,
     /// Parsed descriptors, retained for [`StreamDecoder::reset_with_new_mix`].
     parsed: Descriptors,
-    /// External render step replacing the builtin renderer, if any.
-    external: Option<ExternalRenderer>,
 }
 
 impl StreamDecoder {
@@ -604,6 +701,7 @@ impl StreamDecoder {
 
     /// Builds a configured decoder, harvesting matching codec decoders from
     /// `reuse` (element id → decoders) instead of creating new ones.
+    #[allow(clippy::needless_pass_by_value)]
     fn from_parsed(
         parsed: Descriptors,
         settings: StreamSettings,
@@ -653,91 +751,165 @@ impl StreamDecoder {
             settings.requested_profiles,
         )?;
         let mix = &parsed.mix_presentations[mix_index];
-        let [sub_mix] = mix.sub_mixes.as_slice() else {
+        if mix.sub_mixes.is_empty() || mix.sub_mixes.len() > 2 {
             // Guaranteed by the profile filter; kept as a defensive check.
             return Err(DecodeError::InvalidDescriptors(
-                "IAMF v1.1 requires exactly one sub mix per mix presentation".into(),
+                "IAMF requires 1 or 2 sub mixes per mix presentation".into(),
             ));
-        };
-        if sub_mix.elements.is_empty() {
+        }
+        if mix.sub_mixes.iter().any(|sm| sm.elements.is_empty()) {
             // Likewise guaranteed by the profile filter.
             return Err(DecodeError::InvalidDescriptors(EMPTY_SUB_MIX.into()));
         }
+        for sub_mix in &mix.sub_mixes {
+            for sub_element in &sub_mix.elements {
+                let element = parsed
+                    .audio_elements
+                    .iter()
+                    .find(|e| e.audio_element_id == sub_element.audio_element_id)
+                    .ok_or_else(|| {
+                        DecodeError::InvalidDescriptors(format!(
+                            "mix references unknown element {}",
+                            sub_element.audio_element_id
+                        ))
+                    })?;
+                let codec_config = parsed
+                    .codec_configs
+                    .iter()
+                    .find(|c| c.codec_config_id == element.codec_config_id)
+                    .ok_or_else(|| {
+                        DecodeError::InvalidDescriptors(format!(
+                            "element references unknown codec config {}",
+                            element.codec_config_id
+                        ))
+                    })?;
+                if !factory.supports(codec_config) {
+                    return Err(DecodeError::UnsupportedCodec);
+                }
+                let channels = substream_channels(&element.config);
+                if channels.is_empty() || channels.len() != element.substream_ids.len() {
+                    return Err(DecodeError::InvalidDescriptors(
+                        "substream count mismatch".into(),
+                    ));
+                }
+                if matches!(element.config, AudioElementConfig::ObjectBased { .. })
+                    && sub_element.position_params.is_empty()
+                {
+                    return Err(DecodeError::InvalidDescriptors(
+                        "object-based element requires a position parameter definition".into(),
+                    ));
+                }
+            }
+        }
+
+        let active_sub_mixes = mix.sub_mixes.as_slice();
 
         let mut slots = Vec::new();
+        let mut sub_mixes = Vec::with_capacity(active_sub_mixes.len());
         let mut frame_size = 0u32;
-        for sub_element in &sub_mix.elements {
-            let element = parsed
-                .audio_elements
-                .iter()
-                .find(|e| e.audio_element_id == sub_element.audio_element_id)
-                .ok_or_else(|| {
-                    DecodeError::InvalidDescriptors(format!(
-                        "mix references unknown element {}",
-                        sub_element.audio_element_id
-                    ))
-                })?;
-            let codec_config = parsed
-                .codec_configs
-                .iter()
-                .find(|c| c.codec_config_id == element.codec_config_id)
-                .ok_or_else(|| {
-                    DecodeError::InvalidDescriptors(format!(
-                        "element references unknown codec config {}",
-                        element.codec_config_id
-                    ))
-                })?;
-            if !factory.supports(codec_config) {
-                return Err(DecodeError::UnsupportedCodec);
-            }
-            frame_size = codec_config.num_samples_per_frame;
-            let channels = substream_channels(&element.config);
-            if channels.is_empty() || channels.len() != element.substream_ids.len() {
-                return Err(DecodeError::InvalidDescriptors(
-                    "substream count mismatch".into(),
-                ));
-            }
-            let reused = reuse
-                .iter()
-                .position(|(id, decoders)| {
-                    *id == element.audio_element_id && decoders.len() == channels.len()
-                })
-                .map(|i| reuse.swap_remove(i).1);
-            let decoders = match reused {
-                Some(mut decoders) => {
-                    for d in &mut decoders {
-                        d.reset();
-                    }
-                    decoders
-                }
-                None => channels
+        for (sm_idx, sub_mix) in active_sub_mixes.iter().enumerate() {
+            for sub_element in &sub_mix.elements {
+                let element = parsed
+                    .audio_elements
                     .iter()
-                    .map(|&ch| factory.create(codec_config, ch))
-                    .collect::<Result<Vec<_>, _>>()?,
-            };
+                    .find(|e| e.audio_element_id == sub_element.audio_element_id)
+                    .expect("validated above");
+                let codec_config = parsed
+                    .codec_configs
+                    .iter()
+                    .find(|c| c.codec_config_id == element.codec_config_id)
+                    .expect("validated above");
+                frame_size = codec_config.num_samples_per_frame;
+                let channels = substream_channels(&element.config);
+                let position_cursor = match &element.config {
+                    AudioElementConfig::ObjectBased { num_objects, .. } => {
+                        let pos_def = sub_element
+                            .position_params
+                            .first()
+                            .expect("validated above");
+                        Some(crate::objects::PositionCursor::from_definition(
+                            *num_objects,
+                            pos_def,
+                        )?)
+                    }
+                    _ => None,
+                };
+                let reused = reuse
+                    .iter()
+                    .position(|(id, decoders)| {
+                        *id == element.audio_element_id && decoders.len() == channels.len()
+                    })
+                    .map(|i| reuse.swap_remove(i).1);
+                let decoders = match reused {
+                    Some(mut decoders) => {
+                        for d in &mut decoders {
+                            d.reset();
+                        }
+                        decoders
+                    }
+                    None => channels
+                        .iter()
+                        .map(|&ch| factory.create(codec_config, ch))
+                        .collect::<Result<Vec<_>, _>>()?,
+                };
 
-            let queues = vec![VecDeque::new(); channels.len()];
-            slots.push(SlotState {
-                element: element.clone(),
-                codec_config: codec_config.clone(),
-                headphones_rendering_mode: sub_element.headphones_rendering_mode,
-                #[cfg(feature = "binaural")]
-                binaural: None,
-                substream_ids: element.substream_ids.clone(),
-                channels,
-                decoders,
-                queues,
-                dmx_cursor: ParamCursor::default(),
-                recon_cursor: ParamCursor::default(),
-                reconstructor: None,
-                gain_default: crate::params::q78_db_to_linear(
-                    sub_element.element_mix_gain.default_mix_gain,
+                let queues = vec![VecDeque::new(); channels.len()];
+                let gain_offset = match sub_element.element_gain_offset {
+                    Some(
+                        iamf_obu::descriptors::ElementGainOffsetConfig::Value { offset }
+                        | iamf_obu::descriptors::ElementGainOffsetConfig::Range {
+                            default: offset,
+                            ..
+                        },
+                    ) => crate::params::q78_db_to_linear(offset),
+                    _ => 1.0,
+                };
+                slots.push(SlotState {
+                    sub_mix_index: sm_idx,
+                    element: element.clone(),
+                    codec_config: codec_config.clone(),
+                    headphones_rendering_mode: sub_element.headphones_rendering_mode,
+                    binaural_filter_profile: sub_element.binaural_filter_profile,
+                    #[cfg(feature = "binaural")]
+                    binaural: None,
+                    substream_ids: element.substream_ids.clone(),
+                    channels,
+                    decoders,
+                    queues,
+                    dmx_cursor: ParamCursor::default(),
+                    recon_cursor: ParamCursor::default(),
+                    position_cursor,
+                    object_renderer: None,
+                    reconstructor: None,
+                    gain_default: crate::params::q78_db_to_linear(
+                        sub_element.element_mix_gain.default_mix_gain,
+                    ),
+                    gain_offset,
+                    gain_cursor: GainCursor::new(sub_element.element_mix_gain.default_mix_gain),
+                    sample_rate: 0,
+                    samples_decoded: 0,
+                });
+            }
+            let norm_gain = match settings.loudness_target_db {
+                Some(target_db) => content_loudness_db(sub_mix, settings.layout)
+                    .map_or(1.0, |content_db| {
+                        10f32.powf((target_db - content_db) / 20.0)
+                    }),
+                None => 1.0,
+            };
+            sub_mixes.push(SubMixState {
+                output_gain_default: crate::params::q78_db_to_linear(
+                    sub_mix.output_mix_gain.default_mix_gain,
                 ),
-                gain_cursor: GainCursor::default(),
-                sample_rate: 0,
+                output_cursor: GainCursor::new(sub_mix.output_mix_gain.default_mix_gain),
+                norm_gain,
+                external: renderer.as_ref().map(|factory| ExternalRenderer {
+                    factory: Arc::clone(factory),
+                    renderer: None,
+                }),
             });
         }
-        let param_index = build_param_index(sub_mix, &parsed.audio_elements)?;
+        let param_index = build_param_index(active_sub_mixes, &parsed.audio_elements)?;
 
         // Auto sample type: s32le when any codec carries more than 16
         // bits, else s16le.
@@ -758,35 +930,20 @@ impl StreamDecoder {
                 OutputSampleType::Int16LittleEndian
             }
         });
-        let norm_gain = match settings.loudness_target_db {
-            Some(target_db) => content_loudness_db(sub_mix, settings.layout)
-                .map_or(1.0, |content_db| {
-                    10f32.powf((target_db - content_db) / 20.0)
-                }),
-            None => 1.0,
-        };
         Ok(StreamDecoder {
             slots,
+            sub_mixes,
             param_index,
             target: settings.layout,
             sample_type,
             permutation: output_permutation(settings.layout, settings.channel_ordering),
             settings,
             selected_mix_id: mix.mix_presentation_id,
-            output_gain_default: crate::params::q78_db_to_linear(
-                sub_mix.output_mix_gain.default_mix_gain,
-            ),
-            output_cursor: GainCursor::default(),
-            norm_gain,
             limiter: None,
             pending: Vec::new(),
             frame_size,
             ended: false,
             parsed,
-            external: renderer.map(|factory| ExternalRenderer {
-                factory,
-                renderer: None,
-            }),
         })
     }
 
@@ -868,6 +1025,9 @@ impl StreamDecoder {
             let mut out = DecodedFrame::default();
             slot.decoders[index].decode(data, &mut out)?;
             slot.sample_rate = out.sample_rate;
+            if index == 0 {
+                slot.samples_decoded += out.samples.len() / usize::from(out.channels.max(1));
+            }
             slot.queues[index].push_back(FramePcm {
                 samples: out.samples,
                 trim_start,
@@ -887,7 +1047,7 @@ impl StreamDecoder {
         let StreamDecoder {
             param_index,
             slots,
-            output_cursor,
+            sub_mixes,
             ..
         } = self;
         let Some(targets) = param_index.get(&id) else {
@@ -936,13 +1096,35 @@ impl StreamDecoder {
                         }
                     }
                 }
+                ParamKind::Position(param_type) => {
+                    let block = ParameterBlock::parse(
+                        payload,
+                        definition,
+                        &ParamContext::Position(*param_type),
+                    )
+                    .map_err(corrupt)?;
+                    let target_samples = slots[*slot_index].samples_decoded;
+                    if let Some(cursor) = &mut slots[*slot_index].position_cursor {
+                        cursor.advance_to(target_samples);
+                        for sb in &block.subblocks {
+                            if let SubblockData::Position(pos) = &sb.data {
+                                cursor.push(pos, (f64::from(sb.duration) * scale) as usize)?;
+                            }
+                        }
+                    }
+                }
                 ParamKind::ElementMixGain | ParamKind::OutputMixGain => {
                     let block = ParameterBlock::parse(payload, definition, &ParamContext::MixGain)
                         .map_err(corrupt)?;
+                    let target_samples = match kind {
+                        ParamKind::ElementMixGain => slots[*slot_index].samples_decoded,
+                        _ => slots.first().map_or(0, |s| s.samples_decoded),
+                    };
                     let cursor = match kind {
                         ParamKind::ElementMixGain => &mut slots[*slot_index].gain_cursor,
-                        _ => &mut *output_cursor,
+                        _ => &mut sub_mixes[*slot_index].output_cursor,
                     };
+                    cursor.advance_to(target_samples);
                     for sb in &block.subblocks {
                         if let SubblockData::MixGain(anim) = &sb.data {
                             cursor.push(anim, (f64::from(sb.duration) * scale) as usize);
@@ -967,11 +1149,16 @@ impl StreamDecoder {
         }
         let target_matrix = self.target.matrix_layout();
         let out_channels = self.num_output_channels();
-        let mut mixed: Vec<Vec<f32>> = vec![Vec::new(); out_channels];
+        let num_sub_mixes = self.sub_mixes.len();
+        let mut sub_mixed: Vec<Vec<Vec<f32>>> = vec![vec![Vec::new(); out_channels]; num_sub_mixes];
         let mut trim: Option<(u32, u32)> = None;
         let mut unit_len: Option<usize> = None;
-        let external = self.external.is_some();
-        let mut external_inputs: Vec<ExternalInput> = Vec::new();
+        let external = self
+            .sub_mixes
+            .first()
+            .is_some_and(|sm| sm.external.is_some());
+        let mut external_inputs: Vec<Vec<ExternalInput>> =
+            (0..num_sub_mixes).map(|_| Vec::new()).collect();
 
         for slot in &mut self.slots {
             let frames: Vec<FramePcm> = slot
@@ -1012,21 +1199,109 @@ impl StreamDecoder {
                 planes.extend(deinterleave(&frame.samples, usize::from(ch.max(1))));
             }
 
+            // Per-sample element mix gain over the untrimmed unit.
+            let gains: Vec<f32> = (0..frame_len)
+                .map(|_| slot.gain_cursor.next(slot.gain_default) * slot.gain_offset)
+                .collect();
+
             // Binaural input is already headphone audio: never HRTF it.
             let binaural_input = is_binaural_input(&slot.element.config);
+            let is_object = matches!(slot.element.config, AudioElementConfig::ObjectBased { .. });
             let headphones = self.target == SoundSystem::Binaural && !binaural_input;
-            let hrtf =
-                cfg!(feature = "binaural") && headphones && slot.headphones_rendering_mode == 1;
+            let hrtf = cfg!(feature = "binaural")
+                && headphones
+                && (matches!(slot.headphones_rendering_mode, 1 | 2) || is_object);
             // Layer selection: the builtin renderer binauralizes the highest
-            // layer only for mode 1 (with the `binaural` feature; otherwise
+            // layer for modes 1 and 2 (with the `binaural` feature; otherwise
             // it renders stereo). An external renderer binauralizes modes 1
             // (world-locked) and 2 (head-locked) itself, so it always gets
             // the highest layer for them, whatever the features.
             let force_highest = if external {
-                headphones && matches!(slot.headphones_rendering_mode, 1 | 2)
+                headphones && (matches!(slot.headphones_rendering_mode, 1 | 2) || is_object)
             } else {
                 hrtf
             };
+
+            if let AudioElementConfig::ObjectBased { num_objects, .. } = &slot.element.config {
+                let positions = slot
+                    .position_cursor
+                    .as_mut()
+                    .map(|c| c.take_for_unit(frame_len))
+                    .unwrap_or_default();
+                if external {
+                    for plane in &mut planes {
+                        for (s, &g) in plane.iter_mut().zip(&gains) {
+                            *s *= g;
+                        }
+                    }
+                    external_inputs[slot.sub_mix_index].push(ExternalInput {
+                        info: ElementInfo {
+                            audio_element_id: slot.element.audio_element_id,
+                            layout: ElementLayout::Objects {
+                                num_objects: *num_objects,
+                            },
+                            headphones_rendering_mode: slot.headphones_rendering_mode,
+                            binaural_filter_profile: slot.binaural_filter_profile,
+                            default_demixing_mode: None,
+                        },
+                        demixing_mode: None,
+                        object_positions: positions,
+                        planes,
+                    });
+                    continue;
+                }
+                let rendered = if self.target == SoundSystem::Binaural {
+                    #[cfg(feature = "binaural")]
+                    {
+                        binauralize_objects_unit(
+                            &mut slot.binaural,
+                            *num_objects,
+                            crate::binaural::FilterProfile::from(slot.binaural_filter_profile),
+                            &planes,
+                            &positions,
+                            frame_len,
+                            slot.sample_rate,
+                        )?
+                    }
+                    #[cfg(not(feature = "binaural"))]
+                    {
+                        if slot.object_renderer.is_none() {
+                            slot.object_renderer =
+                                Some(crate::objects::ObjectLoudspeakerRenderer::new(
+                                    SoundSystem::A,
+                                    usize::from(*num_objects),
+                                )?);
+                        }
+                        slot.object_renderer
+                            .as_mut()
+                            .expect("created above")
+                            .process_frame(&planes, &positions)
+                    }
+                } else {
+                    if slot.object_renderer.is_none() {
+                        slot.object_renderer =
+                            Some(crate::objects::ObjectLoudspeakerRenderer::new(
+                                self.target,
+                                usize::from(*num_objects),
+                            )?);
+                    }
+                    slot.object_renderer
+                        .as_mut()
+                        .expect("created above")
+                        .process_frame(&planes, &positions)
+                };
+                let mix_planes = &mut sub_mixed[slot.sub_mix_index];
+                for (mix_plane, rendered_plane) in mix_planes.iter_mut().zip(&rendered) {
+                    if mix_plane.len() < rendered_plane.len() {
+                        mix_plane.resize(rendered_plane.len(), 0.0);
+                    }
+                    for ((o, &s), &g) in mix_plane.iter_mut().zip(rendered_plane).zip(&gains) {
+                        *o += g * s;
+                    }
+                }
+                continue;
+            }
+
             // Reconstruction (shared by both render paths): demixing/recon
             // gain for channel-based elements, ACN planes for scene-based
             // ones.
@@ -1053,11 +1328,6 @@ impl StreamDecoder {
                 }
                 _ => ambisonics_from_planes(&slot.element.config, planes)?,
             };
-
-            // Per-sample element mix gain over the untrimmed unit.
-            let gains: Vec<f32> = (0..frame_len)
-                .map(|_| slot.gain_cursor.next(slot.gain_default))
-                .collect();
 
             if external {
                 // The external renderer mixes the whole sub-mix at once, so
@@ -1088,14 +1358,16 @@ impl StreamDecoder {
                         *s *= g;
                     }
                 }
-                external_inputs.push(ExternalInput {
+                external_inputs[slot.sub_mix_index].push(ExternalInput {
                     info: ElementInfo {
                         audio_element_id: slot.element.audio_element_id,
                         layout,
                         headphones_rendering_mode: slot.headphones_rendering_mode,
+                        binaural_filter_profile: slot.binaural_filter_profile,
                         default_demixing_mode,
                     },
                     demixing_mode: dmx_mode,
+                    object_positions: Vec::new(),
                     planes,
                 });
                 continue;
@@ -1104,7 +1376,7 @@ impl StreamDecoder {
             // Builtin renderer: binaural input passes through unchanged (the
             // target is binaural or stereo, see `layout::can_render_to`);
             // everything else uses the libiamf gain matrices, or the
-            // obr-style binaural renderer for headphones_rendering_mode 1.
+            // obr-style binaural renderer for headphones_rendering_mode 1/2.
             #[cfg(feature = "binaural")]
             let rendered = if binaural_input {
                 reconstructed.into_planar()
@@ -1122,6 +1394,7 @@ impl StreamDecoder {
                 binauralize_unit(
                     &mut slot.binaural,
                     input,
+                    crate::binaural::FilterProfile::from(slot.binaural_filter_profile),
                     reconstructed.planar(),
                     frame_len,
                     slot.sample_rate,
@@ -1136,7 +1409,8 @@ impl StreamDecoder {
                 render(&reconstructed, target_matrix)?
             };
 
-            for (mix_plane, rendered_plane) in mixed.iter_mut().zip(&rendered) {
+            let mix_planes = &mut sub_mixed[slot.sub_mix_index];
+            for (mix_plane, rendered_plane) in mix_planes.iter_mut().zip(&rendered) {
                 if mix_plane.len() < rendered_plane.len() {
                     mix_plane.resize(rendered_plane.len(), 0.0);
                 }
@@ -1152,24 +1426,43 @@ impl StreamDecoder {
             let sample_rate = self.sample_rate();
             let frame_size = self.frame_size;
             let target = self.target;
-            if let Some(external) = &mut self.external {
-                mixed = external.render_unit(target, sample_rate, frame_size, &external_inputs)?;
-                if mixed.len() != out_channels {
-                    return Err(DecodeError::UnsupportedRenderer(format!(
-                        "external renderer returned {} channels, {target:?} has {out_channels}",
-                        mixed.len()
-                    )));
+            for (sm_idx, sm) in self.sub_mixes.iter_mut().enumerate() {
+                if let Some(external) = &mut sm.external {
+                    sub_mixed[sm_idx] = external.render_unit(
+                        target,
+                        sample_rate,
+                        frame_size,
+                        &external_inputs[sm_idx],
+                    )?;
+                    if sub_mixed[sm_idx].len() != out_channels {
+                        return Err(DecodeError::UnsupportedRenderer(format!(
+                            "external renderer returned {} channels, {target:?} has {out_channels}",
+                            sub_mixed[sm_idx].len()
+                        )));
+                    }
                 }
             }
         }
 
-        // Output mix gain, then trimming, then loudness normalization and
-        // peak limiting on the f32 signal, then interleave + quantize.
+        // Output mix gain and loudness normalization per sub-mix, then sum
+        // sub-mixes, then trimming and peak limiting on the f32 signal,
+        // then interleave + quantize.
         let unit_len = unit_len.unwrap_or(0);
         let trim = trim.unwrap_or((0, 0));
-        let out_gains: Vec<f32> = (0..unit_len)
-            .map(|_| self.output_cursor.next(self.output_gain_default))
-            .collect();
+        let mut mixed = vec![vec![0.0f32; unit_len]; out_channels];
+        for (sm_idx, sm) in self.sub_mixes.iter_mut().enumerate() {
+            let out_gains: Vec<f32> = (0..unit_len)
+                .map(|_| sm.output_cursor.next(sm.output_gain_default) * sm.norm_gain)
+                .collect();
+            for (ch, plane) in sub_mixed[sm_idx].iter().enumerate() {
+                if let Some(dst) = mixed.get_mut(ch) {
+                    for ((d, &s), &g) in dst.iter_mut().zip(plane).zip(&out_gains) {
+                        *d += s * g;
+                    }
+                }
+            }
+        }
+
         let start = if self.settings.trimming.trim_beginning {
             (trim.0 as usize).min(unit_len)
         } else {
@@ -1182,20 +1475,14 @@ impl StreamDecoder {
         };
         let kept = unit_len - start - end;
         let mut samples = Vec::with_capacity(kept * out_channels);
-        for (t, &gain) in out_gains
-            .iter()
-            .enumerate()
-            .take(unit_len - end)
-            .skip(start)
-        {
+        for t in start..(unit_len - end) {
             for &source in &self.permutation {
                 let sample = mixed
                     .get(source)
                     .and_then(|p| p.get(t))
                     .copied()
-                    .unwrap_or(0.0)
-                    * gain;
-                samples.push(sample * self.norm_gain);
+                    .unwrap_or(0.0);
+                samples.push(sample);
             }
         }
         if self.settings.enable_limiter {
@@ -1280,10 +1567,12 @@ impl StreamDecoder {
     pub fn reset(&mut self) {
         self.pending.clear();
         self.ended = false;
-        self.output_cursor = GainCursor::default();
         self.limiter = None;
-        if let Some(external) = &mut self.external {
-            external.renderer = None;
+        for sm in &mut self.sub_mixes {
+            sm.output_cursor.clear();
+            if let Some(external) = &mut sm.external {
+                external.renderer = None;
+            }
         }
         for slot in &mut self.slots {
             for q in &mut slot.queues {
@@ -1291,12 +1580,17 @@ impl StreamDecoder {
             }
             slot.dmx_cursor.clear();
             slot.recon_cursor.clear();
+            if let Some(pos) = &mut slot.position_cursor {
+                pos.clear();
+            }
+            slot.object_renderer = None;
             slot.reconstructor = None;
             #[cfg(feature = "binaural")]
             {
                 slot.binaural = None;
             }
-            slot.gain_cursor = GainCursor::default();
+            slot.gain_cursor.clear();
+            slot.samples_decoded = 0;
             for dec in &mut slot.decoders {
                 dec.reset();
             }
@@ -1331,7 +1625,11 @@ impl StreamDecoder {
         self.pending.clear();
         // The external renderer factory survives a failed reconfiguration
         // so that a later successful one keeps using it.
-        let renderer = self.external.as_ref().map(|e| Arc::clone(&e.factory));
+        let renderer = self
+            .sub_mixes
+            .first()
+            .and_then(|sm| sm.external.as_ref())
+            .map(|e| Arc::clone(&e.factory));
         match Self::from_parsed(
             std::mem::take(&mut self.parsed),
             settings,

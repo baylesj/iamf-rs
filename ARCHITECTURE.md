@@ -18,11 +18,16 @@ bytes → OBU parser → descriptors/params → codec decode (per substream)
 - **`iamf-dec`** — everything after parsing. `element` decodes substreams
   via pluggable codecs; `reconstruct`/`demixer` rebuild scalable channel
   layouts (per-frame state: demix modes, w-index, recon-gain smoothing);
-  `render` applies gain matrices extracted from libiamf v1.1.0
+  `objects` evaluates polar/cartesian object position trajectories
+  (including ITU-R BS.2127 §10 allocentric sector mapping) and renders
+  objects to loudspeakers via layer-wise 2D VBAP / DBAP panning (OAR
+  `olr`); `render` applies gain matrices extracted from libiamf v2.0.0
   (`matrices.rs`, generated — do not edit); `binaural/` is a native port
   of google/obr (SH encoder → HOA bed → partitioned FFT convolution with
-  embedded SH-HRIR filters → limiter); `params` evaluates animated gains
-  and carries the subblock-granular parameter timelines (`ParamCursor`);
+  embedded SH-HRIR filters (`Ambient`, `Direct`, `Reverberant`) →
+  limiter); `params` evaluates animated gains and positions (`Step`,
+  `Linear`, `Bezier`, `InterLinear`, `InterBezier`) and carries the
+  subblock-granular parameter timelines (`ParamCursor`);
   `profile` ports iamf-tools' `ProfileFilter` (requested-profile
   enforcement, per-mix capability limits); `post` holds the optional
   loudness/limiter stage — the streaming driver applies it when its

@@ -41,9 +41,10 @@ DEFAULT_VECTORS=(
 # (001100-001103). The full v2 set is ~570 MB; name vectors to get more.
 V2_VECTORS=(
   test_000800 test_000801 test_000802 test_000806 test_000807 test_000808
-  test_000812 test_000828 test_000829 test_000830 test_000831 test_000845
-  test_000849 test_000850 test_000851 test_000852 test_000853 test_000854
-  test_000855 test_000912 test_001100 test_001101 test_001102 test_001103
+  test_000812 test_000827 test_000828 test_000829 test_000830 test_000831
+  test_000845 test_000849 test_000850 test_000851 test_000852 test_000853
+  test_000854 test_000855 test_000912 test_001100 test_001101 test_001102
+  test_001103
 )
 
 # Optional local seeds, copied instead of downloaded when set:
@@ -97,7 +98,7 @@ if [[ "${1:-}" == "--all" ]]; then
 elif [[ "${1:-}" == "--v2" ]]; then
   set -- "${V2_VECTORS[@]}"
 elif [[ $# -eq 0 ]]; then
-  set -- "${DEFAULT_VECTORS[@]}"
+  set -- "${DEFAULT_VECTORS[@]}" "${V2_VECTORS[@]}"
 fi
 
 mkdir -p "$DEST"
@@ -133,6 +134,10 @@ for name in "$@"; do
     [[ -s "$DEST/$ref" ]] && continue
     curl -fsSL "$BASE_URL/$ref" -o "$DEST/$ref" 2>/dev/null || rm -f "$DEST/$ref"
   done
+  bin_ref="${name}_rendered_binaural.wav"
+  if [[ ! -s "$DEST/$bin_ref" ]]; then
+    curl -fsSL "$BASE_URL/$bin_ref" -o "$DEST/$bin_ref" 2>/dev/null || rm -f "$DEST/$bin_ref"
+  fi
   for ext in iamf textproto; do
     out="$DEST/$name.$ext"
     if [[ -s "$out" ]]; then

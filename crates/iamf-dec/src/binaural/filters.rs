@@ -3,14 +3,27 @@
 
 use crate::DecodeError;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum FilterProfile {
-    /// obr / iamf-tools default.
+/// Binaural SH-HRIR filter profile (IAMF v2.0 `binaural_filter_profile`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FilterProfile {
+    /// obr / iamf-tools default (`binaural_filter_profile == 0`).
+    #[default]
     Ambient,
-    /// Anechoic short HRIRs (unused by the default pipeline, kept for
-    /// parity with obr's profiles).
-    #[allow(dead_code)]
+    /// Anechoic short HRIRs (`binaural_filter_profile == 1`).
     Direct,
+    /// Reverberant HRIRs (`binaural_filter_profile == 2`, IAMF v2.0).
+    Reverberant,
+}
+
+impl From<iamf_obu::descriptors::BinauralFilterProfile> for FilterProfile {
+    fn from(profile: iamf_obu::descriptors::BinauralFilterProfile) -> Self {
+        use iamf_obu::descriptors::BinauralFilterProfile as P;
+        match profile {
+            P::Direct => FilterProfile::Direct,
+            P::Reverberant => FilterProfile::Reverberant,
+            _ => FilterProfile::Ambient,
+        }
+    }
 }
 
 macro_rules! asset {
@@ -41,6 +54,14 @@ fn asset(order: usize, profile: FilterProfile, right: bool) -> Option<&'static [
         (3, FilterProfile::Direct, true) => asset!("3oa_direct_r.wav"),
         (4, FilterProfile::Direct, false) => asset!("4oa_direct_l.wav"),
         (4, FilterProfile::Direct, true) => asset!("4oa_direct_r.wav"),
+        (1, FilterProfile::Reverberant, false) => asset!("1oa_reverberant_l.wav"),
+        (1, FilterProfile::Reverberant, true) => asset!("1oa_reverberant_r.wav"),
+        (2, FilterProfile::Reverberant, false) => asset!("2oa_reverberant_l.wav"),
+        (2, FilterProfile::Reverberant, true) => asset!("2oa_reverberant_r.wav"),
+        (3, FilterProfile::Reverberant, false) => asset!("3oa_reverberant_l.wav"),
+        (3, FilterProfile::Reverberant, true) => asset!("3oa_reverberant_r.wav"),
+        (4, FilterProfile::Reverberant, false) => asset!("4oa_reverberant_l.wav"),
+        (4, FilterProfile::Reverberant, true) => asset!("4oa_reverberant_r.wav"),
         _ => return None,
     })
 }
@@ -115,7 +136,11 @@ mod tests {
     #[test]
     fn assets_load_for_all_orders() {
         for order in 1..=4 {
-            for profile in [FilterProfile::Ambient, FilterProfile::Direct] {
+            for profile in [
+                FilterProfile::Ambient,
+                FilterProfile::Direct,
+                FilterProfile::Reverberant,
+            ] {
                 let (l, r) = sh_hrirs(order, profile).unwrap();
                 assert_eq!(l.len(), (order + 1) * (order + 1));
                 assert_eq!(l[0].len(), r[0].len());

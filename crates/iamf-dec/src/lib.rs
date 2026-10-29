@@ -15,6 +15,7 @@ pub(crate) mod demixer;
 pub mod element;
 pub mod layout;
 pub(crate) mod matrices;
+pub mod objects;
 pub mod params;
 pub mod post;
 pub mod presentation;

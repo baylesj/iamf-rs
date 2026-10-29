@@ -5,16 +5,15 @@ binaural_filters_*.cc) into binary .wav assets for iamf-dec.
 The filters carry obr's BSD-3-Clause-Clear license and the Open Binaural
 Renderer Patent License 1.0 (see the NOTICE file written alongside).
 
-Usage: tools/extract_binaural_filters.py <path-to-obr-checkout>
-Only the ambient (iamf-tools default) and direct profiles are extracted;
-reverberant can be added the same way when needed."""
+Usage: tools/extract_binaural_filters.py <path-to-obr-or-roar-checkout>
+Extracts the ambient, direct, and reverberant profiles."""
 import re
 import sys
 import pathlib
 
 OUT = pathlib.Path(__file__).resolve().parent.parent / "crates/iamf-dec/assets/binaural"
 
-PROFILES = ["ambient", "direct"]
+PROFILES = ["ambient", "direct", "reverberant"]
 ORDERS = [1, 2, 3, 4]
 EARS = ["l", "r"]
 
@@ -30,6 +29,8 @@ to the upstream arrays.
 def main():
     obr = pathlib.Path(sys.argv[1])
     src_dir = obr / "obr/ambisonic_binaural_decoder/binaural_filters"
+    if not src_dir.exists():
+        src_dir = obr / "src/renderer/obr/ambisonic_binaural_decoder/binaural_filters"
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "NOTICE").write_text(NOTICE)
     total = 0
@@ -37,6 +38,8 @@ def main():
         for order in ORDERS:
             for ear in EARS:
                 src = src_dir / f"binaural_filters_{order}_oa_{profile}_{ear}.cc"
+                if not src.exists():
+                    src = src_dir / f"binaural_filters_{order}_oa_{profile}_{ear}.rs"
                 text = src.read_text()
                 data = bytes(
                     int(tok, 16) for tok in re.findall(r"0x[0-9a-fA-F]{2}", text)

@@ -296,3 +296,71 @@ fn expanded_bottom_3ch_to_stereo_and_712() {
 fn expanded_bottom_4ch_to_7154() {
     render_case("test_000830", 1, 14, 1);
 }
+
+/// IAMF v2.0 7.1.5.4 (`loudspeaker_layout == 10`) rendered to `sound_system == 14` (`7.1.5.4`).
+#[test]
+fn v2_7154_to_7154() {
+    render_case("test_000827", 1, 14, 1);
+}
+
+/// IAMF v2.0 mono polar object rendered to stereo (`0`) and mono (`12`).
+#[test]
+fn v2_object_mono_polar_to_stereo_and_mono() {
+    render_case("test_000800", 0, 0, 4);
+    render_case("test_000800", 1, 12, 4);
+}
+
+/// IAMF v2.0 mono Cart8 object rendered to stereo (`0`).
+#[test]
+fn v2_object_mono_cart8_to_stereo() {
+    render_case("test_000801", 0, 0, 4);
+}
+
+/// IAMF v2.0 mono Cart16 object rendered to stereo (`0`) and 3.1.2 (`11`).
+#[test]
+fn v2_object_mono_cart16_to_stereo_and_312() {
+    render_case("test_000802", 0, 0, 4);
+    render_case("test_000802", 1, 11, 4);
+}
+
+/// IAMF v2.0 coupled DualPolar object rendered to stereo (`0`) and 7.1 (`8`).
+#[test]
+fn v2_object_dual_polar_to_stereo_and_71() {
+    render_case("test_000806", 0, 0, 4);
+    render_case("test_000806", 1, 8, 4);
+}
+
+/// IAMF v2.0 coupled DualCart8 object rendered to stereo (`0`) and 7.1.2 (`10`).
+#[test]
+fn v2_object_dual_cart8_to_stereo_and_712() {
+    render_case("test_000807", 0, 0, 4);
+    render_case("test_000807", 1, 10, 4);
+}
+
+/// IAMF v2.0 coupled DualCart16 object rendered to stereo (`0`) and 7.1.4 (`9`).
+#[test]
+fn v2_object_dual_cart16_to_stereo_and_714() {
+    render_case("test_000808", 0, 0, 4);
+    render_case("test_000808", 1, 9, 4);
+}
+
+/// IAMF v2.0 two codec configs and two sub-mixes (`test_000845`).
+#[test]
+fn v2_two_sub_mixes_and_codec_configs() {
+    render_case("test_000845", 0, 0, 2);
+}
+
+/// IAMF v2.0 Metadata OBUs (`test_000849`), spanning parameter blocks
+/// (`test_000850`), optional mix fields (`test_000851`, `test_000852`),
+/// `ElementGainOffsetConfig` (`test_000853`, `test_000854`), and momentary
+/// loudness (`test_000855`).
+#[test]
+fn v2_mix_and_parameter_features() {
+    render_case("test_000849", 0, 0, 1);
+    render_case("test_000850", 0, 0, 1);
+    render_case("test_000851", 0, 0, 1);
+    render_case("test_000852", 0, 0, 1);
+    render_case("test_000853", 0, 0, 1);
+    render_case("test_000854", 0, 0, 1);
+    render_case("test_000855", 0, 0, 1);
+}
