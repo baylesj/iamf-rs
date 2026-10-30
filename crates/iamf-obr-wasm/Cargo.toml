@@ -1,0 +1,29 @@
+[package]
+name = "iamf-obr-wasm"
+description = "WebAssembly / C ABI bindings for iamf-dec's pure-Rust Open Binaural Renderer (OBR) for WebAudio AudioWorklet streaming playback"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["iamf", "binaural", "wasm", "webaudio", "eclipsa"]
+categories = ["multimedia::audio", "wasm"]
+
+[lib]
+name = "iamf_obr_wasm"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+iamf-dec = { path = "../iamf-dec", default-features = false, features = ["binaural"] }
+
+# FFI / WASM linear-memory exports require unsafe; keep safety lints strict.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+unused_qualifications = "warn"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"

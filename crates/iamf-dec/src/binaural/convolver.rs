@@ -1,31 +1,91 @@
 //! Uniformly partitioned overlap-add FFT convolution, following obr's
 //! `FftManager` / `PartitionedFftFilter` (which follow Resonance Audio).
 
-use std::sync::Arc;
-
-use realfft::num_complex::Complex;
-use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
+use core::ops::{Add, AddAssign, Mul, Sub};
 
 /// obr `FftManager::kMinFftSize`.
 const MIN_FFT_SIZE: usize = 32;
 
+#[derive(Clone, Copy, Default, Debug)]
+pub(super) struct Complex {
+    pub re: f32,
+    pub im: f32,
+}
+
+impl Complex {
+    #[inline]
+    const fn new(re: f32, im: f32) -> Self {
+        Self { re, im }
+    }
+
+    #[inline]
+    const fn conj(self) -> Self {
+        Self {
+            re: self.re,
+            im: -self.im,
+        }
+    }
+}
+
+impl Add for Complex {
+    type Output = Self;
+    #[inline]
+    fn add(self, rhs: Self) -> Self {
+        Self::new(self.re + rhs.re, self.im + rhs.im)
+    }
+}
+
+impl AddAssign for Complex {
+    #[inline]
+    fn add_assign(&mut self, rhs: Self) {
+        self.re += rhs.re;
+        self.im += rhs.im;
+    }
+}
+
+impl Sub for Complex {
+    type Output = Self;
+    #[inline]
+    fn sub(self, rhs: Self) -> Self {
+        Self::new(self.re - rhs.re, self.im - rhs.im)
+    }
+}
+
+impl Mul for Complex {
+    type Output = Self;
+    #[inline]
+    fn mul(self, rhs: Self) -> Self {
+        Self::new(
+            self.re * rhs.re - self.im * rhs.im,
+            self.re * rhs.im + self.im * rhs.re,
+        )
+    }
+}
+
 pub(super) struct FftManager {
     fft_size: usize,
-    forward: Arc<dyn RealToComplex<f32>>,
-    inverse: Arc<dyn ComplexToReal<f32>>,
-    /// Zero-padded time-domain scratch for [`FftManager::forward`].
-    input_scratch: Vec<f32>,
+    bitrev: Vec<usize>,
+    twiddles: Vec<Complex>,
 }
 
 impl FftManager {
     pub(super) fn new(frame_size: usize) -> Self {
         let fft_size = (2 * frame_size.next_power_of_two()).max(MIN_FFT_SIZE);
-        let mut planner = RealFftPlanner::<f32>::new();
+        let bits = fft_size.trailing_zeros();
+        let bitrev = (0..fft_size)
+            .map(|i| i.reverse_bits() >> (usize::BITS - bits))
+            .collect();
+        let half = fft_size / 2;
+        let twiddles = (0..half)
+            .map(|k| {
+                let angle = -2.0 * core::f32::consts::PI * (k as f32) / (fft_size as f32);
+                Complex::new(angle.cos(), angle.sin())
+            })
+            .collect();
         FftManager {
             fft_size,
-            forward: planner.plan_fft_forward(fft_size),
-            inverse: planner.plan_fft_inverse(fft_size),
-            input_scratch: vec![0.0; fft_size],
+            bitrev,
+            twiddles,
         }
     }
 
@@ -33,39 +93,73 @@ impl FftManager {
         self.fft_size
     }
 
-    pub(super) fn spectrum_scratch(&self) -> Vec<Complex<f32>> {
+    pub(super) fn spectrum_scratch(&self) -> Vec<Complex> {
         vec![Complex::default(); self.fft_size / 2 + 1]
     }
 
+    fn transform_in_place(&self, buf: &mut [Complex], inverse: bool) {
+        let n = self.fft_size;
+        for (i, &j) in self.bitrev.iter().enumerate() {
+            if i < j {
+                buf.swap(i, j);
+            }
+        }
+        let mut len = 2;
+        while len <= n {
+            let half = len / 2;
+            let step = n / len;
+            for start in (0..n).step_by(len) {
+                for k in 0..half {
+                    let w = self.twiddles[k * step];
+                    let w = if inverse { w.conj() } else { w };
+                    let u = buf[start + k];
+                    let v = buf[start + k + half] * w;
+                    buf[start + k] = u + v;
+                    buf[start + k + half] = u - v;
+                }
+            }
+            len <<= 1;
+        }
+    }
+
     /// FFT of `time` zero-padded to `fft_size`.
-    pub(super) fn forward(&mut self, time: &[f32], spectrum: &mut [Complex<f32>]) {
+    pub(super) fn forward(&mut self, time: &[f32], spectrum: &mut [Complex]) {
         let n = time.len().min(self.fft_size);
-        self.input_scratch[..n].copy_from_slice(&time[..n]);
-        self.input_scratch[n..].fill(0.0);
-        self.forward
-            .process(&mut self.input_scratch, spectrum)
-            .expect("fft sizes match");
+        let mut buf = vec![Complex::default(); self.fft_size];
+        for (dst, &src) in buf[..n].iter_mut().zip(&time[..n]) {
+            dst.re = src;
+        }
+        self.transform_in_place(&mut buf, false);
+        let bins = self.fft_size / 2 + 1;
+        spectrum[..bins].copy_from_slice(&buf[..bins]);
     }
 
     /// Unscaled inverse FFT; caller applies 1/fft_size.
-    fn inverse(&self, spectrum: &mut [Complex<f32>], time: &mut [f32]) {
-        self.inverse
-            .process(spectrum, time)
-            .expect("fft sizes match");
+    fn inverse(&self, spectrum: &mut [Complex], time: &mut [f32]) {
+        let bins = self.fft_size / 2 + 1;
+        let mut buf = vec![Complex::default(); self.fft_size];
+        buf[..bins].copy_from_slice(&spectrum[..bins]);
+        for k in 1..(self.fft_size / 2) {
+            buf[self.fft_size - k] = spectrum[k].conj();
+        }
+        self.transform_in_place(&mut buf, true);
+        for (dst, src) in time[..self.fft_size].iter_mut().zip(&buf) {
+            *dst = src.re;
+        }
     }
 }
 
 /// One mono FIR of arbitrary length, convolved in uniform partitions of
 /// `frame_size` samples with overlap-add across blocks.
 pub(super) struct PartitionedFftFilter {
-    kernel_spectra: Vec<Vec<Complex<f32>>>,
+    kernel_spectra: Vec<Vec<Complex>>,
     /// Ring buffer of input block spectra.
-    input_spectra: Vec<Vec<Complex<f32>>>,
+    input_spectra: Vec<Vec<Complex>>,
     front: usize,
     /// Previous block's IFFT output (for overlap-add).
     previous: Vec<f32>,
     current: Vec<f32>,
-    accumulator: Vec<Complex<f32>>,
+    accumulator: Vec<Complex>,
 }
 
 impl PartitionedFftFilter {
@@ -92,7 +186,7 @@ impl PartitionedFftFilter {
 
     /// Feeds one block spectrum and computes this block's filtered time
     /// output (kept internally until [`Self::output_into`]).
-    pub(super) fn filter(&mut self, input_spectrum: &[Complex<f32>], fft: &FftManager) {
+    pub(super) fn filter(&mut self, input_spectrum: &[Complex], fft: &FftManager) {
         let partitions = self.kernel_spectra.len();
         self.input_spectra[self.front].copy_from_slice(input_spectrum);
 

@@ -162,6 +162,7 @@ matters, enable `opus-ffi`.
 | `iamf-codecs`    | Codec adapters for LPCM, Opus, FLAC, and AAC-LC.           |
 | `opus-ffi`       | libopus bindings for the `opus-ffi` feature.               |
 | `iamf-capi`      | C ABI over the streaming decoder.                          |
+| `iamf-obr-wasm`  | WASM / C ABI over the pure-Rust OBR binaural renderer.     |
 | `tools/iamfdec`  | CLI that inspects `.iamf` files and decodes them to WAV.   |
 | `tools/iamfplay` | Terminal player with a stereo and binaural toggle.         |
 | `fuzz`           | cargo-fuzz targets for the parser, decoder, and C ABI.     |

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>iamf-rs</title>
-    <meta name="description" content="Pure-Rust IAMF v1.1 and v2.0 decoder (Eclipsa Audio) integrated into Chromium's media pipeline." />
+    <meta name="description" content="Pure-Rust IAMF v1.1 and v2.0 decoder (Eclipsa Audio) and Open Binaural Renderer (OBR) WASM streaming player." />
     <link rel="icon" type="image/svg+xml" href="https://cdn.jsdelivr.net/gh/baylesj/bayl.es-style@v1.12.2/icons/home.svg" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:ital,wght@0,400..700;1,400&family=Atkinson+Hyperlegible+Mono:wght@400..600&display=swap" />
@@ -298,7 +298,7 @@
         }
       }
 
-      /* Session bar: displays active decoder backend (iamf-rs vs iamf_tools) and stream state. */
+      /* Session bar: displays active decoder backend (iamf-rs vs iamf_tools) and OBR WASM state. */
       .session-bar {
         --grp: var(--purple);
         display: flex;
@@ -340,9 +340,9 @@
         min-height: 28px;
         font-size: 14px;
       }
-      .sb-backend { flex: 1.2 1 14rem; }
-      .sb-profile { flex: 1.1 1 13rem; }
-      .sb-stream { flex: 1.3 1 15rem; }
+      .sb-backend { flex: 1.1 1 13rem; }
+      .sb-obr { flex: 1.2 1 14rem; }
+      .sb-stream { flex: 1.2 1 14rem; }
       .sb-flag { flex: 1.1 1 14rem; }
 
       .code-snippet {
@@ -359,7 +359,7 @@
 
       .docs {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
         gap: 10px;
       }
       .docs a {
@@ -385,11 +385,24 @@
       }
       canvas#viz {
         width: 100%;
-        height: 104px;
+        height: 148px;
         border: 1px solid var(--line);
         border-radius: 8px;
         background: var(--field);
         display: block;
+      }
+      .sub-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px 16px;
+      }
+      .sub-caption {
+        color: var(--soft);
+        font: 600 12px var(--sans);
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
       }
 
       .log-panel { margin: 8px 0 0; }
@@ -430,10 +443,11 @@
             <strong id="backend-name">Probing pipeline...</strong>
           </div>
         </div>
-        <div class="sb-cell sb-profile">
-          <span class="sb-caption">actual pipeline profiles</span>
+        <div class="sb-cell sb-obr">
+          <span class="sb-caption">eclipsa obr wasm worklet</span>
           <div class="sb-body">
-            <span id="profile-summary" class="mono soft">Checking iacb box parser...</span>
+            <span id="obr-dot" class="dot"></span>
+            <span id="obr-status" class="mono soft">Loading obr_binaural.wasm...</span>
           </div>
         </div>
         <div class="sb-cell sb-stream">
@@ -452,7 +466,7 @@
       </section>
 
       <p class="lede">
-        Pure-Rust decoder for <strong>IAMF</strong> (Immersive Audio Model and Formats / Eclipsa Audio) integrated into Chromium behind <code>media::IamfAudioDecoder</code>, supporting IAMF v1.1 channel/scene streams and IAMF v2.0 object-based rendering.
+        Pure-Rust decoder for <strong>IAMF</strong> (Immersive Audio Model and Formats / Eclipsa Audio) integrated into Chromium behind <code>media::IamfAudioDecoder</code>, paired with our pure-Rust <strong>Open Binaural Renderer (OBR) WASM</strong> streaming player in WebAudio.
       </p>
 
       <div class="docs">
@@ -460,13 +474,17 @@
           <b>repository</b>
           <span>baylesj/iamf-rs crates, C API, and conformance suite</span>
         </a>
+        <a href="https://github.com/baylesj/iamf-rs/tree/main/crates/iamf-obr-wasm">
+          <b>obr wasm crate</b>
+          <span>Pure-Rust google/obr port compiled to obr_binaural.wasm</span>
+        </a>
         <a href="https://github.com/baylesj/iamf-rs/releases/tag/tpac-2026-demo">
           <b>chromium builds</b>
           <span>Pre-built Linux x64 and macOS arm64 demo binaries</span>
         </a>
         <a href="https://chromium-review.googlesource.com/c/chromium/src/+/8282360">
           <b>gerrit cl</b>
-          <span>crrev.com/c/8282360 · media::IamfRsDecoderAdapter</span>
+          <span>crrev.com/c/8282360 · N-channel MediaElement + iamf-rs</span>
         </a>
       </div>
 
@@ -474,7 +492,7 @@
         <h2 class="label" id="lbl-player"><span class="n">01</span>player</h2>
         <div class="stack">
           <p class="soft">
-            Select an IAMF-in-MP4 stream to append into a browser <code>MediaSource</code> buffer. The IAMF v2.0 streams use <code>primary_profile = 3</code> (Base-Advanced object-based audio), which decodes exclusively when <code>iamf-rs</code> is active; stock Chrome (<code>iamf_tools</code> C++) rejects IAMF v2.0 in <code>mp4::IamfSpecificBox</code>.
+            Select an IAMF-in-MP4 stream below. When connected to a WebAudio <code>MediaElementAudioSourceNode</code>, Chromium decodes all <strong>N discrete channels</strong> (e.g. 12 channels for <code>7.1.4</code>) directly from <code>&lt;video&gt;</code> without <code>mp4box.js</code>, feeding the <code>AudioWorkletNode</code> running our pure-Rust <strong>OBR WASM</strong> renderer (<code>obr_binaural.wasm</code>).
           </p>
           <div class="seg" role="group" aria-label="Stream selection">
             <button type="button" class="track-btn on" data-file="media/iamf_v2_object_orbit.mp4" data-mime='audio/mp4; codecs="iamf.003.003.ipcm"' data-label="360° Object Orbit (v2.0)">
@@ -484,20 +502,61 @@
               test_000800 vector · v2.0
             </button>
             <button type="button" class="track-btn" data-file="media/iamf_alternating_sine_waves_714.mp4" data-mime='video/mp4; codecs="avc1.640028, iamf.000.000.Opus"' data-label="7.1.4 Surround Sine (v1.1)">
-              7.1.4 surround · v1.1
+              7.1.4 surround · v1.1 (12ch)
             </button>
             <button type="button" class="track-btn" data-file="media/iamf_alternating_sine_waves_stereo.mp4" data-mime='video/mp4; codecs="avc1.640028, iamf.000.000.Opus"' data-label="Stereo 2.0 Sine (v1.1)">
-              stereo 2.0 · v1.1
+              stereo 2.0 · v1.1 (2ch)
             </button>
           </div>
+          <div class="sub-row">
+            <span class="sub-caption">obr wasm rendering mode</span>
+            <div class="seg" role="group" aria-label="OBR rendering profile">
+              <button type="button" class="obr-btn on" data-profile="0" data-bypass="false">
+                obr binaural · ambient
+              </button>
+              <button type="button" class="obr-btn" data-profile="1" data-bypass="false">
+                obr binaural · direct
+              </button>
+              <button type="button" class="obr-btn" data-profile="2" data-bypass="false">
+                obr binaural · reverberant
+              </button>
+              <button type="button" class="obr-btn" data-profile="0" data-bypass="true">
+                speaker passthrough (bypass)
+              </button>
+            </div>
+          </div>
           <video id="player" controls playsinline></video>
-          <canvas id="viz" width="760" height="104"></canvas>
+          <canvas id="viz" width="920" height="148"></canvas>
           <p class="soft" id="player-status">Ready.</p>
         </div>
       </section>
 
+      <section class="split" aria-labelledby="lbl-obr">
+        <h2 class="label" id="lbl-obr"><span class="n">02</span>obr wasm</h2>
+        <div class="stack">
+          <p class="soft">
+            Previously, Chromium capped <code>HTMLMediaElement</code> IAMF output at 2 channels, forcing web apps to bundle <code>mp4box.js</code> + custom WASM demuxers/decoders in JavaScript. By probing the IAMF descriptors in <code>media::mp4::MP4StreamParser</code> and preserving the stream's full multi-channel layout in <code>media::AudioRendererImpl::ComputeStreamOutputConfig</code> when attached to a <code>MediaElementAudioSourceNode</code>, the entire streaming binaural player reduces to a standard <code>&lt;video&gt;</code> element wired into a single <code>AudioWorkletNode</code>:
+          </p>
+          <pre class="code-snippet"><code>const audioCtx = new AudioContext({ sampleRate: 48000 });
+await audioCtx.audioWorklet.addModule("obr-worklet.js");
+const wasmBytes = await (await fetch("obr_binaural.wasm")).arrayBuffer();
+
+// Attach MediaElementAudioSourceNode before loading so AudioRendererImpl outputs all N channels (e.g. 12ch 7.1.4):
+const sourceNode = audioCtx.createMediaElementSource(videoElement);
+const obrNode = new AudioWorkletNode(audioCtx, "obr-binaural-processor", {
+  numberOfInputs: 1,
+  numberOfOutputs: 1,
+  outputChannelCount: [2],
+  channelCountMode: "max",
+  channelInterpretation: "discrete",
+  processorOptions: { wasmBytes, profile: 0 }
+});
+sourceNode.connect(obrNode).connect(audioCtx.destination);</code></pre>
+        </div>
+      </section>
+
       <section class="split" aria-labelledby="lbl-probe">
-        <h2 class="label" id="lbl-probe"><span class="n">02</span>probe</h2>
+        <h2 class="label" id="lbl-probe"><span class="n">03</span>probe</h2>
         <div class="stack">
           <p class="soft">
             Live browser capability and pipeline checks. Note that stock Chrome's MIME parser (<code>crbug.com/438106645</code>) accepts any <code>iamf.000..255.*</code> string in <code>isTypeSupported()</code>, even though its C++ <code>iamf_tools</code> demuxer and decoder only support profiles <code>000</code> and <code>001</code>. The <strong>Pipeline decode</strong> column below reflects actual MP4 <code>iacb</code> box + decoder support.
@@ -517,16 +576,16 @@
       </section>
 
       <section class="split" aria-labelledby="lbl-builds">
-        <h2 class="label" id="lbl-builds"><span class="n">03</span>builds</h2>
+        <h2 class="label" id="lbl-builds"><span class="n">04</span>builds</h2>
         <div class="stack">
           <p class="soft">
-            Pre-built Chromium release binaries with <code>iamf-rs</code> enabled by default. You can toggle between <code>iamf-rs</code> (Rust) and <code>iamf_tools</code> (C++) at any time via <code>chrome://flags/#iamf-rs-audio-decoding</code> or with <code>--disable-features=IamfRsAudioDecoding</code>.
+            Pre-built Chromium release binaries with <code>iamf-rs</code> and N-channel <code>MediaElementAudioSourceNode</code> output enabled by default. Toggle between <code>iamf-rs</code> (Rust) and <code>iamf_tools</code> (C++) at any time via <code>chrome://flags/#iamf-rs-audio-decoding</code> or with <code>--disable-features=IamfRsAudioDecoding</code>.
           </p>
           <div class="actions">
-            <a class="btn" href="https://github.com/baylesj/iamf-rs/releases/download/tpac-2026-demo/chrome-iamf-linux-x64.zip">Download Linux x64 (182 MB)</a>
-            <a class="btn quiet" href="https://github.com/baylesj/iamf-rs/releases/download/tpac-2026-demo/chrome-iamf-mac-arm64.zip">Download macOS arm64 (184 MB)</a>
+            <a class="btn" href="https://github.com/baylesj/iamf-rs/releases/download/tpac-2026-demo/chrome-iamf-linux-x64.zip">Download Linux x64</a>
+            <a class="btn quiet" href="https://github.com/baylesj/iamf-rs/releases/download/tpac-2026-demo/chrome-iamf-mac-arm64.zip">Download macOS arm64</a>
           </div>
-          <pre class="code-snippet"><code># Linux x64 (iamf-rs enabled by default):
+          <pre class="code-snippet"><code># Linux x64 (iamf-rs + N-channel MediaElement enabled by default):
 unzip chrome-iamf-linux-x64.zip &amp;&amp; cd chrome-iamf-linux-x64
 ./chrome https://baylesj.github.io/iamf-rs/
 
@@ -563,6 +622,12 @@ chrome://flags/#iamf-rs-audio-decoding</code></pre>
         { name: "Advanced-1 (v2.0)", codec: 'audio/mp4; codecs="iamf.004.004.ipcm"', minProfile: 4 }
       ];
 
+      // Channel labels for 7.1.4 (in Chromium/Android ordering: L, R, C, LFE, Lrs, Rrs, Lss, Rss, Ltf, Rtf, Ltb, Rtb)
+      const CH_LABELS_12 = ["L", "R", "C", "LFE", "Lrs", "Rrs", "Lss", "Rss", "Ltf", "Rtf", "Ltb", "Rtb"];
+      const CH_LABELS_6 = ["L", "R", "C", "LFE", "Ls", "Rs"];
+      const CH_LABELS_2 = ["L", "R"];
+      const PROFILE_NAMES = ["Ambient", "Direct", "Reverberant"];
+
       const eventLog = document.getElementById("event-log");
       function logEvent(tag, msg, isErr = false) {
         const li = document.createElement("li");
@@ -575,13 +640,13 @@ chrome://flags/#iamf-rs-audio-decoding</code></pre>
 
       const hasMSE = typeof window.MediaSource !== "undefined";
       const v1Supported = hasMSE && MediaSource.isTypeSupported('audio/mp4; codecs="iamf.000.000.Opus"');
-      // Only our iamf-rs prototype build with kIamfRsAudioDecoding enabled accepts 'iamf-rs'
       const rustMarkerSupported = hasMSE && MediaSource.isTypeSupported('audio/mp4; codecs="iamf-rs"');
 
       const decoderBar = document.getElementById("decoder-bar");
       const backendDot = document.getElementById("backend-dot");
       const backendName = document.getElementById("backend-name");
-      const profileSummary = document.getElementById("profile-summary");
+      const obrDot = document.getElementById("obr-dot");
+      const obrStatus = document.getElementById("obr-status");
       const verifyDot = document.getElementById("verify-dot");
       const verifyText = document.getElementById("verify-text");
       const tbody = document.getElementById("probe-tbody");
@@ -608,7 +673,6 @@ chrome://flags/#iamf-rs-audio-decoding</code></pre>
           decoderBar.dataset.backend = "rust";
           backendDot.className = "dot ok";
           backendName.textContent = "iamf-rs (Pure Rust)";
-          profileSummary.textContent = "v1.0, v1.1, v2.0 (profiles 000–005)";
           verifyDot.className = "dot ok";
           verifyText.textContent = reason;
           renderProbeTable(true);
@@ -616,7 +680,6 @@ chrome://flags/#iamf-rs-audio-decoding</code></pre>
           decoderBar.dataset.backend = "cpp";
           backendDot.className = "dot warn";
           backendName.textContent = "iamf_tools (C++ / Stock Chrome)";
-          profileSummary.textContent = "v1.0 Simple & Base only (000–001)";
           verifyDot.className = "dot warn";
           verifyText.textContent = reason;
           renderProbeTable(false);
@@ -624,14 +687,12 @@ chrome://flags/#iamf-rs-audio-decoding</code></pre>
           decoderBar.dataset.backend = "none";
           backendDot.className = "dot err";
           backendName.textContent = "No IAMF decoder active";
-          profileSummary.textContent = "Unsupported in this browser";
           verifyDot.className = "dot err";
           verifyText.textContent = reason;
           renderProbeTable(false);
         }
       }
 
-      // Initial synchronous status before async MSE pipeline probe completes:
       if (!v1Supported) {
         setBackendStatus("none", "MSE IAMF unavailable");
       } else if (rustMarkerSupported) {
@@ -640,9 +701,137 @@ chrome://flags/#iamf-rs-audio-decoding</code></pre>
         setBackendStatus("cpp", "Checking MSE pipeline for IAMF v2.0 support...");
       }
 
-      // Run an actual offscreen MSE + MP4StreamParser + IamfAudioDecoder probe on media/iamf_v2_object_orbit.mp4.
-      // Stock Chrome (155.x) and iamf_tools C++ reject primary_profile = 3 inside IamfSpecificBox::ReadOBU,
-      // resulting in sb.buffered.length === 0 and an HTMLMediaElement / SourceBuffer error.
+      const player = document.getElementById("player");
+      const statusEl = document.getElementById("player-status");
+      const canvas = document.getElementById("viz");
+      const ctx2d = canvas.getContext("2d");
+
+      let audioCtx = null;
+      let mediaSourceNode = null;
+      let obrWorkletNode = null;
+      let analyserL = null;
+      let analyserR = null;
+      let currentObrProfile = 0;
+      let currentObrBypass = false;
+      let workletMeters = {
+        inputChannels: 0,
+        layoutName: "Waiting for stream...",
+        renderedWithObr: false,
+        profile: 0,
+        inputRms: [],
+        outputRms: [0, 0]
+      };
+
+      // Initialize the WebAudio graph and attach MediaElementAudioSourceNode BEFORE loading tracks
+      // so Chromium's AudioRendererImpl sees IsOptimizedForHardwareParameters() == false and outputs
+      // the full N-channel stream (e.g. 12 channels for 7.1.4) into WebAudio!
+      let audioGraphReadyPromise = null;
+      function initAudioGraphEarly() {
+        if (audioGraphReadyPromise) return audioGraphReadyPromise;
+        audioGraphReadyPromise = (async () => {
+          try {
+            const AC = window.AudioContext || window.webkitAudioContext;
+            audioCtx = new AC({ sampleRate: 48000 });
+            // Attach MediaElementAudioSourceNode immediately so HTMLMediaElement registers its client before MSE load:
+            mediaSourceNode = audioCtx.createMediaElementSource(player);
+
+            const splitter = audioCtx.createChannelSplitter(2);
+            analyserL = audioCtx.createAnalyser();
+            analyserR = audioCtx.createAnalyser();
+            analyserL.fftSize = 256;
+            analyserR.fftSize = 256;
+
+            await audioCtx.audioWorklet.addModule("obr-worklet.js");
+            const wasmResp = await fetch("obr_binaural.wasm");
+            if (!wasmResp.ok) throw new Error(`obr_binaural.wasm HTTP ${wasmResp.status}`);
+            const wasmBytes = await wasmResp.arrayBuffer();
+
+            obrWorkletNode = new AudioWorkletNode(audioCtx, "obr-binaural-processor", {
+              numberOfInputs: 1,
+              numberOfOutputs: 1,
+              outputChannelCount: [2],
+              channelCountMode: "max",
+              channelInterpretation: "discrete",
+              processorOptions: {
+                wasmBytes,
+                profile: currentObrProfile,
+                bypass: currentObrBypass
+              }
+            });
+
+            obrWorkletNode.port.onmessage = (ev) => {
+              const d = ev.data || {};
+              if (d.type === "ready") {
+                obrDot.className = "dot ok";
+                obrStatus.textContent = `Ready (${d.sampleRate} Hz · 3OA SH-HRIR)`;
+                logEvent("obr-wasm", `Initialized pure-Rust OBR WASM AudioWorklet (${(wasmBytes.byteLength / 1024).toFixed(0)} KB, ${d.sampleRate} Hz).`);
+              } else if (d.type === "renderer-configured") {
+                obrDot.className = "dot ok";
+                obrStatus.textContent = `${d.inputChannels}ch (${d.layoutName}) → Binaural (${PROFILE_NAMES[d.profile] || "Ambient"})`;
+                logEvent("obr-wasm", `Configured OBR renderer: ${d.inputChannels}ch (${d.layoutName}) → 2ch Binaural (${PROFILE_NAMES[d.profile] || "Ambient"} HRIR).`);
+              } else if (d.type === "meters") {
+                workletMeters = d;
+              } else if (d.type === "error") {
+                obrDot.className = "dot err";
+                obrStatus.textContent = `Worklet error: ${d.message}`;
+                logEvent("obr-wasm", d.message, true);
+              }
+            };
+
+            mediaSourceNode.connect(obrWorkletNode);
+            obrWorkletNode.connect(splitter);
+            splitter.connect(analyserL, 0);
+            splitter.connect(analyserR, 1);
+            obrWorkletNode.connect(audioCtx.destination);
+          } catch (e) {
+            obrDot.className = "dot warn";
+            obrStatus.textContent = "Fallback stereo passthrough";
+            logEvent("obr-wasm", `AudioWorklet fallback: ${e.message}`, true);
+            if (audioCtx && mediaSourceNode) {
+              const splitter = audioCtx.createChannelSplitter(2);
+              analyserL = audioCtx.createAnalyser();
+              analyserR = audioCtx.createAnalyser();
+              analyserL.fftSize = 256;
+              analyserR.fftSize = 256;
+              mediaSourceNode.connect(splitter);
+              splitter.connect(analyserL, 0);
+              splitter.connect(analyserR, 1);
+              mediaSourceNode.connect(audioCtx.destination);
+            }
+          }
+        })();
+        return audioGraphReadyPromise;
+      }
+
+      function resumeAudioContext() {
+        if (audioCtx && audioCtx.state === "suspended") {
+          audioCtx.resume();
+        }
+      }
+
+      document.querySelectorAll(".obr-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          document.querySelectorAll(".obr-btn").forEach((b) => b.classList.remove("on"));
+          btn.classList.add("on");
+          currentObrProfile = Number(btn.dataset.profile || 0);
+          currentObrBypass = btn.dataset.bypass === "true";
+          if (obrWorkletNode) {
+            obrWorkletNode.port.postMessage({
+              type: "config",
+              profile: currentObrProfile,
+              bypass: currentObrBypass
+            });
+            if (currentObrBypass) {
+              obrStatus.textContent = `Bypassed (${workletMeters.inputChannels || 2}ch direct passthrough)`;
+              logEvent("obr-wasm", "Switched to direct speaker passthrough (OBR bypassed).");
+            } else {
+              obrStatus.textContent = `${workletMeters.inputChannels || 2}ch → Binaural (${PROFILE_NAMES[currentObrProfile]})`;
+              logEvent("obr-wasm", `Switched OBR HRIR filter profile to ${PROFILE_NAMES[currentObrProfile]}.`);
+            }
+          }
+        });
+      });
+
       async function verifyRustPipeline() {
         if (!hasMSE || !v1Supported) {
           logEvent("probe", "IAMF is not enabled in this browser.", true);
@@ -695,7 +884,6 @@ chrome://flags/#iamf-rs-audio-decoding</code></pre>
         } catch (e) {
           setBackendStatus("cpp", "IAMF v2.0 rejected (running C++ iamf_tools)");
           logEvent("verify", `Detected C++ iamf_tools (stock Chrome or flag disabled): ${e.message}. Defaulting player to IAMF v1.1 7.1.4 stream.`, true);
-          // Automatically switch the default pre-loaded track to IAMF v1.1 7.1.4 so playback works in C++ iamf_tools too!
           const v1Btn = document.querySelector('.track-btn[data-file*="714"]');
           const firstBtn = document.querySelector('.track-btn');
           if (v1Btn && firstBtn && firstBtn.classList.contains("on") && player.paused) {
@@ -703,38 +891,6 @@ chrome://flags/#iamf-rs-audio-decoding</code></pre>
             v1Btn.classList.add("on");
             loadTrack(v1Btn.dataset.file, v1Btn.dataset.mime, v1Btn.dataset.label, false);
           }
-        }
-      }
-      verifyRustPipeline();
-
-      const player = document.getElementById("player");
-      const statusEl = document.getElementById("player-status");
-      const canvas = document.getElementById("viz");
-      const ctx2d = canvas.getContext("2d");
-      let audioCtx = null;
-      let analyserL = null;
-      let analyserR = null;
-
-      function ensureAudioGraph() {
-        if (audioCtx) {
-          if (audioCtx.state === "suspended") audioCtx.resume();
-          return;
-        }
-        try {
-          const AC = window.AudioContext || window.webkitAudioContext;
-          audioCtx = new AC();
-          const src = audioCtx.createMediaElementSource(player);
-          const splitter = audioCtx.createChannelSplitter(2);
-          analyserL = audioCtx.createAnalyser();
-          analyserR = audioCtx.createAnalyser();
-          analyserL.fftSize = 256;
-          analyserR.fftSize = 256;
-          src.connect(splitter);
-          splitter.connect(analyserL, 0);
-          splitter.connect(analyserR, 1);
-          src.connect(audioCtx.destination);
-        } catch (e) {
-          logEvent("audio", e.message);
         }
       }
 
@@ -745,64 +901,104 @@ chrome://flags/#iamf-rs-audio-decoding</code></pre>
         const styles = getComputedStyle(document.documentElement);
         const fieldBg = styles.getPropertyValue("--field").trim() || "#151b23";
         const softCol = styles.getPropertyValue("--soft").trim() || "#9198a1";
+        const inkCol = styles.getPropertyValue("--ink").trim() || "#e6edf3";
         const accentCol = styles.getPropertyValue("--accent").trim() || "#4493f8";
         const greenCol = styles.getPropertyValue("--green").trim() || "#3fb950";
+        const purpleCol = styles.getPropertyValue("--purple").trim() || "#ab7df8";
         const lineCol = styles.getPropertyValue("--line").trim() || "#3d444d";
 
         ctx2d.fillStyle = fieldBg;
         ctx2d.fillRect(0, 0, w, h);
 
-        if (!analyserL || !analyserR) {
-          ctx2d.fillStyle = softCol;
-          ctx2d.font = '13px "Atkinson Hyperlegible Mono", monospace';
-          ctx2d.fillText("Press play to view real-time L / R channel spectrum", 16, h / 2 + 4);
-          return;
-        }
-
-        const bufL = new Uint8Array(analyserL.frequencyBinCount);
-        const bufR = new Uint8Array(analyserR.frequencyBinCount);
-        analyserL.getByteFrequencyData(bufL);
-        analyserR.getByteFrequencyData(bufR);
-
-        let sumL = 0, sumR = 0;
-        const bins = 48;
-        const barW = (w - 180) / bins;
-        for (let i = 0; i < bins; i++) {
-          const vL = bufL[i] / 255.0;
-          const vR = bufR[i] / 255.0;
-          sumL += vL;
-          sumR += vR;
-          const bhL = vL * (h / 2 - 10);
-          const bhR = vR * (h / 2 - 10);
-          ctx2d.fillStyle = accentCol;
-          ctx2d.fillRect(168 + i * barW, h / 2 - bhL, barW - 2, bhL);
-          ctx2d.fillStyle = greenCol;
-          ctx2d.fillRect(168 + i * barW, h / 2 + 2, barW - 2, bhR);
-        }
-
-        const avgL = Math.min(1, sumL / (bins * 0.45));
-        const avgR = Math.min(1, sumR / (bins * 0.45));
+        // Panel 1 (x: 14..380): N-channel MediaElementAudioSourceNode input meters
+        const inCh = workletMeters.inputChannels || 12;
+        const labels = inCh === 12 ? CH_LABELS_12 : (inCh === 6 ? CH_LABELS_6 : CH_LABELS_2);
         ctx2d.fillStyle = softCol;
-        ctx2d.font = '12px "Atkinson Hyperlegible Mono", monospace';
-        ctx2d.fillText("L", 16, 33);
-        ctx2d.fillText("R", 16, 77);
+        ctx2d.font = '600 11px "Atkinson Hyperlegible Mono", monospace';
+        ctx2d.fillText(`MEDIAELEMENT INPUT (${workletMeters.inputChannels ? `${inCh}CH ${workletMeters.layoutName.toUpperCase()}` : "AWAITING PLAYBACK"})`, 14, 18);
+
+        const meterAreaW = 356;
+        const colW = meterAreaW / inCh;
+        const barMaxH = h - 48;
+        for (let ch = 0; ch < inCh; ch++) {
+          const x = 14 + ch * colW;
+          const rms = (workletMeters.inputRms && workletMeters.inputRms[ch]) || 0;
+          const norm = Math.min(1, Math.pow(rms * 3.2, 0.65));
+          const bh = norm * barMaxH;
+
+          ctx2d.strokeStyle = lineCol;
+          ctx2d.strokeRect(x + 2, 26, Math.max(8, colW - 6), barMaxH);
+          ctx2d.fillStyle = ch >= 8 ? purpleCol : accentCol;
+          ctx2d.fillRect(x + 2, 26 + (barMaxH - bh), Math.max(8, colW - 6), bh);
+
+          ctx2d.fillStyle = softCol;
+          ctx2d.font = '10px "Atkinson Hyperlegible Mono", monospace';
+          const lbl = labels[ch] || `C${ch + 1}`;
+          ctx2d.fillText(lbl, x + 2, h - 8);
+        }
+
+        // Panel 2 (x: 386..536): OBR WASM Binaural Output L / R meters
+        ctx2d.fillStyle = softCol;
+        ctx2d.font = '600 11px "Atkinson Hyperlegible Mono", monospace';
+        const modeTitle = currentObrBypass ? "BYPASS L/R" : `OBR WASM (${PROFILE_NAMES[currentObrProfile].toUpperCase()})`;
+        ctx2d.fillText(modeTitle, 388, 18);
+
+        let avgL = 0, avgR = 0;
+        if (analyserL && analyserR) {
+          const bufL = new Uint8Array(analyserL.frequencyBinCount);
+          const bufR = new Uint8Array(analyserR.frequencyBinCount);
+          analyserL.getByteFrequencyData(bufL);
+          analyserR.getByteFrequencyData(bufR);
+
+          let sumL = 0, sumR = 0;
+          const bins = 44;
+          const specX = 550;
+          const barW = (w - specX - 14) / bins;
+          ctx2d.fillStyle = softCol;
+          ctx2d.fillText("BINAURAL L / R SPECTRUM", specX, 18);
+
+          const halfH = (h - 34) / 2;
+          const midY = 26 + halfH;
+          for (let i = 0; i < bins; i++) {
+            const vL = bufL[i] / 255.0;
+            const vR = bufR[i] / 255.0;
+            sumL += vL;
+            sumR += vR;
+            const bhL = vL * (halfH - 4);
+            const bhR = vR * (halfH - 4);
+            ctx2d.fillStyle = accentCol;
+            ctx2d.fillRect(specX + i * barW, midY - bhL, Math.max(2, barW - 2), bhL);
+            ctx2d.fillStyle = greenCol;
+            ctx2d.fillRect(specX + i * barW, midY + 2, Math.max(2, barW - 2), bhR);
+          }
+          avgL = Math.min(1, sumL / (bins * 0.45));
+          avgR = Math.min(1, sumR / (bins * 0.45));
+        }
+
+        const outRmsL = Math.max(avgL, Math.min(1, Math.pow((workletMeters.outputRms[0] || 0) * 3.0, 0.65)));
+        const outRmsR = Math.max(avgR, Math.min(1, Math.pow((workletMeters.outputRms[1] || 0) * 3.0, 0.65)));
+        ctx2d.fillStyle = inkCol;
+        ctx2d.font = '11px "Atkinson Hyperlegible Mono", monospace';
+        ctx2d.fillText("L", 388, 56);
+        ctx2d.fillText("R", 388, 104);
         ctx2d.strokeStyle = lineCol;
-        ctx2d.strokeRect(36, 20, 112, 16);
-        ctx2d.strokeRect(36, 64, 112, 16);
+        ctx2d.strokeRect(404, 42, 126, 20);
+        ctx2d.strokeRect(404, 90, 126, 20);
         ctx2d.fillStyle = accentCol;
-        ctx2d.fillRect(36, 20, avgL * 112, 16);
+        ctx2d.fillRect(404, 42, outRmsL * 126, 20);
         ctx2d.fillStyle = greenCol;
-        ctx2d.fillRect(36, 64, avgR * 112, 16);
+        ctx2d.fillRect(404, 90, outRmsR * 126, 20);
       }
       drawLoop();
 
-      function loadTrack(fileUrl, mimeType, label, autoPlay) {
+      async function loadTrack(fileUrl, mimeType, label, autoPlay) {
         statusEl.textContent = `Loading ${label}...`;
         logEvent("mse", `Loading ${label} (${mimeType})`);
         if (!hasMSE) {
           statusEl.textContent = "MediaSource API unavailable.";
           return;
         }
+        await initAudioGraphEarly();
         const ms = new MediaSource();
         player.src = URL.createObjectURL(ms);
         ms.addEventListener("sourceopen", async () => {
@@ -822,7 +1018,7 @@ chrome://flags/#iamf-rs-audio-decoding</code></pre>
               statusEl.textContent = `${label} buffered (${player.duration.toFixed(2)}s).`;
               logEvent("mse", `Buffered ${buf.byteLength} bytes (${player.duration.toFixed(2)}s)`);
               if (autoPlay) {
-                ensureAudioGraph();
+                resumeAudioContext();
                 player.play().catch(e => logEvent("play", e.message));
               }
             }, { once: true });
@@ -834,7 +1030,7 @@ chrome://flags/#iamf-rs-audio-decoding</code></pre>
         }, { once: true });
       }
 
-      player.addEventListener("play", () => ensureAudioGraph());
+      player.addEventListener("play", () => resumeAudioContext());
       const buttons = document.querySelectorAll(".track-btn");
       buttons.forEach(btn => {
         btn.addEventListener("click", () => {
@@ -844,6 +1040,7 @@ chrome://flags/#iamf-rs-audio-decoding</code></pre>
         });
       });
 
+      verifyRustPipeline();
       const first = buttons[0];
       loadTrack(first.dataset.file, first.dataset.mime, first.dataset.label, false);
     </script>
