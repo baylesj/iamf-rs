@@ -1,5 +1,5 @@
 //! Rendering: planar element channels → target sound system channels,
-//! using the gain matrices ported from libiamf v1.1.0.
+//! using the libiamf / OAR EAR gain matrices (see `matrices.rs`).
 
 use crate::DecodeError;
 use crate::matrices::{H2M_TABLE, HoaOrder, M2M_TABLE, MatrixLayout};

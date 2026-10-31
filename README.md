@@ -99,8 +99,10 @@ pure-Rust Opus decoder instead. That decoder is slow on real content (see
 - **Binaural (headphones):** Output layout 14 in the C ABI, at any supported
   sample rate.
   It covers channel-based, scene-based, and object-based elements. You get
-  the `Ambient`, `Direct`, and `Reverberant` filter profiles, and both
-  world-locked (`mode == 1`) and head-locked (`mode == 2`) rendering. This
+  the `Ambient`, `Direct`, and `Reverberant` filter profiles. Elements with
+  `headphones_rendering_mode` 1 (world-locked) and 2 (head-locked) both get
+  HRTF rendering. Without head tracking the two sound the same, so the
+  builtin renderer gives them identical output. This
   renderer is a native port of [google/obr](https://github.com/google/obr),
   the Open Binaural Renderer. Objects are encoded to third-order ambisonics
   before binaural rendering, as in obr.
