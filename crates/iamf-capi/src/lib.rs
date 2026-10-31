@@ -91,6 +91,31 @@ pub struct IamfrsDecoder {
     inner: StreamDecoder,
     /// A rendered unit that did not fit the caller's buffer yet.
     pending_unit: Option<Vec<u8>>,
+    /// Set when a call panicked; the decoder state may be inconsistent,
+    /// so every later call fails with `IAMFRS_ERR_INTERNAL`.
+    poisoned: bool,
+}
+
+/// Runs `f`, turning a panic into `IAMFRS_ERR_INTERNAL` instead of letting
+/// it unwind across the C ABI (which aborts the process). This only helps
+/// builds with `panic = "unwind"`; with `panic = "abort"` a panic still
+/// aborts.
+fn guard(f: impl FnOnce() -> c_int) -> c_int {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or(IAMFRS_ERR_INTERNAL)
+}
+
+/// [`guard`] for calls on a live handle: a poisoned handle fails without
+/// running `f`, and a panic in `f` poisons it.
+fn guard_handle(handle: &mut IamfrsDecoder, f: impl FnOnce(&mut IamfrsDecoder) -> c_int) -> c_int {
+    if handle.poisoned {
+        return IAMFRS_ERR_INTERNAL;
+    }
+    let status = guard(|| f(handle));
+    if status == IAMFRS_ERR_INTERNAL {
+        handle.poisoned = true;
+        handle.pending_unit = None;
+    }
+    status
 }
 
 /// Decoder configuration, mirroring iamf-tools' `IamfDecoderFactory::Settings`.
@@ -195,19 +220,27 @@ pub unsafe extern "C" fn iamfrs_decoder_create_from_descriptors(
     settings.loudness_target_db =
         (c_settings.enable_loudness_normalization != 0).then_some(c_settings.loudness_target_db);
     settings.enable_limiter = c_settings.enable_limiter != 0;
-    match StreamDecoder::new_from_descriptors(data, settings, &DefaultFactory) {
-        Ok(inner) => {
-            let handle = Box::new(IamfrsDecoder {
-                inner,
-                pending_unit: None,
-            });
-            // SAFETY: `out` is non-null (checked) and the caller promises
-            // it is writable.
-            unsafe { out.write(Box::into_raw(handle)) };
-            IAMFRS_OK
-        }
-        Err(e) => status_of(&e),
+    let mut created = None;
+    let status =
+        guard(
+            || match StreamDecoder::new_from_descriptors(data, settings, &DefaultFactory) {
+                Ok(inner) => {
+                    created = Some(Box::new(IamfrsDecoder {
+                        inner,
+                        pending_unit: None,
+                        poisoned: false,
+                    }));
+                    IAMFRS_OK
+                }
+                Err(e) => status_of(&e),
+            },
+        );
+    if let Some(handle) = created {
+        // SAFETY: `out` is non-null (checked) and the caller promises it
+        // is writable.
+        unsafe { out.write(Box::into_raw(handle)) };
     }
+    status
 }
 
 /// Pushes bitstream bytes (whole or partial OBUs).
@@ -235,10 +268,10 @@ pub unsafe extern "C" fn iamfrs_decoder_decode(
         // `size` readable bytes.
         unsafe { std::slice::from_raw_parts(data, size) }
     };
-    match handle.inner.decode(bytes) {
+    guard_handle(handle, |h| match h.inner.decode(bytes) {
         Ok(()) => IAMFRS_OK,
         Err(e) => status_of(&e),
-    }
+    })
 }
 
 /// Returns 1 when a decoded temporal unit is ready to pull, else 0.
@@ -251,8 +284,10 @@ pub unsafe extern "C" fn iamfrs_decoder_is_temporal_unit_available(
 ) -> c_int {
     // SAFETY: the caller promises `decoder` is null or a live handle.
     match unsafe { decoder.as_ref() } {
-        Some(h) => (h.pending_unit.is_some() || h.inner.is_temporal_unit_available()) as c_int,
-        None => 0,
+        Some(h) if !h.poisoned => {
+            (h.pending_unit.is_some() || h.inner.is_temporal_unit_available()) as c_int
+        }
+        _ => 0,
     }
 }
 
@@ -280,16 +315,24 @@ pub unsafe extern "C" fn iamfrs_decoder_get_output_temporal_unit(
         return IAMFRS_ERR_INVALID_ARG;
     }
     if handle.pending_unit.is_none() {
-        match handle.inner.get_output_temporal_unit() {
-            Ok(Some(unit)) => handle.pending_unit = Some(unit),
-            Ok(None) => {
-                // SAFETY: `bytes_written` is non-null (checked) and the
-                // caller promises it is writable.
-                unsafe { bytes_written.write(0) };
-                return IAMFRS_ERR_NO_TEMPORAL_UNIT;
+        let status = guard_handle(handle, |h| match h.inner.get_output_temporal_unit() {
+            Ok(Some(unit)) => {
+                h.pending_unit = Some(unit);
+                IAMFRS_OK
             }
-            Err(e) => return status_of(&e),
+            Ok(None) => IAMFRS_ERR_NO_TEMPORAL_UNIT,
+            Err(e) => status_of(&e),
+        });
+        if status == IAMFRS_ERR_NO_TEMPORAL_UNIT {
+            // SAFETY: `bytes_written` is non-null (checked) and the
+            // caller promises it is writable.
+            unsafe { bytes_written.write(0) };
         }
+        if status != IAMFRS_OK {
+            return status;
+        }
+    } else if handle.poisoned {
+        return IAMFRS_ERR_INTERNAL;
     }
     let unit = handle.pending_unit.as_ref().expect("filled above");
     // SAFETY: `bytes_written` is non-null (checked) and writable.
@@ -324,13 +367,21 @@ macro_rules! getter {
             if out.is_null() {
                 return IAMFRS_ERR_INVALID_ARG;
             }
-            // SAFETY: `out` is non-null (checked) and the caller promises
-            // it is writable.
+            if handle.poisoned {
+                return IAMFRS_ERR_INTERNAL;
+            }
+            let mut value = None;
             #[allow(clippy::redundant_closure_call)]
-            unsafe {
-                out.write(($get)(&handle.inner))
-            };
-            IAMFRS_OK
+            let status = guard(|| {
+                value = Some(($get)(&handle.inner));
+                IAMFRS_OK
+            });
+            if let Some(value) = value {
+                // SAFETY: `out` is non-null (checked) and the caller
+                // promises it is writable.
+                unsafe { out.write(value) };
+            }
+            status
         }
     };
 }
@@ -372,9 +423,11 @@ pub unsafe extern "C" fn iamfrs_decoder_reset(decoder: *mut IamfrsDecoder) -> c_
     let Some(handle) = (unsafe { decoder.as_mut() }) else {
         return IAMFRS_ERR_INVALID_ARG;
     };
-    handle.pending_unit = None;
-    handle.inner.reset();
-    IAMFRS_OK
+    guard_handle(handle, |h| {
+        h.pending_unit = None;
+        h.inner.reset();
+        IAMFRS_OK
+    })
 }
 
 /// Reconfigures for a different mix presentation and/or output layout
@@ -416,14 +469,16 @@ pub unsafe extern "C" fn iamfrs_decoder_reset_with_new_mix(
             None => return IAMFRS_ERR_INVALID_ARG,
         }
     };
-    handle.pending_unit = None;
-    match handle
-        .inner
-        .reset_with_new_mix(selection, layout, &DefaultFactory)
-    {
-        Ok(_) => IAMFRS_OK,
-        Err(e) => status_of(&e),
-    }
+    guard_handle(handle, |h| {
+        h.pending_unit = None;
+        match h
+            .inner
+            .reset_with_new_mix(selection, layout, &DefaultFactory)
+        {
+            Ok(_) => IAMFRS_OK,
+            Err(e) => status_of(&e),
+        }
+    })
 }
 
 /// Marks end of stream; remaining buffered units stay pullable.
@@ -438,8 +493,10 @@ pub unsafe extern "C" fn iamfrs_decoder_signal_end_of_decoding(
     let Some(handle) = (unsafe { decoder.as_mut() }) else {
         return IAMFRS_ERR_INVALID_ARG;
     };
-    handle.inner.signal_end_of_decoding();
-    IAMFRS_OK
+    guard_handle(handle, |h| {
+        h.inner.signal_end_of_decoding();
+        IAMFRS_OK
+    })
 }
 
 /// Destroys the decoder. Passing null is a no-op.
@@ -902,6 +959,58 @@ mod tests {
                 IAMFRS_ERR_INVALID_ARG
             );
             assert!(rejected.is_null());
+        }
+    }
+
+    /// A panic inside a call must not unwind across the C ABI (that
+    /// aborts the host process): it becomes IAMFRS_ERR_INTERNAL and
+    /// poisons the handle, so later calls fail cleanly instead of running
+    /// on inconsistent state.
+    #[test]
+    fn panic_is_contained_and_poisons_the_handle() {
+        let Some(data) = named_vector("test_000002") else {
+            return;
+        };
+        assert_eq!(guard(|| panic!("boom")), IAMFRS_ERR_INTERNAL);
+        let mut decoder: *mut IamfrsDecoder = std::ptr::null_mut();
+        // SAFETY: valid pointers throughout; the handle is destroyed once.
+        unsafe {
+            assert_eq!(
+                iamfrs_decoder_create_from_descriptors(
+                    data.as_ptr(),
+                    data.len(),
+                    &settings_for(IAMFRS_LAYOUT_SOUND_SYSTEM_A_0_2_0),
+                    &mut decoder
+                ),
+                IAMFRS_OK
+            );
+            let handle = &mut *decoder;
+            assert_eq!(
+                guard_handle(handle, |_| panic!("boom")),
+                IAMFRS_ERR_INTERNAL
+            );
+            assert_eq!(
+                iamfrs_decoder_decode(decoder, data.as_ptr(), data.len()),
+                IAMFRS_ERR_INTERNAL
+            );
+            assert_eq!(iamfrs_decoder_is_temporal_unit_available(decoder), 0);
+            let mut written = 0usize;
+            assert_eq!(
+                iamfrs_decoder_get_output_temporal_unit(
+                    decoder,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut written
+                ),
+                IAMFRS_ERR_INTERNAL
+            );
+            let mut channels = 0u32;
+            assert_eq!(
+                iamfrs_decoder_get_num_output_channels(decoder, &mut channels),
+                IAMFRS_ERR_INTERNAL
+            );
+            assert_eq!(iamfrs_decoder_reset(decoder), IAMFRS_ERR_INTERNAL);
+            iamfrs_decoder_destroy(decoder);
         }
     }
 
