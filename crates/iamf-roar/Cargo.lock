@@ -69,7 +69,6 @@ name = "iamf-dec"
 version = "0.2.0"
 dependencies = [
  "iamf-obu",
- "realfft",
 ]
 
 [[package]]
