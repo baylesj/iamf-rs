@@ -204,11 +204,11 @@ struct ElementSlot {
     gain_rate: u32,
     /// Animated mix gain blocks, in `(unit_index, block)` arrival order.
     gain_blocks: Vec<(usize, ParameterBlock)>,
-    /// Demixing parameter blocks with their parameter rate, in arrival
-    /// order; consumed as a subblock timeline at finish.
-    dmx_blocks: Vec<(ParameterBlock, u32)>,
+    /// Demixing parameter blocks as `(start sample, block, parameter
+    /// rate)` in arrival order; consumed as a subblock timeline at finish.
+    dmx_blocks: Vec<(usize, ParameterBlock, u32)>,
     /// Recon-gain parameter blocks, same shape.
-    recon_blocks: Vec<(ParameterBlock, u32)>,
+    recon_blocks: Vec<(usize, ParameterBlock, u32)>,
     /// Position parameter definition for object-based elements.
     position_def: Option<iamf_obu::position::PositionParamDefinition>,
     /// Position parameter blocks for object-based elements, in `(unit_index, block)` arrival order.
@@ -416,9 +416,10 @@ impl PresentationDecoder {
                 ParamKind::Demixing => {
                     let block = ParameterBlock::parse(payload, definition, &ParamContext::Demixing)
                         .map_err(|e| DecodeError::CorruptPacket(e.to_string()))?;
+                    let start = slots[*slot_index].decoder.decoded_samples();
                     slots[*slot_index]
                         .dmx_blocks
-                        .push((block, definition.parameter_rate));
+                        .push((start, block, definition.parameter_rate));
                 }
                 ParamKind::ReconGain => {
                     let slot = &mut slots[*slot_index];
@@ -433,7 +434,9 @@ impl PresentationDecoder {
                         &ParamContext::ReconGain(layers),
                     )
                     .map_err(|e| DecodeError::CorruptPacket(e.to_string()))?;
-                    slot.recon_blocks.push((block, definition.parameter_rate));
+                    let start = slot.decoder.decoded_samples();
+                    slot.recon_blocks
+                        .push((start, block, definition.parameter_rate));
                 }
                 ParamKind::Position(param_type) => {
                     let block = ParameterBlock::parse(
@@ -823,7 +826,8 @@ fn reconstruct_slot(
                 }
             };
             let mut dmx_cursor = crate::params::ParamCursor::default();
-            for (block, rate) in &dmx_blocks {
+            for (start, block, rate) in &dmx_blocks {
+                dmx_cursor.advance_to(*start);
                 for sb in &block.subblocks {
                     if let SubblockData::Demixing { dmixp_mode } = &sb.data {
                         dmx_cursor.push(
@@ -834,7 +838,8 @@ fn reconstruct_slot(
                 }
             }
             let mut recon_cursor = crate::params::ParamCursor::default();
-            for (block, rate) in &recon_blocks {
+            for (start, block, rate) in &recon_blocks {
+                recon_cursor.advance_to(*start);
                 for sb in &block.subblocks {
                     if let SubblockData::ReconGain(gains) = &sb.data {
                         recon_cursor.push(

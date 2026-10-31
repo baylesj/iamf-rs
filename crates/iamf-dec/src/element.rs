@@ -246,6 +246,12 @@ impl ElementDecoder {
         Ok(true)
     }
 
+    /// Samples per channel decoded so far (every frame holds
+    /// `num_samples_per_frame`, see [`check_decoded_frame`]).
+    pub(crate) fn decoded_samples(&self) -> usize {
+        self.decoded_units() * self.frame_size as usize
+    }
+
     /// Number of temporal units decoded so far.
     pub(crate) fn decoded_units(&self) -> usize {
         self.outputs.first().map_or(0, |s| s.frames.len())

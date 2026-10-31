@@ -1172,6 +1172,8 @@ impl StreamDecoder {
                 ParamKind::Demixing => {
                     let block = ParameterBlock::parse(payload, definition, &ParamContext::Demixing)
                         .map_err(corrupt)?;
+                    let target_samples = slots[*slot_index].samples_decoded;
+                    slots[*slot_index].dmx_cursor.advance_to(target_samples);
                     for sb in &block.subblocks {
                         if let SubblockData::Demixing { dmixp_mode } = &sb.data {
                             slots[*slot_index]
@@ -1190,6 +1192,8 @@ impl StreamDecoder {
                         ParameterBlock::parse(payload, definition, &ParamContext::ReconGain(layers))
                             .map_err(corrupt)?
                     };
+                    let target_samples = slots[*slot_index].samples_decoded;
+                    slots[*slot_index].recon_cursor.advance_to(target_samples);
                     for sb in block.subblocks {
                         if let SubblockData::ReconGain(gains) = sb.data {
                             slots[*slot_index]
