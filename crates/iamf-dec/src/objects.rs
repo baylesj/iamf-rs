@@ -409,8 +409,8 @@ impl ResolvedTrack {
 
 #[derive(Debug, Clone)]
 struct PositionSegment {
-    duration: u32,
-    offset: u32,
+    duration: usize,
+    offset: usize,
     tracks: Vec<ResolvedTrack>,
 }
 
@@ -503,7 +503,7 @@ impl PositionCursor {
                 .map(|&p| ResolvedTrack::PolarStep(p))
                 .collect();
             self.queue.push_back(PositionSegment {
-                duration: gap as u32,
+                duration: gap,
                 offset: 0,
                 tracks,
             });
@@ -527,7 +527,7 @@ impl PositionCursor {
             self.last_end.clone_from(&self.defaults);
             self.in_gap = false;
         }
-        self.samples_pushed += duration;
+        self.samples_pushed = self.samples_pushed.saturating_add(duration);
 
         let bits = self.param_type.cartesian_bits().unwrap_or(8) as u8;
         let mut tracks = Vec::with_capacity(num_objects);
@@ -603,7 +603,7 @@ impl PositionCursor {
         }
 
         self.queue.push_back(PositionSegment {
-            duration: duration as u32,
+            duration,
             offset: 0,
             tracks,
         });
@@ -625,11 +625,11 @@ impl PositionCursor {
             self.default_polar.clone()
         };
 
-        let mut rem = unit_len as u32;
+        let mut rem = unit_len;
         while rem > 0 {
             let Some(front) = self.queue.front_mut() else {
                 self.in_gap = true;
-                self.samples_pushed += rem as usize;
+                self.samples_pushed = self.samples_pushed.saturating_add(rem);
                 break;
             };
             let avail = front.duration.saturating_sub(front.offset);
@@ -1433,6 +1433,34 @@ impl ObjectLoudspeakerRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: the position cursor added scaled durations with `+=`
+    /// (a panic with overflow checks, e.g. u32::MAX-sample subblocks at
+    /// parameter_rate 1) and truncated segment durations to u32.
+    #[test]
+    fn position_cursor_huge_durations_saturate() {
+        let mut bytes = vec![7, 1, 0x80];
+        bytes.extend([0; 12]);
+        let def = PositionParamDefinition::parse(
+            &mut iamf_obu::ByteReader::new(&bytes),
+            PositionParamType::Polar,
+        )
+        .unwrap();
+        let mut cursor = PositionCursor::from_definition(1, &def).unwrap();
+        // Step animation (type 0) of one zeroed polar position.
+        let data = PositionData::parse(
+            &mut iamf_obu::ByteReader::new(&[0, 0, 0, 0]),
+            PositionParamType::Polar,
+        )
+        .unwrap();
+        cursor.push(&data, usize::MAX).unwrap();
+        cursor.push(&data, usize::MAX).unwrap();
+        assert_eq!(cursor.take_for_unit(960).len(), 1);
+        cursor.clear();
+        cursor.advance_to(usize::MAX);
+        cursor.take_for_unit(usize::MAX);
+        cursor.take_for_unit(960);
+    }
 
     #[test]
     fn cart_to_polar_front_left_top() {

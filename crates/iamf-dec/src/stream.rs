@@ -465,7 +465,7 @@ impl GainCursor {
         let (resolved, end_db) = anim.resolve(self.prev_end_db);
         self.prev_end_db = end_db;
         if duration > 0 {
-            self.samples_pushed += duration;
+            self.samples_pushed = self.samples_pushed.saturating_add(duration);
             self.queue
                 .push_back((crate::params::LinearAnimation::from(&resolved), duration, 0));
         }
@@ -474,7 +474,7 @@ impl GainCursor {
     fn next(&mut self, default: f32) -> f32 {
         let Some((anim, duration, pos)) = self.queue.front_mut() else {
             self.in_gap = true;
-            self.samples_pushed += 1;
+            self.samples_pushed = self.samples_pushed.saturating_add(1);
             return default;
         };
         let gain = anim.evaluate_at(*duration, *pos);
@@ -1817,6 +1817,23 @@ impl StreamDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: GainCursor counted pushed samples with `+=`, which
+    /// overflowed (a panic with overflow checks) once scaled subblock
+    /// durations summed past usize::MAX.
+    #[test]
+    fn gain_cursor_huge_durations_saturate() {
+        let mut cursor = GainCursor::new(0);
+        let step = crate::params::MixGainAnimation::Step { start: -256 };
+        cursor.push(&step, usize::MAX);
+        cursor.push(&step, usize::MAX);
+        cursor.advance_to(usize::MAX);
+        assert!(cursor.next(1.0).is_finite());
+        let mut empty = GainCursor::new(0);
+        empty.advance_to(usize::MAX);
+        empty.queue.clear();
+        assert_eq!(empty.next(1.0), 1.0);
+    }
     use iamf_obu::descriptors::{
         ChannelAudioLayer, Layout, LoudnessInfo, MixGainParam, MixPresentation, ParamDefinition,
         SubMix, SubMixElement,
