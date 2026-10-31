@@ -751,10 +751,12 @@ impl AudioElement {
                 let coupled_substream_count = r.read_u8()?;
                 let entries = (usize::from(substream_count) + usize::from(coupled_substream_count))
                     * usize::from(output_channel_count);
-                let mut demixing_matrix = Vec::with_capacity(entries);
-                for _ in 0..entries {
-                    demixing_matrix.push(r.read_i16_be()?);
-                }
+                // Check the input holds the matrix before allocating it.
+                let demixing_matrix = r
+                    .read_bytes(entries * 2)?
+                    .chunks_exact(2)
+                    .map(|b| i16::from_be_bytes([b[0], b[1]]))
+                    .collect();
                 Ok(AudioElementConfig::AmbisonicsProjection {
                     output_channel_count,
                     substream_count,
@@ -1337,6 +1339,14 @@ fn keep_tag(name: &str, value_len: usize, counts: &mut [usize; TAG_RESTRICTIONS.
     counts[index] <= restriction.max_count
 }
 
+/// Upper bound on the items [`read_bounded_vec`] reserves up front.
+const MAX_PREALLOCATED_ITEMS: usize = 64;
+
+/// How many of `count` list items to reserve before parsing them.
+fn preallocation(count: usize) -> usize {
+    count.min(MAX_PREALLOCATED_ITEMS)
+}
+
 /// Reads `count` items, guarding against absurd counts from a hostile
 /// bitstream: each item must consume at least one byte, so `count` can never
 /// legitimately exceed the bytes remaining.
@@ -1354,7 +1364,11 @@ fn read_bounded_vec<T>(
             offset: r.position(),
         });
     }
-    let mut items = Vec::with_capacity(count);
+    // `count` is bounded by the input bytes, but each item can be far
+    // larger in memory than the one byte it may occupy on the wire, and
+    // nested lists pre-allocate at once. Cap the reservation so memory
+    // only grows as items actually parse.
+    let mut items = Vec::with_capacity(preallocation(count));
     for _ in 0..count {
         items.push(read(r)?);
     }
@@ -2114,6 +2128,47 @@ mod tests {
             }
             out.push(byte | 0x80);
         }
+    }
+
+    /// Regression: list reservations are capped. A count that the input
+    /// bytes allow, of items that are large in memory, used to reserve
+    /// up to ~330x the OBU size at once (a 16 MB OBU asked for 5.6 GB).
+    #[test]
+    fn bounded_vec_reservation_is_capped() {
+        fn byte(r: &mut ByteReader<'_>) -> Result<u8> {
+            r.read_u8()
+        }
+        assert_eq!(preallocation(3), 3);
+        assert_eq!(preallocation(1 << 30), MAX_PREALLOCATED_ITEMS);
+        // Counts above the cap still parse.
+        let data = vec![7u8; 10_000];
+        let items = read_bounded_vec(&mut ByteReader::new(&data), 10_000, byte).unwrap();
+        assert_eq!(items.len(), 10_000);
+    }
+
+    /// A projection demixing matrix larger than the remaining input is
+    /// rejected before it is allocated.
+    #[test]
+    fn projection_matrix_checked_before_allocation() {
+        // id 1, type 1 (scene-based), codec config 0, 1 substream id (0),
+        // 0 params, mode 1 (projection), 255 outputs, 255 + 0 substreams.
+        let payload = [
+            0x01,
+            1 << 5,
+            0x00,
+            0x01,
+            0x00,
+            0x00,
+            0x01,
+            0xff,
+            0xff,
+            0x00,
+            0x00,
+        ];
+        assert!(matches!(
+            AudioElement::parse(&mut ByteReader::new(&payload)),
+            Err(Error::UnexpectedEof { .. })
+        ));
     }
 
     fn parse_gain_offset(bytes: &[u8]) -> Result<ElementGainOffsetConfig> {
