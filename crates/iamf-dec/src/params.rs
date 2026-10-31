@@ -308,10 +308,13 @@ impl LinearAnimation {
                 let ct = (crt * (duration as f64 + 0.1)) as i64;
                 let alpha = duration as i64 - 2 * ct;
                 let i = i as f64;
+                // In f64: ct * ct overflows i64 for subblocks longer than
+                // ~3e9 samples (a panic with overflow checks).
+                let ct = ct as f64;
                 let a = if alpha != 0 {
-                    (((ct * ct) as f64 + alpha as f64 * i).sqrt() - ct as f64) / alpha as f64
+                    ((ct * ct + alpha as f64 * i).sqrt() - ct) / alpha as f64
                 } else {
-                    i / (2 * ct) as f64
+                    i / (2.0 * ct)
                 };
                 ((s + e - 2.0 * c) * a * a + 2.0 * a * (c - s) + s) as f32
             }
@@ -726,6 +729,23 @@ mod tests {
             ParameterBlock::parse(&[0x07, 0x00], &def, &ParamContext::ReconGain(&layers)).unwrap();
         assert_eq!(block.subblocks.len(), 1);
         assert_eq!(block.subblocks[0].duration, 30);
+    }
+
+    /// Regression: the Bezier evaluation computed `ct * ct` in i64, which
+    /// overflows for subblocks longer than ~3e9 samples (a mode-1 block
+    /// with duration = csd = u32::MAX at a normal parameter rate).
+    #[test]
+    fn bezier_long_subblock_does_not_overflow() {
+        let bezier = MixGainAnimation::Bezier {
+            start: 0,
+            end: -256,
+            control: -128,
+            control_relative_time: 255,
+        };
+        let duration = 4 * u32::MAX as usize;
+        for i in [0, duration / 2, duration - 1] {
+            assert!(bezier.evaluate_at(duration, i).is_finite());
+        }
     }
 
     #[test]
