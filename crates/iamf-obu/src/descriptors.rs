@@ -1076,12 +1076,12 @@ impl RenderingConfig {
     ///
     /// The extension holds `num_params` position parameter definitions and,
     /// when flagged, an element gain offset config; bytes after those are
-    /// future extensions and skipped. As in iamf-tools, an extension that
-    /// fails to parse (e.g. an unknown parameter type) is treated as opaque
-    /// and skipped whole, while one whose parsed content overruns
-    /// `rendering_config_extension_size` is an error. In IAMF v1.1 the
-    /// bits after the mode were reserved and the extension was always
-    /// skipped; v1.1 streams (zero bits, empty extension) parse the same.
+    /// future extensions and skipped. The extension is parsed only within
+    /// its `rendering_config_extension_size` window. As in iamf-tools, an
+    /// extension that fails to parse there (an unknown parameter type, or
+    /// content that would overrun the window) is treated as opaque and
+    /// skipped whole. In IAMF v1.1 the bits after the mode were reserved
+    /// and parsers SHOULD ignore the extension bytes, which this matches.
     fn parse(r: &mut ByteReader<'_>) -> Result<Self> {
         let byte = r.read_u8()?;
         let headphones_rendering_mode = byte >> 6 & 0x03;
@@ -1097,18 +1097,17 @@ impl RenderingConfig {
         if extension_size == 0 {
             return Ok(config);
         }
-        let start = r.position();
-        let mut probe = r.clone();
+        // Parse only inside the extension window. Probing the rest of the
+        // OBU made each element rescan to its end (quadratic time), and
+        // let reserved v1.1 extension bytes that happened to parse as
+        // v2.0 syntax run past the window and reject the mix.
+        let mut window = ByteReader::new(r.read_bytes(extension_size)?);
         if let Ok((params, gain_offset)) =
-            Self::parse_extension(&mut probe, element_gain_offset_flag)
+            Self::parse_extension(&mut window, element_gain_offset_flag)
         {
-            if probe.position() - start > extension_size {
-                return Err(invalid(&probe));
-            }
             config.position_params = params;
             config.element_gain_offset = gain_offset;
         }
-        r.skip(extension_size)?;
         Ok(config)
     }
 
@@ -2024,27 +2023,97 @@ mod tests {
         }
     }
 
+    /// Content that would overrun `rendering_config_extension_size` is
+    /// parsed only within its window, so it is opaque rather than an
+    /// error, and the fields after the extension still parse.
     #[test]
-    fn rendering_config_extension_overrun_rejected() {
+    fn rendering_config_extension_overrun_is_opaque() {
         // rendering_config_extension_size 5, but the polar param alone
         // needs 10 bytes.
         let mut config = vec![0x00, 0x05, 0x01];
-        config.extend(POLAR_PARAM);
-        assert!(matches!(
-            element_with_rendering_config(&config),
-            Err(Error::InvalidDescriptor { .. })
-        ));
+        config.extend(&POLAR_PARAM[..4]);
+        let e = element_with_rendering_config(&config).unwrap();
+        assert_eq!(e.position_params, []);
+        assert_eq!(e.element_mix_gain.base.parameter_id, 0);
         // The gain offset overruns a 3-byte extension.
-        let config = [0x20, 0x03, 0x00, 0x00, 0xff, 0x00];
-        assert!(matches!(
-            element_with_rendering_config(&config),
-            Err(Error::InvalidDescriptor { .. })
-        ));
+        let config = [0x20, 0x03, 0x00, 0x00, 0xff];
+        let e = element_with_rendering_config(&config).unwrap();
+        assert_eq!(e.element_gain_offset, None);
         // An extension larger than the rest of the payload.
         assert!(matches!(
             element_with_rendering_config(&[0x00, 0x7f]),
             Err(Error::UnexpectedEof { .. })
         ));
+    }
+
+    /// Regression: in IAMF v1.1 the extension bytes are reserved and
+    /// SHOULD be ignored. A reserved byte 0x01 used to be parsed as a
+    /// v2.0 `num_params`, read the following element_mix_gain (parameter
+    /// id 3 reads as a polar definition) past the window, and reject the
+    /// whole mix presentation.
+    #[test]
+    fn rendering_config_v1_reserved_extension_byte_ignored() {
+        let mut payload = vec![0x2a, 0x00, 0x01, 0x01, 0x0a];
+        payload.extend([0x00, 0x01, 0x01]); // mode 0, extension [0x01]
+        for parameter_id in [0x03, 0x04] {
+            payload.push(parameter_id);
+            payload.extend([0x80, 0xf7, 0x02, 0x80, 0x00, 0x00]);
+        }
+        payload.extend([0x01, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        let mp = MixPresentation::parse(&mut ByteReader::new(&payload)).unwrap();
+        let e = &mp.sub_mixes[0].elements[0];
+        assert_eq!(e.position_params, []);
+        assert_eq!(e.element_mix_gain.base.parameter_id, 3);
+        assert_eq!(mp.sub_mixes[0].output_mix_gain.base.parameter_id, 4);
+    }
+
+    /// Regression: the extension probe used to scan to the end of the
+    /// OBU for every element, so parse time grew with the square of the
+    /// element count (608 KB took ~29 s). Each element here carries an
+    /// 11-byte extension whose `num_subblocks` claims far more subblock
+    /// durations than the window holds.
+    #[test]
+    fn rendering_config_probe_is_linear() {
+        const ELEMENTS: usize = 20_000;
+        let mut payload = vec![0x2a, 0x00, 0x01];
+        payload.extend(leb128_bytes(ELEMENTS as u32));
+        for _ in 0..ELEMENTS {
+            payload.extend([0x00, 0x00, 0x0b]); // element 0, mode 0, ext 11
+            // num_params 1, polar, id 0, rate 0, mode 0, duration 0, csd 0,
+            // then num_subblocks (4-byte leb128): small enough to pass the
+            // count check for the first half of the elements, whose probes
+            // then read subblock durations through the later elements.
+            payload.extend([0x01, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00]);
+            let n = (ELEMENTS as u32 / 2) * 19;
+            payload.extend([
+                (n & 0x7f) as u8 | 0x80,
+                (n >> 7 & 0x7f) as u8 | 0x80,
+                (n >> 14 & 0x7f) as u8 | 0x80,
+                (n >> 21 & 0x7f) as u8,
+            ]);
+            payload.extend([0x00, 0x80, 0x00, 0x00, 0x00]); // element_mix_gain
+        }
+        payload.extend([0x00, 0x80, 0x00, 0x00, 0x00]); // output_mix_gain
+        payload.extend([0x01, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        let start = std::time::Instant::now();
+        let mp = MixPresentation::parse(&mut ByteReader::new(&payload)).unwrap();
+        assert_eq!(mp.sub_mixes[0].elements.len(), ELEMENTS);
+        // Well under a second even unoptimized; the quadratic version
+        // took minutes.
+        assert!(start.elapsed() < std::time::Duration::from_secs(10));
+    }
+
+    fn leb128_bytes(mut value: u32) -> Vec<u8> {
+        let mut out = Vec::new();
+        loop {
+            let byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value == 0 {
+                out.push(byte);
+                return out;
+            }
+            out.push(byte | 0x80);
+        }
     }
 
     fn parse_gain_offset(bytes: &[u8]) -> Result<ElementGainOffsetConfig> {
