@@ -2,6 +2,60 @@
 
 ## Unreleased
 
+Hardening and fixes from the October 2026 review. Each fix has its own
+commit and a regression test; [docs/review-2026-10.md](docs/review-2026-10.md)
+has the full list and the issues that may also exist upstream.
+
+Behavior changes integrators may notice:
+
+- **Stricter input checks.** Streams are rejected (or the frame or unit is
+  reported and skipped) when:
+  - an LPCM, FLAC or AAC sample rate is outside the spec's set;
+  - a decoded frame doesn't hold exactly `num_samples_per_frame` samples
+    per channel, or has the wrong channel count;
+  - a FLAC frame header disagrees with its substream;
+  - an explicit audio substream ID is 17 or lower;
+  - two different elements of a mix share a substream ID;
+  - a scalable layer removes channels;
+  - a binaural frame is longer than 65536 samples.
+- **Errors no longer stick.** A failing OBU is consumed instead of retried
+  on every `decode()`, a failed temporal unit is skipped by every element,
+  an incomplete unit is dropped when the next one starts (buffering is
+  bounded), and a failed `reset_with_new_mix` can be retried.
+- **Limiter.** With `enable_limiter`, the stream is limited as one signal:
+  a unit becomes available once the input after it covers the 5 ms
+  look-ahead, and the last one after `signal_end_of_decoding`. Streaming
+  output now equals limiting the whole stream.
+- **Timelines.** Demixing and recon-gain blocks apply from where they
+  arrive, keeping the previous value over gaps, so output no longer
+  depends on input chunking.
+- **Spec fixes.** Element gain offset ranges are relative to the default
+  (spec v2.0 §3.7.1.1; iamf-tools checks absolute values). Reserved IAMF
+  v1.1 rendering-config extension bytes are ignored. Mono ambisonics
+  `channel_mapping` may reuse a decoded channel. Sound system F's UH+180
+  speaker is at 45° in the object panner.
+- **C ABI.** A panic returns `IAMFRS_ERR_INTERNAL` and poisons the handle
+  instead of unwinding across the ABI (with `panic = "unwind"`). The
+  Chromium adapter refuses an empty requested profile set.
+- **New API.** `ElementGainOffsetConfig::range()`,
+  `ParamCursor::advance_to()`, and `PeakLimiter::push()`, `finish()`,
+  `released_by_push()` and `released_by_finish()` for streaming.
+- **Performance.** Binaural rendering of frames shorter than 64 samples
+  costs a bounded amount per sample (one-sample frames were ~3000x
+  slower), and the FFT no longer allocates per transform.
+
+Tooling: Rust 1.97.1 is pinned in `rust-toolchain.toml` (MSRV stays 1.85),
+the fuzz nightly in `fuzz/rust-toolchain.toml`. The fuzz targets now reach
+the v2.0, reset and batch-decoder paths, and a nightly workflow fuzzes with
+debug assertions against the full vector set. CI runs the Chromium adapter,
+and checks that `docs/obr_binaural.wasm` matches its source. Conformance
+vectors come from pinned upstream commits.
+
+Earlier unreleased work, not listed below: IAMF v2.0 rendering (object
+panner, two sub mixes, parameter curves, #29), so the note below about
+what the decoder "cannot yet render" is out of date; and the
+`iamf-obr-wasm` crate with the AudioWorklet demo.
+
 IAMF v2.0 profile limits in `iamf_dec::profile`, ported from iamf-tools
 `ProfileFilter`. v2.0 profiles are opt-in, so the defaults decode exactly
 as before.
