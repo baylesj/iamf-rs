@@ -135,7 +135,10 @@ fn aac_sample_rate(asc: &[u8]) -> Option<u32> {
     } else {
         *AAC_SAMPLE_RATES.get(usize::from(index))?
     };
-    (rate != 0).then_some(rate)
+    // §3.6.2 allows only the indexed rates (7350..=96000 Hz). The escape
+    // index is accepted for those rates, as iamf-tools does, but not for
+    // arbitrary explicit values (0 or MHz rates broke downstream stages).
+    AAC_SAMPLE_RATES.contains(&rate).then_some(rate)
 }
 
 /// Output sample rate of substreams coded with `config`: 48 kHz for Opus,
@@ -673,6 +676,15 @@ mod tests {
             output_sample_rate(&aac_config(0, 1024, vec![0x17, 0x80, 0x5d, 0xc0, 0x10])),
             Some(48000)
         );
+        // Regression: the explicit rate must be one of the indexed rates;
+        // 0 and 4.8 MHz used to pass and crash or stall the binaural
+        // resampler.
+        for asc in [
+            vec![0x17, 0x80, 0x00, 0x00, 0x10],
+            vec![0x17, 0x84, 0x93, 0xe0, 0x10],
+        ] {
+            assert_eq!(output_sample_rate(&aac_config(0, 1024, asc)), None);
+        }
         // Truncated, reserved index 13, and truncated escape.
         for asc in [vec![0x11], vec![0x16, 0x90], vec![0x17, 0x80, 0x5d]] {
             assert_eq!(
