@@ -96,6 +96,15 @@ fn surround_height(loudspeaker_layout: u8) -> (u8, u8) {
     }
 }
 
+/// Whether `cur` can follow `last` in a scalable channel element: each
+/// layer adds channels without removing any (§3.6.2), so neither the
+/// surround nor the height count may shrink, and the layout must change.
+pub(crate) fn layer_extends(last: u8, cur: u8) -> bool {
+    let (s1, t1) = surround_height(last);
+    let (s2, t2) = surround_height(cur);
+    s2 >= s1 && t2 >= t1 && (s2, t2) != (s1, t1)
+}
+
 /// Channels a layer adds on top of the previous layer, in substream decode
 /// order (libiamf `iamf_channel_layout_get_new_channels`).
 pub(crate) fn new_channels(last: Option<u8>, cur: u8) -> Vec<Channel> {
@@ -114,7 +123,7 @@ pub(crate) fn new_channels(last: Option<u8>, cur: u8) -> Vec<Channel> {
     if t2 != t1 && t2 == 4 {
         chs.extend([Hfl, Hfr]);
     }
-    if t2 - t1 == 4 {
+    if t2.checked_sub(t1) == Some(4) {
         chs.extend([Hbl, Hbr]);
     } else if t1 == 0 && t2 == 2 {
         if s2 < 5 {
@@ -362,6 +371,21 @@ mod tests {
     #[test]
     fn stereo_to_51_new_channels() {
         assert_eq!(new_channels(Some(1), 2), vec![L5, R5, C, Lfe]);
+    }
+
+    /// Regression: `t2 - t1` underflowed (a u8 panic with overflow
+    /// checks) for a layer with fewer height channels than the previous
+    /// one, e.g. 5.1.4 followed by 5.1.2.
+    #[test]
+    fn shrinking_layers_rejected_without_underflow() {
+        let _ = new_channels(Some(4), 3);
+        assert!(!layer_extends(4, 3)); // 5.1.4 -> 5.1.2
+        assert!(!layer_extends(8, 2)); // 3.1.2 -> 5.1
+        assert!(!layer_extends(4, 5)); // 5.1.4 -> 7.1
+        assert!(!layer_extends(2, 2));
+        assert!(layer_extends(1, 2)); // stereo -> 5.1
+        assert!(layer_extends(8, 3)); // 3.1.2 -> 5.1.2
+        assert!(layer_extends(3, 7)); // 5.1.2 -> 7.1.4
     }
 
     #[test]
