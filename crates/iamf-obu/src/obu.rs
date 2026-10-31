@@ -116,14 +116,27 @@ impl<'a> Obu<'a> {
 
         let obu_size = reader.read_leb128()? as usize;
         let mut body = ByteReader::new(reader.read_bytes(obu_size)?);
+        // The body is complete here, so running off its end means obu_size
+        // is too small for the fields its header flags promise, not that
+        // more input is needed. Streaming callers treat UnexpectedEof as
+        // "wait for more bytes", so it must not escape from the body.
+        let body_eof = |e: Error| match e {
+            Error::UnexpectedEof { .. } => Error::InvalidObuSize {
+                offset: header_offset,
+            },
+            other => other,
+        };
 
         let (trim_end, trim_start) = if trimming_status_flag {
-            (body.read_leb128()?, body.read_leb128()?)
+            (
+                body.read_leb128().map_err(body_eof)?,
+                body.read_leb128().map_err(body_eof)?,
+            )
         } else {
             (0, 0)
         };
         let extension_header_size = if extension_flag {
-            let size = body.read_leb128()?;
+            let size = body.read_leb128().map_err(body_eof)?;
             // Extension bytes are skipped, not interpreted (forward compat).
             body.read_bytes(size as usize)
                 .map_err(|_| Error::InvalidObuSize {
@@ -273,6 +286,29 @@ mod tests {
         let data = [31 << 3, 0x04, 0xff];
         assert!(matches!(
             Obu::parse(&mut ByteReader::new(&data)),
+            Err(Error::UnexpectedEof { .. })
+        ));
+    }
+
+    /// Regression: a complete body too short for the trimming or
+    /// extension fields its header flags promise is an invalid obu_size.
+    /// It used to surface as UnexpectedEof, which the streaming decoder
+    /// reads as "need more input", so a 2-byte OBU stalled it forever.
+    #[test]
+    fn body_too_short_for_flagged_fields_is_invalid_size() {
+        for bytes in [
+            [(6 << 3) | 0x02, 0x00], // audio frame, trimming flag, empty body
+            [0x01, 0x00],            // extension flag, empty body
+        ] {
+            assert_eq!(
+                Obu::parse(&mut ByteReader::new(&bytes)),
+                Err(Error::InvalidObuSize { offset: 0 })
+            );
+        }
+        // A truncated *outer* OBU is still UnexpectedEof (more input may
+        // follow).
+        assert!(matches!(
+            Obu::parse(&mut ByteReader::new(&[(6 << 3) | 0x02, 0x05, 0x00])),
             Err(Error::UnexpectedEof { .. })
         ));
     }
