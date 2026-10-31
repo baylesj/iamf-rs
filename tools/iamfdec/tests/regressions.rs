@@ -459,3 +459,81 @@ fn elements_sharing_a_substream_rejected() {
     let err = batch_decode(&stream, SoundSystem::A).unwrap_err();
     assert!(err.contains("share substream 0"), "{err}");
 }
+
+// -- Limiter ---------------------------------------------------------------
+
+/// Regression: the streaming decoder limited each temporal unit as a
+/// separate signal, flushing the 5 ms look-ahead every time. Gain timers
+/// jumped at unit boundaries (clicks) and output depended on the unit
+/// size, up to 0.25 of full scale away from limiting the whole stream.
+/// Units are now released once the following input covers the
+/// look-ahead, so every pull pattern equals batch decoding plus one pass
+/// of the limiter.
+#[test]
+fn streaming_limiter_matches_whole_stream_limiting() {
+    use iamf_dec::post::{LIMITER_LOOKAHEAD, LIMITER_THRESHOLD_DB, PeakLimiter};
+    let descriptors = stereo_descriptors(48000, 0);
+    let mut units = Vec::new();
+    for unit in 0..40i16 {
+        let mut bytes = obu(4, &[]);
+        let samples: Vec<u8> = (0..FRAME * 2)
+            .flat_map(|n| {
+                let loud = if (10..14).contains(&unit) {
+                    32000.0
+                } else {
+                    9000.0
+                };
+                let phase = (usize::try_from(unit).unwrap() * FRAME * 2 + n) as f32 * 0.05;
+                ((phase.sin() * loud) as i16).to_le_bytes()
+            })
+            .collect();
+        bytes.extend(obu(6, &samples));
+        units.push(bytes);
+    }
+    let mut limited_settings = settings(SoundSystem::A);
+    limited_settings.enable_limiter = true;
+    let new = || {
+        StreamDecoder::new_from_descriptors(&descriptors, limited_settings, &DefaultFactory)
+            .unwrap()
+    };
+
+    // Pull after every push.
+    let mut decoder = new();
+    let mut incremental = Vec::new();
+    for unit in &units {
+        decoder.decode(unit).unwrap();
+        while decoder.is_temporal_unit_available() {
+            incremental.extend(decoder.get_output_temporal_unit().unwrap().unwrap());
+        }
+    }
+    decoder.signal_end_of_decoding();
+    while decoder.is_temporal_unit_available() {
+        incremental.extend(decoder.get_output_temporal_unit().unwrap().unwrap());
+    }
+    assert_eq!(decoder.get_output_temporal_unit().unwrap(), None);
+
+    // Push everything, then pull.
+    let mut decoder = new();
+    decoder.decode(&units.concat()).unwrap();
+    decoder.signal_end_of_decoding();
+    let mut at_once = Vec::new();
+    let mut count = 0;
+    while let Some(unit) = decoder.get_output_temporal_unit().unwrap() {
+        at_once.extend(unit);
+        count += 1;
+    }
+    assert_eq!(count, units.len());
+    assert_eq!(incremental, at_once);
+
+    // Batch decode, then limit the whole signal once.
+    let mut stream = descriptors.clone();
+    stream.extend(units.concat());
+    let mut whole = batch_decode(&stream, SoundSystem::A).unwrap();
+    PeakLimiter::new(LIMITER_THRESHOLD_DB, 48000, 2, LIMITER_LOOKAHEAD)
+        .process_in_place(&mut whole);
+    let expected: Vec<u8> = whole
+        .iter()
+        .flat_map(|&s| iamf_dec::post::quantize_s16(s).to_le_bytes())
+        .collect();
+    assert_eq!(at_once, expected);
+}

@@ -63,6 +63,9 @@ pub struct PeakLimiter {
     peaks: Vec<f32>,
     entry_index: usize,
     peak_pos: Option<usize>,
+    /// Streaming: output frames still to drop (the delay line's initial
+    /// zeros), so released output lines up with the input.
+    discard: usize,
 }
 
 impl PeakLimiter {
@@ -83,6 +86,7 @@ impl PeakLimiter {
             peaks: vec![0.0; lookahead.max(1)],
             entry_index: 0,
             peak_pos: None,
+            discard: lookahead,
         }
     }
 
@@ -127,68 +131,135 @@ impl PeakLimiter {
         out
     }
 
-    /// In-place variant of [`PeakLimiter::process`], for callers that
-    /// already own the buffer (the streaming decoder limits each temporal
-    /// unit this way). Trailing samples of a partial frame are left
-    /// untouched.
+    /// In-place variant of [`PeakLimiter::process`]: limits a whole
+    /// buffer as one signal, compensating the look-ahead delay. Trailing
+    /// samples of a partial frame are left untouched.
+    ///
+    /// Each call starts and ends the signal, so calling this per block of
+    /// a longer signal is wrong: use [`PeakLimiter::push`] and
+    /// [`PeakLimiter::finish`] for streaming.
     pub fn process_in_place(&mut self, interleaved: &mut [f32]) {
         let channels = self.channels.max(1);
         let frames = interleaved.len() / channels;
-        let buffer_len = self.peaks.len();
-
+        let mut input = vec![0.0f32; channels];
+        let mut output = vec![0.0f32; channels];
         for k in 0..frames + self.lookahead {
-            let idx = (k + self.entry_index) % buffer_len;
-
-            #[allow(clippy::single_match_else)] // the None arm is a stateful scan
-            let peak = match self.peak_pos {
-                Some(pos) => self.peaks[pos],
-                None => {
-                    let mut peak = 0.0f32;
-                    for i in 0..self.lookahead {
-                        let p = self.peaks[(i + k + self.entry_index) % buffer_len];
-                        if p > peak {
-                            peak = p;
-                            self.peak_pos = Some((i + k + self.entry_index) % buffer_len);
-                        }
-                    }
-                    peak
-                }
-            };
-            let gain = self.compute_target_gain(peak);
-
-            let mut peak_max = 0.0f32;
-            for c in 0..channels {
-                let input = if k < frames {
-                    interleaved[k * channels + c]
-                } else {
-                    0.0
-                };
-                if self.lookahead > 0 {
-                    let delayed = self.delay[c][idx] * gain;
-                    self.delay[c][idx] = input;
-                    if k >= self.lookahead {
-                        // Position (k - lookahead) was fully read lookahead
-                        // iterations ago, so writing it here is safe.
-                        interleaved[(k - self.lookahead) * channels + c] = delayed;
-                    }
-                } else {
-                    interleaved[k * channels + c] = input * gain;
-                }
-                let channel_peak = self.delay[c][idx].abs();
-                if channel_peak > peak_max {
-                    peak_max = channel_peak;
-                }
+            if k < frames {
+                input.copy_from_slice(&interleaved[k * channels..(k + 1) * channels]);
+            } else {
+                input.fill(0.0);
             }
-
-            if self.peak_pos == Some(idx) {
-                self.peak_pos = None;
-            } else if self.peak_pos.is_none() || self.peaks[self.peak_pos.unwrap()] < peak_max {
-                self.peak_pos = Some(idx);
+            self.step(&input, &mut output);
+            if self.lookahead == 0 {
+                interleaved[k * channels..(k + 1) * channels].copy_from_slice(&output);
+            } else if k >= self.lookahead {
+                // Frame k - lookahead was read lookahead steps ago.
+                let at = (k - self.lookahead) * channels;
+                interleaved[at..at + channels].copy_from_slice(&output);
             }
-            self.peaks[idx] = peak_max;
         }
+    }
+
+    /// Streaming: limits `interleaved` as the next part of one continuous
+    /// signal and returns the output it releases. Output lags input by
+    /// the look-ahead, so the first calls release fewer samples than they
+    /// take; [`PeakLimiter::finish`] releases the rest. The concatenated
+    /// output equals [`PeakLimiter::process`] of the whole signal.
+    pub fn push(&mut self, interleaved: &[f32]) -> Vec<f32> {
+        let channels = self.channels.max(1);
+        let mut released = Vec::with_capacity(interleaved.len());
+        let mut output = vec![0.0f32; channels];
+        for frame in interleaved.chunks_exact(channels) {
+            self.step(frame, &mut output);
+            self.release(&output, &mut released);
+        }
+        released
+    }
+
+    /// Streaming: ends the signal, releasing the samples still in the
+    /// look-ahead delay.
+    pub fn finish(&mut self) -> Vec<f32> {
+        let channels = self.channels.max(1);
+        let silence = vec![0.0f32; channels];
+        let mut output = vec![0.0f32; channels];
+        let mut released = Vec::new();
+        for _ in 0..self.lookahead.saturating_sub(self.discard) {
+            self.step(&silence, &mut output);
+            self.release(&output, &mut released);
+        }
+        self.discard = self.lookahead;
+        released
+    }
+
+    /// Samples a streaming [`PeakLimiter::push`] of `samples` more input
+    /// samples would release (all of them once primed).
+    pub fn released_by_push(&self, samples: usize) -> usize {
+        let channels = self.channels.max(1);
+        (samples / channels).saturating_sub(self.discard) * channels
+    }
+
+    /// Samples [`PeakLimiter::finish`] would release after `samples` more
+    /// input samples were pushed.
+    pub fn released_by_finish(&self, samples: usize) -> usize {
+        let channels = self.channels.max(1);
+        let primed = (samples / channels).min(self.discard);
+        (self.lookahead - self.discard + primed) * channels
+    }
+
+    fn release(&mut self, frame: &[f32], released: &mut Vec<f32>) {
+        if self.discard > 0 {
+            self.discard -= 1;
+        } else {
+            released.extend_from_slice(frame);
+        }
+    }
+
+    /// One look-ahead step: takes one input frame into the delay line and
+    /// writes the gain-applied frame leaving it (the input itself when
+    /// there is no look-ahead) to `output`.
+    fn step(&mut self, input: &[f32], output: &mut [f32]) {
+        let buffer_len = self.peaks.len();
+        let idx = self.entry_index;
+
+        #[allow(clippy::single_match_else)] // the None arm is a stateful scan
+        let peak = match self.peak_pos {
+            Some(pos) => self.peaks[pos],
+            None => {
+                let mut peak = 0.0f32;
+                for i in 0..self.lookahead {
+                    let p = self.peaks[(i + idx) % buffer_len];
+                    if p > peak {
+                        peak = p;
+                        self.peak_pos = Some((i + idx) % buffer_len);
+                    }
+                }
+                peak
+            }
+        };
+        let gain = self.compute_target_gain(peak);
+
+        let mut peak_max = 0.0f32;
+        for (c, (&x, out)) in input.iter().zip(output.iter_mut()).enumerate() {
+            if self.lookahead > 0 {
+                *out = self.delay[c][idx] * gain;
+                self.delay[c][idx] = x;
+            } else {
+                *out = x * gain;
+            }
+            let channel_peak = self.delay[c][idx].abs();
+            if channel_peak > peak_max {
+                peak_max = channel_peak;
+            }
+        }
+
+        if self.peak_pos == Some(idx) {
+            self.peak_pos = None;
+        } else if self.peak_pos.is_none() || self.peaks[self.peak_pos.unwrap()] < peak_max {
+            self.peak_pos = Some(idx);
+        }
+        self.peaks[idx] = peak_max;
         if self.lookahead > 0 {
-            self.entry_index = (self.entry_index + frames + self.lookahead) % buffer_len;
+            self.entry_index = (idx + 1) % buffer_len;
         }
     }
 }
@@ -219,6 +290,45 @@ mod tests {
             "max {}",
             tail.iter().fold(0f32, |a, &b| a.max(b.abs()))
         );
+    }
+
+    /// Regression: the streaming decoder used to call process_in_place
+    /// per temporal unit, which flushed the look-ahead each time. That
+    /// advanced the attack/release timers 240 extra samples per unit,
+    /// reset the delay line, and hid peaks behind unit boundaries: gain
+    /// jumps (clicks) and output that depended on the unit size. push()
+    /// and finish() continue one signal and must equal limiting it whole.
+    #[test]
+    fn streaming_equals_whole_buffer() {
+        let channels = 2;
+        let signal: Vec<f32> = (0..20_000)
+            .map(|n| {
+                let burst = if (2_000..2_500).contains(&(n / 2)) {
+                    1.8
+                } else {
+                    0.5
+                };
+                burst * ((n as f32) * 0.013).sin()
+            })
+            .collect();
+        let mut whole = PeakLimiter::new(LIMITER_THRESHOLD_DB, 48000, channels, LIMITER_LOOKAHEAD);
+        let reference = whole.process(&signal);
+        for unit in [1, 64, 960, 1024] {
+            let mut limiter =
+                PeakLimiter::new(LIMITER_THRESHOLD_DB, 48000, channels, LIMITER_LOOKAHEAD);
+            let mut out = Vec::new();
+            let mut pushed = 0;
+            for chunk in signal.chunks(unit * channels) {
+                let expected = limiter.released_by_push(chunk.len());
+                let released = limiter.push(chunk);
+                assert_eq!(released.len(), expected);
+                out.extend(released);
+                pushed += chunk.len();
+            }
+            assert_eq!(limiter.released_by_finish(0), pushed - out.len());
+            out.extend(limiter.finish());
+            assert_eq!(out, reference, "unit {unit}");
+        }
     }
 
     #[test]

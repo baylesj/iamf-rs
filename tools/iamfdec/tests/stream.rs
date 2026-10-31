@@ -261,6 +261,9 @@ fn limiter_passthrough_below_threshold() {
         let mut decoder =
             StreamDecoder::new_from_descriptors(&data, settings, &DefaultFactory).unwrap();
         decoder.decode(&data).unwrap();
+        // With the limiter on, the last unit waits for the end of the
+        // stream (its look-ahead extends past the input).
+        decoder.signal_end_of_decoding();
         let mut out = Vec::new();
         while decoder.is_temporal_unit_available() {
             out.extend(decoder.get_output_temporal_unit().unwrap().unwrap());

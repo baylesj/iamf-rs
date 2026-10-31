@@ -112,7 +112,10 @@ typedef struct IamfrsSettings {
    * profile's limits are selectable (iamf-tools ProfileFilter semantics). */
   uint32_t requested_profiles;
   /* Nonzero enables the libiamf-style -1 dBFS look-ahead peak limiter.
-   * Off by default, matching the iamf_tools decoder. */
+   * Off by default, matching the iamf_tools decoder. With it on, a
+   * temporal unit becomes available once the following input covers the
+   * 5 ms look-ahead, and the last one after
+   * iamfrs_decoder_signal_end_of_decoding. */
   uint8_t enable_limiter;
   /* Nonzero enables loudness normalization to loudness_target_db using
    * the stream's loudness_info. Off by default. */

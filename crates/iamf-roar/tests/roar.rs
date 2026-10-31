@@ -289,6 +289,8 @@ fn cli_matches_streaming_decoder() {
     settings.enable_limiter = true;
     let mut decoder = new_decoder(&data, settings, Renderer::Roar).unwrap();
     decoder.decode(&data).unwrap();
+    // With the limiter on, the last unit waits for the end of the stream.
+    decoder.signal_end_of_decoding();
     let mut pcm = Vec::new();
     while let Some(bytes) = decoder.get_output_temporal_unit().unwrap() {
         pcm.extend(bytes);
