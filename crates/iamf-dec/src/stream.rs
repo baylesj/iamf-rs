@@ -416,6 +416,7 @@ pub(crate) fn select_mix_index(
 /// Per-sample animated gain cursor: consumes subblocks in arrival order,
 /// falling back to the default gain when exhausted. Animations are stored
 /// with endpoints pre-converted to linear gain.
+#[derive(Clone)]
 struct GainCursor {
     default_db: i16,
     prev_end_db: i16,
@@ -520,6 +521,21 @@ impl SlotState {
         self.queues.iter().all(|q| !q.is_empty())
     }
 }
+
+/// Parameter cursors saved before rendering a unit
+/// ([`StreamDecoder::get_output_temporal_unit`]).
+struct CursorSnapshot {
+    slots: Vec<SlotCursors>,
+    sub_mixes: Vec<GainCursor>,
+}
+
+/// One slot's cursors: demixing, recon gain, element gain, position.
+type SlotCursors = (
+    ParamCursor<u8>,
+    ParamCursor<ReconGainLayers>,
+    GainCursor,
+    Option<crate::objects::PositionCursor>,
+);
 
 struct SubMixState {
     output_gain_default: f32,
@@ -1173,10 +1189,85 @@ impl StreamDecoder {
 
     /// Pops and renders one temporal unit as interleaved little-endian PCM
     /// bytes. `None` when no unit is available.
+    ///
+    /// The unit is consumed even when this fails: every element skips it
+    /// and its parameter timelines advance past it, so later units stay
+    /// aligned across elements.
     pub fn get_output_temporal_unit(&mut self) -> Result<Option<Vec<u8>>, DecodeError> {
         if !self.is_temporal_unit_available() {
             return Ok(None);
         }
+        let snapshot = self.cursor_snapshot();
+        let units: Vec<Vec<FramePcm>> = self
+            .slots
+            .iter_mut()
+            .map(|slot| {
+                slot.queues
+                    .iter_mut()
+                    .map(|q| q.pop_front().expect("unit available"))
+                    .collect()
+            })
+            .collect();
+        match self.render_popped_unit(units) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(e) => {
+                self.skip_unit(snapshot);
+                Err(e)
+            }
+        }
+    }
+
+    /// Clones of every parameter cursor a unit advances.
+    fn cursor_snapshot(&self) -> CursorSnapshot {
+        CursorSnapshot {
+            slots: self
+                .slots
+                .iter()
+                .map(|slot| {
+                    (
+                        slot.dmx_cursor.clone(),
+                        slot.recon_cursor.clone(),
+                        slot.gain_cursor.clone(),
+                        slot.position_cursor.clone(),
+                    )
+                })
+                .collect(),
+            sub_mixes: self
+                .sub_mixes
+                .iter()
+                .map(|sm| sm.output_cursor.clone())
+                .collect(),
+        }
+    }
+
+    /// Restores `snapshot` and advances every cursor by one unit, as if
+    /// the unit had been rendered.
+    fn skip_unit(&mut self, snapshot: CursorSnapshot) {
+        let frame_len = self.frame_size as usize;
+        for (slot, (dmx, recon, gain, position)) in self.slots.iter_mut().zip(snapshot.slots) {
+            slot.dmx_cursor = dmx;
+            slot.recon_cursor = recon;
+            slot.gain_cursor = gain;
+            slot.position_cursor = position;
+            slot.dmx_cursor.take_for_unit(frame_len);
+            slot.recon_cursor.take_for_unit(frame_len);
+            for _ in 0..frame_len {
+                slot.gain_cursor.next(slot.gain_default);
+            }
+            if let Some(cursor) = &mut slot.position_cursor {
+                cursor.take_for_unit(frame_len);
+            }
+        }
+        for (sm, output) in self.sub_mixes.iter_mut().zip(snapshot.sub_mixes) {
+            sm.output_cursor = output;
+            for _ in 0..frame_len {
+                sm.output_cursor.next(sm.output_gain_default);
+            }
+        }
+    }
+
+    /// Renders one unit whose frames were already popped from every slot.
+    fn render_popped_unit(&mut self, units: Vec<Vec<FramePcm>>) -> Result<Vec<u8>, DecodeError> {
         let target_matrix = self.target.matrix_layout();
         let out_channels = self.num_output_channels();
         let num_sub_mixes = self.sub_mixes.len();
@@ -1190,12 +1281,7 @@ impl StreamDecoder {
         let mut external_inputs: Vec<Vec<ExternalInput>> =
             (0..num_sub_mixes).map(|_| Vec::new()).collect();
 
-        for slot in &mut self.slots {
-            let frames: Vec<FramePcm> = slot
-                .queues
-                .iter_mut()
-                .map(|q| q.pop_front().expect("unit_ready checked"))
-                .collect();
+        for (slot, frames) in self.slots.iter_mut().zip(units) {
             let frame_len = frames[0].samples.len() / usize::from(slot.channels[0].max(1));
             // §3.9: trimming and frame duration are per temporal unit, so
             // every frame of the unit must agree.
@@ -1542,7 +1628,7 @@ impl StreamDecoder {
                 }
             }
         }
-        Ok(Some(bytes))
+        Ok(bytes)
     }
 
     /// Number of output audio channels rendered for the selected layout.
