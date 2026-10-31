@@ -183,3 +183,34 @@ fn opus_bad_version_rejected() {
     assert!(!factory.supports(&config(16)));
     assert!(factory.create(&config(16), 2).is_err());
 }
+
+/// Regression: symphonia's FLAC decoder asserts (panics) on a frame
+/// whose header disagrees with the substream: more channels than
+/// configured ("invalid channel index") or a block size above
+/// STREAMINFO's maximum ("capacity will be exceeded"). The adapter now
+/// checks the frame header first and returns an error.
+#[cfg(feature = "flac")]
+#[test]
+fn flac_frame_header_mismatch_is_an_error() {
+    let data = require_vectors!(vector("test_000073.iamf"), "test_000073");
+    let (config, channels, frames) = first_substream(&data);
+    assert_eq!(channels, 2);
+    let factory = iamf_codecs::flac::FlacFactory;
+    // A stereo frame in a mono substream.
+    let mut mono = factory.create(&config, 1).unwrap();
+    let mut out = DecodedFrame::default();
+    assert!(mono.decode(&frames[0], &mut out).is_err());
+    // A frame larger than the configured block size.
+    let mut smaller = config.clone();
+    smaller.num_samples_per_frame /= 2;
+    if let descriptors::DecoderConfig::Flac { streaminfo, .. } = &mut smaller.decoder_config {
+        let half = (u16::from_be_bytes([streaminfo[2], streaminfo[3]]) / 2).to_be_bytes();
+        streaminfo[..2].copy_from_slice(&half);
+        streaminfo[2..4].copy_from_slice(&half);
+    }
+    let mut decoder = factory.create(&smaller, 2).unwrap();
+    assert!(decoder.decode(&frames[0], &mut out).is_err());
+    // The matching configuration still decodes.
+    let mut decoder = factory.create(&config, 2).unwrap();
+    decoder.decode(&frames[0], &mut out).unwrap();
+}
