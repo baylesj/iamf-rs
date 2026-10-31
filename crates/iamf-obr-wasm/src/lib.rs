@@ -191,7 +191,10 @@ pub unsafe extern "C" fn obr_renderer_input_channels(renderer: *const ObrWasmRen
 ///
 /// # Safety
 /// - `renderer` must be a valid pointer returned by `obr_renderer_create_*`.
-/// - `input_planar` must point to at least `num_channels * frame_size` valid `f32`s.
+/// - `input_planar` must point to at least `input_channels * frame_size`
+///   valid `f32`s, where `input_channels` is
+///   [`obr_renderer_input_channels`] (`<= num_channels`); planes beyond
+///   those are not read.
 /// - `out_left` and `out_right` must each point to at least `frame_size` writable `f32`s.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn obr_renderer_process_planar(
@@ -211,9 +214,15 @@ pub unsafe extern "C" fn obr_renderer_process_planar(
     if frame_size != renderer.frame_size || num_channels < expected_channels {
         return -2;
     }
+    // Only the planes the renderer uses are read; the caller's buffer may
+    // hold more (`num_channels` of them).
+    let Some(used) = expected_channels.checked_mul(frame_size) else {
+        return -2;
+    };
 
-    // SAFETY: Caller guarantees `input_planar` has `num_channels * frame_size` floats.
-    let input = unsafe { slice::from_raw_parts(input_planar, num_channels * frame_size) };
+    // SAFETY: Caller guarantees `input_planar` has `num_channels *
+    // frame_size >= used` floats.
+    let input = unsafe { slice::from_raw_parts(input_planar, used) };
     for ch in 0..expected_channels {
         let src = &input[ch * frame_size..(ch + 1) * frame_size];
         renderer.scratch_planes[ch].copy_from_slice(src);
@@ -276,6 +285,30 @@ mod tests {
         assert!(!renderer.is_null());
         // SAFETY: created above and destroyed once.
         unsafe { obr_renderer_destroy(renderer) };
+    }
+
+    /// The input slice covers only the planes the renderer reads, so a
+    /// huge `num_channels` (whose product with `frame_size` used to
+    /// overflow) neither panics nor reads past those planes.
+    #[test]
+    fn extra_input_channels_are_ignored() {
+        let renderer = obr_renderer_create_for_channels(2, 0, 128, 48_000, 0);
+        assert!(!renderer.is_null());
+        let input = vec![0.25f32; 2 * 128];
+        let (mut left, mut right) = (vec![0.0f32; 128], vec![0.0f32; 128]);
+        // SAFETY: `input` holds the 2 planes the stereo renderer reads.
+        unsafe {
+            let rc = obr_renderer_process_planar(
+                renderer,
+                input.as_ptr(),
+                usize::MAX,
+                128,
+                left.as_mut_ptr(),
+                right.as_mut_ptr(),
+            );
+            assert_eq!(rc, 0);
+            obr_renderer_destroy(renderer);
+        }
     }
 
     #[test]
