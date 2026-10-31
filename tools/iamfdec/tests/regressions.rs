@@ -413,3 +413,49 @@ fn misaligned_delimiter_resynchronizes() {
     decoder.signal_end_of_decoding();
     assert_eq!(drain(&mut decoder), 3);
 }
+
+/// An element used twice in a mix used to receive frames only in its
+/// first use, so the stream decoder stalled forever (and the batch
+/// decoder failed). Both uses now decode every frame.
+#[test]
+fn element_used_twice_decodes() {
+    let mut descriptors = sequence_header();
+    descriptors.extend(lpcm_codec(48000, FRAME as u32));
+    descriptors.extend(stereo_element(1, 0));
+    descriptors.extend(mix(7, &[1, 1], 0));
+    let mut decoder = stream_decoder(&descriptors, SoundSystem::A);
+    decoder.decode(&stereo_unit(100)).unwrap();
+    decoder.signal_end_of_decoding();
+    let unit = decoder
+        .get_output_temporal_unit()
+        .unwrap()
+        .expect("one unit");
+    assert_eq!(i16::from_le_bytes([unit[0], unit[1]]), 200);
+    let mut stream = descriptors;
+    stream.extend(stereo_unit(100));
+    let batch = batch_decode(&stream, SoundSystem::A).unwrap();
+    assert_eq!(batch.len(), 2 * FRAME);
+    assert!((batch[0] - 200.0 / 32768.0).abs() < 1e-6, "{}", batch[0]);
+}
+
+/// Two different elements of a mix that share a substream ID can't both
+/// be fed; the mix is rejected instead of stalling.
+#[test]
+fn elements_sharing_a_substream_rejected() {
+    let mut descriptors = sequence_header();
+    descriptors.extend(lpcm_codec(48000, FRAME as u32));
+    descriptors.extend(stereo_element(1, 0));
+    descriptors.extend(stereo_element(2, 0));
+    descriptors.extend(mix(7, &[1, 2], 0));
+    let err = StreamDecoder::new_from_descriptors(
+        &descriptors,
+        settings(SoundSystem::A),
+        &DefaultFactory,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("share substream 0"), "{err}");
+    let mut stream = descriptors;
+    stream.extend(stereo_unit(100));
+    let err = batch_decode(&stream, SoundSystem::A).unwrap_err();
+    assert!(err.contains("share substream 0"), "{err}");
+}

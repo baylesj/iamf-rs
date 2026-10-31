@@ -786,6 +786,7 @@ impl StreamDecoder {
             // Likewise guaranteed by the profile filter.
             return Err(DecodeError::InvalidDescriptors(EMPTY_SUB_MIX.into()));
         }
+        crate::element::check_unique_substreams(mix, &parsed.audio_elements)?;
         for sub_mix in &mix.sub_mixes {
             for sub_element in &sub_mix.elements {
                 let element = parsed
@@ -1085,6 +1086,8 @@ impl StreamDecoder {
         } else {
             None
         };
+        // Deliver to every element use that carries this substream (an
+        // element may appear in both sub-mixes).
         for slot in &mut self.slots {
             let Some(index) = slot.substream_ids.iter().position(|&id| id == substream_id) else {
                 continue;
@@ -1105,7 +1108,6 @@ impl StreamDecoder {
                 trim_start,
                 trim_end,
             });
-            break;
         }
         lost.map_or(Ok(()), Err)
     }

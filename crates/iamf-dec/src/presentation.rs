@@ -296,6 +296,7 @@ impl PresentationDecoder {
                 }
             }
         }
+        crate::element::check_unique_substreams(mix, &descriptors.audio_elements)?;
 
         let active_sub_mixes = mix.sub_mixes.as_slice();
 
@@ -470,12 +471,13 @@ impl PresentationDecoder {
             adjusted = untrimmed;
             &adjusted
         };
+        // Every use of an element decodes the frame (an element may
+        // appear twice in a mix, or in both sub-mixes).
+        let mut consumed = false;
         for slot in &mut self.slots {
-            if slot.decoder.decode_frame(frame)? {
-                return Ok(true);
-            }
+            consumed |= slot.decoder.decode_frame(frame)?;
         }
-        Ok(false)
+        Ok(consumed)
     }
 
     /// Reconstructs, renders, applies gains, and sums all elements.
