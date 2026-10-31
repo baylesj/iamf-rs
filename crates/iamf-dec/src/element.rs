@@ -104,6 +104,34 @@ impl SubstreamFrames {
     }
 }
 
+/// Rejects a mix whose different audio elements share a substream ID.
+/// Substream IDs route audio frames, so a shared ID would feed one
+/// element's frames to another. The same element used twice is fine:
+/// each use decodes every frame.
+pub(crate) fn check_unique_substreams(
+    mix: &iamf_obu::descriptors::MixPresentation,
+    elements: &[AudioElement],
+) -> Result<(), DecodeError> {
+    let mut owners: Vec<(u32, u32)> = Vec::new();
+    for sub_element in mix.sub_mixes.iter().flat_map(|sm| &sm.elements) {
+        let id = sub_element.audio_element_id;
+        for element in elements.iter().filter(|e| e.audio_element_id == id) {
+            for &substream in &element.substream_ids {
+                match owners.iter().find(|(s, _)| *s == substream) {
+                    Some(&(_, owner)) if owner != id => {
+                        return Err(DecodeError::InvalidDescriptors(format!(
+                            "elements {owner} and {id} share substream {substream}"
+                        )));
+                    }
+                    Some(_) => {}
+                    None => owners.push((substream, id)),
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Checks that a codec returned exactly one frame of the shape the
 /// descriptors promise: `channels` channels of `frame_size` samples.
 ///
