@@ -15,9 +15,12 @@ works:
    BSD 3-Clause Clear License; Alliance for Open Media Patent License 1.0
    (https://aomedia.org/license/patent-license/).
    Derived material includes: the rendering gain-matrix tables in
-   crates/iamf-dec/src/matrices.rs (mechanically extracted from
-   m2m_rdr.c / h2m_rdr.c of the v1.1.0 tag by
-   tools/extract_matrices.py); channel-layout and decoding-order tables;
+   crates/iamf-dec/src/matrices.rs (mechanically extracted by
+   tools/extract_matrices.py from the EAR renderer's m2m_rdr.c /
+   h2m_rdr.c, first from libiamf's v1.1.0 tag and, since commit
+   a092e45, from the Alliance for Open Media Open Audio Renderer's EAR
+   tables, which add 10.2.9.3 and 7.1.5.4); channel-layout and
+   decoding-order tables;
    and behavioral ports of the scalable-channel demixer, peak limiter,
    and decoder pipeline structure, written with the libiamf sources as
    reference.
