@@ -285,3 +285,55 @@ fn stream_drops_input_it_cannot_resynchronize() {
     decoder.signal_end_of_decoding();
     assert_eq!(drain(&mut decoder), 1);
 }
+
+/// Stereo elements 1..=`count` (element n on substream n - 1) in one mix.
+fn multi_element_descriptors(count: u32) -> Vec<u8> {
+    let mut out = sequence_header();
+    out.extend(lpcm_codec(48000, FRAME as u32));
+    for id in 1..=count {
+        out.extend(stereo_element(id, id - 1));
+    }
+    out.extend(mix(7, &(1..=count).collect::<Vec<_>>(), 0));
+    out
+}
+
+/// Audio frame OBU for `substream` (0..=17) with explicit trims.
+fn trimmed_frame(substream: u8, value: i16, trim_start: u32, trim_end: u32) -> Vec<u8> {
+    let mut payload = leb(trim_end);
+    payload.extend(leb(trim_start));
+    payload.extend(pcm(FRAME, 2, value));
+    obu_with_flags(6 + substream, 0x02, &payload)
+}
+
+/// A unit that failed in `get_output_temporal_unit` used to be popped
+/// from the elements before the failure but not from the ones after, so
+/// for the rest of the stream elements mixed audio from different
+/// temporal units. A failing unit is now skipped by every element.
+#[test]
+fn failed_unit_is_skipped_by_every_element() {
+    // Three elements: the middle one fails, so the first had already
+    // been popped and the last had not.
+    let descriptors = multi_element_descriptors(3);
+    let mut decoder = stream_decoder(&descriptors, SoundSystem::A);
+    let mut stream = Vec::new();
+    for unit in 1..=4i16 {
+        stream.extend(obu(4, &[]));
+        // Unit 2's frames disagree on trimming (§3.9), so it fails.
+        let trim = if unit == 2 { 8 } else { 0 };
+        stream.extend(trimmed_frame(0, 100 * unit, 0, 0));
+        stream.extend(trimmed_frame(1, 100 * unit, trim, 0));
+        stream.extend(trimmed_frame(2, 100 * unit, 0, 0));
+    }
+    decoder.decode(&stream).unwrap();
+    decoder.signal_end_of_decoding();
+    let mut firsts = Vec::new();
+    loop {
+        match decoder.get_output_temporal_unit() {
+            Ok(Some(unit)) => firsts.push(i16::from_le_bytes([unit[0], unit[1]])),
+            Ok(None) => break,
+            Err(_) => firsts.push(0),
+        }
+    }
+    // All elements always contribute the same unit: 3 x 100 x unit.
+    assert_eq!(firsts, [300, 0, 900, 1200]);
+}
