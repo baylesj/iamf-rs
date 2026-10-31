@@ -180,3 +180,54 @@ fn lpcm_sample_rate_zero_rejected() {
     decoder.signal_end_of_decoding();
     assert_eq!(drain(&mut decoder), 1);
 }
+
+// -- Decoded frame shape -----------------------------------------------
+
+/// Stereo element `id` on codec config 0 carried as two mono substreams
+/// (`substreams`), one stereo layer without coupling.
+fn dual_mono_element(id: u32, substreams: [u32; 2]) -> Vec<u8> {
+    let mut payload = leb(id);
+    payload.extend([0, 0]);
+    payload.extend(leb(2));
+    for substream in substreams {
+        payload.extend(leb(substream));
+    }
+    payload.push(0);
+    payload.push(1 << 5);
+    payload.extend([1 << 4, 2, 0]); // stereo, 2 substreams, 0 coupled
+    obu(1, &payload)
+}
+
+/// Substreams of one temporal unit that decode to different lengths used
+/// to make the batch decoder index past the end of a plane
+/// (presentation.rs `plane[kept]`, `binauralize`) and the stream decoder
+/// silently pad or truncate. Every decoded frame must now hold exactly
+/// `num_samples_per_frame` samples per channel.
+#[test]
+fn decoded_frame_length_must_match_codec_config() {
+    let mut descriptors = sequence_header();
+    descriptors.extend(lpcm_codec(48000, FRAME as u32));
+    descriptors.extend(dual_mono_element(1, [0, 1]));
+    descriptors.extend(mix(7, &[1], 0));
+    for (left, right) in [(FRAME, FRAME / 2), (FRAME / 2, FRAME), (FRAME, 2 * FRAME)] {
+        let mut stream = descriptors.clone();
+        stream.extend(obu(4, &[]));
+        stream.extend(obu(6, &pcm(left, 1, 1000)));
+        stream.extend(obu(7, &pcm(right, 1, 1000)));
+        for layout in [SoundSystem::A, SoundSystem::B, SoundSystem::Binaural] {
+            let err = batch_decode(&stream, layout).unwrap_err();
+            assert!(err.contains("expected 64 samples"), "{err}");
+            let mut decoder = stream_decoder(&descriptors, layout);
+            assert!(decoder.decode(&stream[descriptors.len()..]).is_err());
+        }
+    }
+    // Well-formed units still decode.
+    let mut stream = descriptors.clone();
+    stream.extend(obu(4, &[]));
+    stream.extend(obu(6, &pcm(FRAME, 1, 1000)));
+    stream.extend(obu(7, &pcm(FRAME, 1, 1000)));
+    assert_eq!(
+        batch_decode(&stream, SoundSystem::A).unwrap().len(),
+        2 * FRAME
+    );
+}
