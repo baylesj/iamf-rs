@@ -111,6 +111,9 @@ pub struct StreamSettings {
     /// libiamf-style look-ahead peak limiter at -1 dBFS. Off by default:
     /// the iamf-tools decoder (Chromium's reference) emits unlimited
     /// rendered PCM, while libiamf limits by default — integrators choose.
+    /// The stream is limited as one signal: a unit becomes available once
+    /// the following input covers the 5 ms look-ahead, and the last one
+    /// after [`StreamDecoder::signal_end_of_decoding`].
     pub enable_limiter: bool,
 }
 
@@ -690,6 +693,12 @@ pub struct StreamDecoder {
     /// Streaming peak limiter, created at the first pulled unit (it needs
     /// the resolved sample rate).
     limiter: Option<PeakLimiter>,
+    /// Limiter output released but not yet returned (with the limiter on,
+    /// a unit is returned once the following input completes its
+    /// look-ahead).
+    limited: VecDeque<f32>,
+    /// Sample counts of rendered units not yet returned, oldest first.
+    held: VecDeque<usize>,
     /// Buffered bytes of a partially received OBU.
     pending: Vec<u8>,
     frame_size: u32,
@@ -966,6 +975,8 @@ impl StreamDecoder {
             settings,
             selected_mix_id: mix.mix_presentation_id,
             limiter: None,
+            limited: VecDeque::new(),
+            held: VecDeque::new(),
             pending: Vec::new(),
             frame_size,
             ended: false,
@@ -1243,8 +1254,67 @@ impl StreamDecoder {
     }
 
     /// Whether a complete temporal unit is decoded and ready to pull.
+    ///
+    /// With the limiter enabled, a unit is ready only once the input that
+    /// follows it covers the limiter's look-ahead (or decoding ended), so
+    /// that streaming output equals limiting the whole stream.
     pub fn is_temporal_unit_available(&self) -> bool {
+        if !self.settings.enable_limiter {
+            return self.frames_ready();
+        }
+        let future = self.queued_unit_samples();
+        let Some(front) = self.held.front().or(future.first()).copied() else {
+            return false;
+        };
+        let incoming: usize = future.iter().sum();
+        let mut releasable = self.limited.len();
+        if let Some(limiter) = &self.limiter {
+            releasable += limiter.released_by_push(incoming);
+            if self.ended {
+                releasable += limiter.released_by_finish(incoming);
+            }
+        } else {
+            let lookahead = LIMITER_LOOKAHEAD * self.num_output_channels();
+            releasable += if self.ended {
+                incoming
+            } else {
+                incoming.saturating_sub(lookahead)
+            };
+        }
+        releasable >= front
+    }
+
+    /// Whether every substream has a frame for the next temporal unit.
+    fn frames_ready(&self) -> bool {
         !self.slots.is_empty() && self.slots.iter().all(SlotState::unit_ready)
+    }
+
+    /// Output samples (after trimming) of each complete temporal unit
+    /// still queued.
+    fn queued_unit_samples(&self) -> Vec<usize> {
+        let Some(first) = self.slots.first() else {
+            return Vec::new();
+        };
+        let channels = usize::from(first.channels[0].max(1));
+        let units = self.min_queue_depth();
+        first.queues[0]
+            .iter()
+            .take(units)
+            .map(|frame| {
+                let len = frame.samples.len() / channels;
+                let start = if self.settings.trimming.trim_beginning {
+                    (frame.trim_start as usize).min(len)
+                } else {
+                    0
+                };
+                let end = if self.settings.trimming.trim_end {
+                    (frame.trim_end as usize).min(len - start)
+                } else {
+                    0
+                };
+                (len - start - end) * self.num_output_channels()
+            })
+            .collect()
     }
 
     /// Pops and renders one temporal unit as interleaved little-endian PCM
@@ -1254,7 +1324,72 @@ impl StreamDecoder {
     /// and its parameter timelines advance past it, so later units stay
     /// aligned across elements.
     pub fn get_output_temporal_unit(&mut self) -> Result<Option<Vec<u8>>, DecodeError> {
-        if !self.is_temporal_unit_available() {
+        if !self.settings.enable_limiter {
+            return Ok(self
+                .render_next_unit()?
+                .map(|samples| self.quantize(&samples)));
+        }
+        // The limiter releases a unit's samples once the following input
+        // covers its look-ahead: render ahead until the oldest held unit
+        // is complete.
+        loop {
+            if let Some(&len) = self.held.front() {
+                if self.limited.len() >= len {
+                    self.held.pop_front();
+                    let samples: Vec<f32> = self.limited.drain(..len).collect();
+                    return Ok(Some(self.quantize(&samples)));
+                }
+            }
+            if self.frames_ready() {
+                let Some(samples) = self.render_next_unit()? else {
+                    return Ok(None);
+                };
+                let channels = self.num_output_channels();
+                let sample_rate = self.sample_rate().max(1);
+                let limiter = self.limiter.get_or_insert_with(|| {
+                    PeakLimiter::new(
+                        LIMITER_THRESHOLD_DB,
+                        sample_rate,
+                        channels,
+                        LIMITER_LOOKAHEAD,
+                    )
+                });
+                self.limited.extend(limiter.push(&samples));
+                self.held.push_back(samples.len());
+                continue;
+            }
+            if self.ended && !self.held.is_empty() {
+                if let Some(limiter) = &mut self.limiter {
+                    let rest = limiter.finish();
+                    if !rest.is_empty() {
+                        self.limited.extend(rest);
+                        continue;
+                    }
+                }
+            }
+            return Ok(None);
+        }
+    }
+
+    fn quantize(&self, samples: &[f32]) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(samples.len() * self.sample_type.bytes_per_sample());
+        for &sample in samples {
+            match self.sample_type {
+                OutputSampleType::Int16LittleEndian => {
+                    bytes.extend(crate::post::quantize_s16(sample).to_le_bytes());
+                }
+                OutputSampleType::Int32LittleEndian => {
+                    bytes.extend(crate::post::quantize_s32(sample).to_le_bytes());
+                }
+            }
+        }
+        bytes
+    }
+
+    /// Renders the next temporal unit to interleaved f32 samples (after
+    /// trimming, before limiting); `None` when no unit is complete.
+    fn render_next_unit(&mut self) -> Result<Option<Vec<f32>>, DecodeError> {
+        if !self.frames_ready() {
             return Ok(None);
         }
         let snapshot = self.cursor_snapshot();
@@ -1269,7 +1404,7 @@ impl StreamDecoder {
             })
             .collect();
         match self.render_popped_unit(units) {
-            Ok(bytes) => Ok(Some(bytes)),
+            Ok(samples) => Ok(Some(samples)),
             Err(e) => {
                 self.skip_unit(snapshot);
                 Err(e)
@@ -1327,7 +1462,7 @@ impl StreamDecoder {
     }
 
     /// Renders one unit whose frames were already popped from every slot.
-    fn render_popped_unit(&mut self, units: Vec<Vec<FramePcm>>) -> Result<Vec<u8>, DecodeError> {
+    fn render_popped_unit(&mut self, units: Vec<Vec<FramePcm>>) -> Result<Vec<f32>, DecodeError> {
         let target_matrix = self.target.matrix_layout();
         let out_channels = self.num_output_channels();
         let num_sub_mixes = self.sub_mixes.len();
@@ -1661,34 +1796,7 @@ impl StreamDecoder {
                 samples.push(sample);
             }
         }
-        if self.settings.enable_limiter {
-            if self.limiter.is_none() {
-                self.limiter = Some(PeakLimiter::new(
-                    LIMITER_THRESHOLD_DB,
-                    self.sample_rate().max(1),
-                    out_channels,
-                    LIMITER_LOOKAHEAD,
-                ));
-            }
-            // Per-unit limiting: the look-ahead works within the unit and
-            // gain state carries across units (see post::PeakLimiter).
-            self.limiter
-                .as_mut()
-                .expect("created above")
-                .process_in_place(&mut samples);
-        }
-        let mut bytes = Vec::with_capacity(samples.len() * self.sample_type.bytes_per_sample());
-        for &sample in &samples {
-            match self.sample_type {
-                OutputSampleType::Int16LittleEndian => {
-                    bytes.extend(crate::post::quantize_s16(sample).to_le_bytes());
-                }
-                OutputSampleType::Int32LittleEndian => {
-                    bytes.extend(crate::post::quantize_s32(sample).to_le_bytes());
-                }
-            }
-        }
-        Ok(bytes)
+        Ok(samples)
     }
 
     /// Number of output audio channels rendered for the selected layout.
@@ -1744,6 +1852,8 @@ impl StreamDecoder {
         self.pending.clear();
         self.ended = false;
         self.limiter = None;
+        self.limited.clear();
+        self.held.clear();
         for sm in &mut self.sub_mixes {
             sm.output_cursor.clear();
             if let Some(external) = &mut sm.external {

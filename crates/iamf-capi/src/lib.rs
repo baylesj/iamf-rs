@@ -150,7 +150,10 @@ pub struct IamfrsSettings {
     /// iamf-tools default; the v2.0 profiles must be requested explicitly.
     pub requested_profiles: u32,
     /// Nonzero enables the libiamf-style -1 dBFS look-ahead peak limiter.
-    /// Off by default, matching the iamf-tools decoder.
+    /// Off by default, matching the iamf-tools decoder. With it on, a
+    /// temporal unit becomes available once the following input covers
+    /// the 5 ms look-ahead, and the last one after
+    /// `iamfrs_decoder_signal_end_of_decoding`.
     pub enable_limiter: u8,
     /// Nonzero enables loudness normalization to `loudness_target_db`
     /// using the stream's loudness_info. Off by default (iamf-tools
