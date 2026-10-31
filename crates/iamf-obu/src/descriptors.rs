@@ -969,20 +969,18 @@ pub enum ElementGainOffsetConfig {
         /// The offset, Q7.8 dB.
         offset: i16,
     },
-    /// Type 1: a user-adjustable offset within [min, max].
+    /// Type 1: a user-adjustable offset in
+    /// `[default + min, default + max]` (spec v2.0 §3.7.1.1).
     ///
-    /// The parser requires `min <= default <= max`, comparing the three
-    /// coded values directly, as iamf-tools does. Spec v2.0 §3.7.1.1
-    /// instead defines `min` and `max` as offsets relative to `default`;
-    /// this crate follows iamf-tools.
+    /// `min` and `max` are the coded values, relative to `default`. The
+    /// spec treats a positive `min` and a negative `max` as 0 dB; use
+    /// [`ElementGainOffsetConfig::range`] for the effective bounds.
     Range {
         /// Offset applied unless the user picks another, Q7.8 dB.
         default: i16,
-        /// Lowest allowed offset, Q7.8 dB (absolute, like `default`; must
-        /// not exceed it).
+        /// Lower bound relative to `default`, Q7.8 dB, as coded.
         min: i16,
-        /// Highest allowed offset, Q7.8 dB (absolute, like `default`; must
-        /// not be below it).
+        /// Upper bound relative to `default`, Q7.8 dB, as coded.
         max: i16,
     },
     /// Reserved types 2..=255: sized payload, uninterpreted.
@@ -995,8 +993,9 @@ pub enum ElementGainOffsetConfig {
 }
 
 impl ElementGainOffsetConfig {
-    /// Parses per iamf-tools `ElementGainOffsetConfig::CreateFromBuffer`
-    /// (a range type must satisfy `min <= default <= max`).
+    /// Parses the element gain offset config. Unlike iamf-tools, a range
+    /// is not checked as `min <= default <= max`: the spec defines `min`
+    /// and `max` relative to `default`, so every coded triple is valid.
     fn parse(r: &mut ByteReader<'_>) -> Result<Self> {
         Ok(match r.read_u8()? {
             0 => ElementGainOffsetConfig::Value {
@@ -1006,9 +1005,6 @@ impl ElementGainOffsetConfig {
                 let default = r.read_i16_be()?;
                 let min = r.read_i16_be()?;
                 let max = r.read_i16_be()?;
-                if !(min..=max).contains(&default) {
-                    return Err(invalid(r));
-                }
                 ElementGainOffsetConfig::Range { default, min, max }
             }
             config_type => {
@@ -1019,6 +1015,20 @@ impl ElementGainOffsetConfig {
                 }
             }
         })
+    }
+
+    /// Effective absolute bounds `(lowest, highest)` of a range config,
+    /// Q7.8 dB (§3.7.1.1: `default + min ..= default + max`, with a
+    /// positive `min` or negative `max` read as 0 dB). Saturates at the
+    /// i16 limits. `None` for the other types.
+    pub fn range(&self) -> Option<(i16, i16)> {
+        match *self {
+            ElementGainOffsetConfig::Range { default, min, max } => Some((
+                default.saturating_add(min.min(0)),
+                default.saturating_add(max.max(0)),
+            )),
+            _ => None,
+        }
     }
 
     /// The offset to apply by default, Q7.8 dB (`None` for reserved
@@ -2209,25 +2219,47 @@ mod tests {
         assert!(parse_gain_offset(&[0x01, 0x00, 0x00, 0x00, 0x00]).is_err());
     }
 
-    /// The range check compares absolute values (`min <= default <= max`),
-    /// as iamf-tools does, not the spec v2.0 §3.7.1.1 offsets relative to
-    /// the default.
+    /// Regression: spec v2.0 §3.7.1.1 defines `min` and `max` relative to
+    /// the default. The parser used to require `min <= default <= max` on
+    /// the coded values, rejecting valid ranges such as +6 dB with
+    /// -3/+3 dB bounds.
     #[test]
-    fn element_gain_offset_range_checks_absolute_values() {
-        // Valid if min/max were relative to the default; rejected here.
-        assert!(matches!(
-            gain_offset_range(512, -256, 256),
-            Err(Error::InvalidDescriptor { .. })
-        ));
-        // Accepted here; a negative relative max would be odd.
-        gain_offset_range(-512, -1024, -256).unwrap();
-        // min > max.
-        assert!(matches!(
-            gain_offset_range(0, 256, -256),
-            Err(Error::InvalidDescriptor { .. })
-        ));
-        assert!(gain_offset_range(-257, -256, 256).is_err());
-        assert!(gain_offset_range(257, -256, 256).is_err());
+    fn element_gain_offset_range_is_relative() {
+        let range = gain_offset_range(0x0600, -0x0300, 0x0300).unwrap();
+        assert_eq!(range.default_offset(), Some(0x0600));
+        assert_eq!(range.range(), Some((0x0300, 0x0900)));
+        // A positive min and a negative max are read as 0 dB.
+        let range = gain_offset_range(-512, 256, -256).unwrap();
+        assert_eq!(range.range(), Some((-512, -512)));
+        // Saturates instead of overflowing.
+        let range = gain_offset_range(i16::MAX, i16::MIN, i16::MAX).unwrap();
+        assert_eq!(range.range(), Some((-1, i16::MAX)));
+        assert_eq!(ElementGainOffsetConfig::Value { offset: 1 }.range(), None);
+    }
+
+    /// Regression: an invalid-looking (but spec-valid) range used to make
+    /// the whole extension opaque, dropping the element's position
+    /// parameters, so object elements failed to decode.
+    #[test]
+    fn element_gain_offset_range_keeps_position_params() {
+        let mut ext = vec![0x01];
+        ext.extend(POLAR_PARAM);
+        ext.push(0x01);
+        for value in [0x0600i16, -0x0300, 0x0300] {
+            ext.extend(value.to_be_bytes());
+        }
+        let mut config = vec![0x20, u8::try_from(ext.len()).unwrap()];
+        config.extend(ext);
+        let e = element_with_rendering_config(&config).unwrap();
+        assert_eq!(e.position_params.len(), 1);
+        assert_eq!(
+            e.element_gain_offset,
+            Some(ElementGainOffsetConfig::Range {
+                default: 0x0600,
+                min: -0x0300,
+                max: 0x0300
+            })
+        );
     }
 
     #[test]
