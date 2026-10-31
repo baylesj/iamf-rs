@@ -1,0 +1,6 @@
+# Pinned nightly for cargo-fuzz (sanitizers need nightly). Bump deliberately;
+# CI reads the channel from this file.
+[toolchain]
+channel = "nightly-2026-10-30"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

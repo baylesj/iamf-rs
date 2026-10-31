@@ -29,6 +29,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "decode_batch"
+path = "fuzz_targets/decode_batch.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "capi"
 path = "fuzz_targets/capi.rs"
 test = false
