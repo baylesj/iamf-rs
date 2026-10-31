@@ -749,7 +749,7 @@ const SP_UP110: SpeakerPos = SpeakerPos::new(110.0, 30.0, false);
 const SP_UM135: SpeakerPos = SpeakerPos::new(-135.0, 30.0, false);
 const SP_UP135: SpeakerPos = SpeakerPos::new(135.0, 30.0, false);
 const SP_UP180: SpeakerPos = SpeakerPos::new(180.0, 30.0, false);
-const SP_UHP180: SpeakerPos = SpeakerPos::new(180.0, 15.0, false);
+const SP_UHP180: SpeakerPos = SpeakerPos::new(180.0, 45.0, false);
 
 const SP_BP000: SpeakerPos = SpeakerPos::new(0.0, -30.0, false);
 const SP_BM045: SpeakerPos = SpeakerPos::new(-45.0, -30.0, false);
@@ -1433,6 +1433,26 @@ impl ObjectLoudspeakerRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: sound system F's UH+180 speaker sat at 15° elevation
+    /// instead of 45° (ROAR `SP_UHP180`, BS.2051), so F's layers were
+    /// {0, 30, 15} and every elevated object panned wrongly. An object at
+    /// the UH+180 position must land on that speaker alone.
+    #[test]
+    fn sound_system_f_uh180_is_at_45_degrees() {
+        let mut renderer = ObjectLoudspeakerRenderer::new(SoundSystem::F, 1).unwrap();
+        let out = renderer.process_frame(
+            &[vec![1.0; 16]],
+            &[PolarCoord {
+                azimuth: 180.0,
+                elevation: 45.0,
+                distance: 1.0,
+            }],
+        );
+        let energy: Vec<f32> = out.iter().map(|p| p[15] * p[15]).collect();
+        let total: f32 = energy.iter().sum();
+        assert!(energy[9] / total > 0.99, "UH+180 share {energy:?}");
+    }
 
     /// Regression: the position cursor added scaled durations with `+=`
     /// (a panic with overflow checks, e.g. u32::MAX-sample subblocks at
