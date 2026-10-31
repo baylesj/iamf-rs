@@ -337,3 +337,27 @@ fn failed_unit_is_skipped_by_every_element() {
     // All elements always contribute the same unit: 3 x 100 x unit.
     assert_eq!(firsts, [300, 0, 900, 1200]);
 }
+
+/// A failed `reset_with_new_mix` used to drop the parsed descriptors, so
+/// every later reconfiguration failed with "no mix presentations",
+/// although the API (and the C header) say the call can be retried.
+#[test]
+fn failed_reset_with_new_mix_can_be_retried() {
+    use iamf_dec::stream::MixSelection;
+    let descriptors = stereo_descriptors(48000, 0);
+    let mut decoder = stream_decoder(&descriptors, SoundSystem::A);
+    assert!(
+        decoder
+            .reset_with_new_mix(MixSelection::ByIndex(7), None, &DefaultFactory)
+            .is_err()
+    );
+    assert_eq!(
+        decoder
+            .reset_with_new_mix(MixSelection::Auto, Some(SoundSystem::B), &DefaultFactory)
+            .unwrap(),
+        (7, SoundSystem::B)
+    );
+    decoder.decode(&stereo_unit(100)).unwrap();
+    decoder.signal_end_of_decoding();
+    assert_eq!(drain(&mut decoder), 1);
+}

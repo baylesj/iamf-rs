@@ -1746,13 +1746,9 @@ impl StreamDecoder {
             .first()
             .and_then(|sm| sm.external.as_ref())
             .map(|e| Arc::clone(&e.factory));
-        match Self::from_parsed(
-            std::mem::take(&mut self.parsed),
-            settings,
-            factory,
-            &mut reuse,
-            renderer,
-        ) {
+        // Clone rather than take the descriptors: on failure they must
+        // stay, so that a later call with valid arguments can succeed.
+        match Self::from_parsed(self.parsed.clone(), settings, factory, &mut reuse, renderer) {
             Ok(next) => {
                 *self = next;
                 Ok(self.selected_mix())
