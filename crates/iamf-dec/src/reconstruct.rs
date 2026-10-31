@@ -391,23 +391,32 @@ pub fn ambisonics_from_planes(
         } => {
             let order = hoa_order(*output_channel_count)?;
             let frames = decoded.first().map_or(0, Vec::len);
-            // Each decoded plane is moved to its ACN slot; §3.7.5 requires
-            // the mapping to be injective, so a repeated index is invalid.
+            // Each decoded plane goes to the ACN slots that map to it.
+            // channel_mapping follows RFC 8486 / RFC 7845 semantics, where
+            // several outputs may use the same decoded channel: a plane is
+            // moved into its last use and cloned for earlier ones.
+            let last_use: Vec<Option<usize>> = (0..decoded.len())
+                .map(|d| channel_mapping.iter().rposition(|&m| usize::from(m) == d))
+                .collect();
             let mut decoded: Vec<Option<Vec<f32>>> = decoded.into_iter().map(Some).collect();
             let planar = channel_mapping
                 .iter()
-                .map(|&m| {
+                .enumerate()
+                .map(|(slot, &m)| {
                     if m == 255 {
-                        Ok(vec![0.0; frames])
+                        return Ok(vec![0.0; frames]);
+                    }
+                    let index = usize::from(m);
+                    let out_of_range = || {
+                        DecodeError::InvalidDescriptors(format!(
+                            "channel_mapping index {m} out of range"
+                        ))
+                    };
+                    let plane = decoded.get_mut(index).ok_or_else(out_of_range)?;
+                    if last_use[index] == Some(slot) {
+                        plane.take().ok_or_else(out_of_range)
                     } else {
-                        decoded
-                            .get_mut(usize::from(m))
-                            .and_then(Option::take)
-                            .ok_or_else(|| {
-                                DecodeError::InvalidDescriptors(format!(
-                                    "channel_mapping index {m} out of range or repeated"
-                                ))
-                            })
+                        plane.clone().ok_or_else(out_of_range)
                     }
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -452,6 +461,39 @@ pub fn ambisonics_from_planes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: a channel_mapping that uses a decoded channel twice was
+    /// rejected as "repeated", but RFC 8486 / RFC 7845 channel mappings
+    /// (which §3.6.3 adopts) allow it.
+    #[test]
+    fn mono_ambisonics_mapping_may_repeat_a_channel() {
+        let config = AudioElementConfig::AmbisonicsMono {
+            output_channel_count: 4,
+            substream_count: 2,
+            channel_mapping: vec![0, 0, 1, 255],
+        };
+        let Reconstructed::Hoa { order, planar } =
+            ambisonics_from_planes(&config, vec![vec![1.0, 2.0], vec![3.0, 4.0]]).unwrap()
+        else {
+            panic!("expected ambisonics");
+        };
+        assert_eq!(order, HoaOrder::Foa);
+        assert_eq!(
+            planar,
+            [
+                vec![1.0, 2.0],
+                vec![1.0, 2.0],
+                vec![3.0, 4.0],
+                vec![0.0, 0.0]
+            ]
+        );
+        let bad = AudioElementConfig::AmbisonicsMono {
+            output_channel_count: 4,
+            substream_count: 2,
+            channel_mapping: vec![0, 1, 2, 255],
+        };
+        assert!(ambisonics_from_planes(&bad, vec![vec![0.0], vec![0.0]]).is_err());
+    }
 
     /// Regression: a scalable element whose layers shrink (here 5.1.4,
     /// then 5.1.2) used to underflow in the new-channel computation when
