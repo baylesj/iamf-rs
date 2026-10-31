@@ -66,6 +66,8 @@ pub(super) struct FftManager {
     fft_size: usize,
     bitrev: Vec<usize>,
     twiddles: Vec<Complex>,
+    /// Transform buffer, reused by every call.
+    scratch: Vec<Complex>,
 }
 
 impl FftManager {
@@ -86,6 +88,7 @@ impl FftManager {
             fft_size,
             bitrev,
             twiddles,
+            scratch: vec![Complex::default(); fft_size],
         }
     }
 
@@ -97,8 +100,11 @@ impl FftManager {
         vec![Complex::default(); self.fft_size / 2 + 1]
     }
 
-    fn transform_in_place(&self, buf: &mut [Complex], inverse: bool) {
+    /// In-place radix-2 transform of `scratch` (conjugated twiddles for
+    /// the inverse).
+    fn transform_scratch(&mut self, inverse: bool) {
         let n = self.fft_size;
+        let buf = &mut self.scratch;
         for (i, &j) in self.bitrev.iter().enumerate() {
             if i < j {
                 buf.swap(i, j);
@@ -125,25 +131,25 @@ impl FftManager {
     /// FFT of `time` zero-padded to `fft_size`.
     pub(super) fn forward(&mut self, time: &[f32], spectrum: &mut [Complex]) {
         let n = time.len().min(self.fft_size);
-        let mut buf = vec![Complex::default(); self.fft_size];
-        for (dst, &src) in buf[..n].iter_mut().zip(&time[..n]) {
+        self.scratch.fill(Complex::default());
+        for (dst, &src) in self.scratch[..n].iter_mut().zip(&time[..n]) {
             dst.re = src;
         }
-        self.transform_in_place(&mut buf, false);
+        self.transform_scratch(false);
         let bins = self.fft_size / 2 + 1;
-        spectrum[..bins].copy_from_slice(&buf[..bins]);
+        spectrum[..bins].copy_from_slice(&self.scratch[..bins]);
     }
 
     /// Unscaled inverse FFT; caller applies 1/fft_size.
-    fn inverse(&self, spectrum: &mut [Complex], time: &mut [f32]) {
+    fn inverse(&mut self, spectrum: &[Complex], time: &mut [f32]) {
         let bins = self.fft_size / 2 + 1;
-        let mut buf = vec![Complex::default(); self.fft_size];
-        buf[..bins].copy_from_slice(&spectrum[..bins]);
-        for k in 1..(self.fft_size / 2) {
-            buf[self.fft_size - k] = spectrum[k].conj();
+        self.scratch[..bins].copy_from_slice(&spectrum[..bins]);
+        let n = self.fft_size;
+        for (k, bin) in spectrum.iter().enumerate().take(n / 2).skip(1) {
+            self.scratch[n - k] = bin.conj();
         }
-        self.transform_in_place(&mut buf, true);
-        for (dst, src) in time[..self.fft_size].iter_mut().zip(&buf) {
+        self.transform_scratch(true);
+        for (dst, src) in time[..self.fft_size].iter_mut().zip(&self.scratch) {
             *dst = src.re;
         }
     }
@@ -186,7 +192,7 @@ impl PartitionedFftFilter {
 
     /// Feeds one block spectrum and computes this block's filtered time
     /// output (kept internally until [`Self::output_into`]).
-    pub(super) fn filter(&mut self, input_spectrum: &[Complex], fft: &FftManager) {
+    pub(super) fn filter(&mut self, input_spectrum: &[Complex], fft: &mut FftManager) {
         let partitions = self.kernel_spectra.len();
         self.input_spectra[self.front].copy_from_slice(input_spectrum);
 
@@ -207,9 +213,7 @@ impl PartitionedFftFilter {
         self.front = (self.front + partitions - 1) % partitions;
 
         std::mem::swap(&mut self.previous, &mut self.current);
-        let mut spectrum = std::mem::take(&mut self.accumulator);
-        fft.inverse(&mut spectrum, &mut self.current);
-        self.accumulator = spectrum;
+        fft.inverse(&self.accumulator, &mut self.current);
         let scale = 1.0 / fft.fft_size() as f32;
         for s in &mut self.current {
             *s *= scale;
@@ -392,7 +396,7 @@ mod tests {
         let input: Vec<f32> = (0..frame).map(|i| (i as f32 * 0.37).sin()).collect();
         let mut spectrum = fft.spectrum_scratch();
         fft.forward(&input, &mut spectrum);
-        filter.filter(&spectrum, &fft);
+        filter.filter(&spectrum, &mut fft);
         let mut out = vec![0.0f32; frame];
         filter.output_into(&mut out);
         for (o, i) in out.iter().zip(&input) {
@@ -416,7 +420,7 @@ mod tests {
         for block in signal.chunks(frame) {
             let mut spectrum = fft.spectrum_scratch();
             fft.forward(block, &mut spectrum);
-            filter.filter(&spectrum, &fft);
+            filter.filter(&spectrum, &mut fft);
             let mut out = vec![0.0f32; frame];
             filter.output_into(&mut out);
             out_all.extend(out);

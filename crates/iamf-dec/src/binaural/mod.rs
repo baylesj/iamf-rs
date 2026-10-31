@@ -373,9 +373,9 @@ impl BinauralRenderer {
         }
         for (channel, bed_plane) in self.bed.iter().enumerate() {
             self.fft.forward(bed_plane, &mut spectrum);
-            self.filters_left[channel].filter(&spectrum, &self.fft);
+            self.filters_left[channel].filter(&spectrum, &mut self.fft);
             self.filters_left[channel].output_into(&mut out[0]);
-            self.filters_right[channel].filter(&spectrum, &self.fft);
+            self.filters_right[channel].filter(&spectrum, &mut self.fft);
             self.filters_right[channel].output_into(&mut out[1]);
         }
 
