@@ -42,15 +42,18 @@ the side and rear surround pairs of 7.1, 7.1.2 and 7.1.4. Pass a nonzero
 
 ## Build for WebAssembly
 
-You need the `wasm32-unknown-unknown` target for the pinned toolchain
-(`rustup target add wasm32-unknown-unknown`). Then, from the repository
-root:
+The pinned toolchain (`rust-toolchain.toml`) includes the
+`wasm32-unknown-unknown` target, so `rustup` installs it for you. From the
+repository root:
 
 ```sh
 RUSTFLAGS="-C opt-level=s -C strip=symbols" \
   cargo build -p iamf-obr-wasm --target wasm32-unknown-unknown --release
 cp target/wasm32-unknown-unknown/release/iamf_obr_wasm.wasm docs/obr_binaural.wasm
 ```
+
+The build is reproducible: CI rebuilds it with the same flags and fails if
+the committed `docs/obr_binaural.wasm` differs.
 
 ## Exported C and WASM API
 
