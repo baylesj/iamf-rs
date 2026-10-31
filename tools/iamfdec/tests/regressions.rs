@@ -231,3 +231,57 @@ fn decoded_frame_length_must_match_codec_config() {
         2 * FRAME
     );
 }
+
+// -- Stream decoder error recovery ---------------------------------------
+
+/// A failing OBU used to stay at the head of the input buffer, so every
+/// later `decode()` re-parsed it and failed again: one corrupt LPCM frame
+/// ended playback for good.
+#[test]
+fn stream_recovers_after_a_corrupt_frame() {
+    let descriptors = stereo_descriptors(48000, 0);
+    let mut decoder = stream_decoder(&descriptors, SoundSystem::A);
+    let mut bad = obu(4, &[]);
+    bad.extend(obu(6, &[0; 5])); // not a whole number of sample frames
+    assert!(decoder.decode(&bad).is_err());
+    for _ in 0..3 {
+        decoder.decode(&stereo_unit(100)).unwrap();
+    }
+    decoder.signal_end_of_decoding();
+    assert_eq!(drain(&mut decoder), 3);
+}
+
+/// A 2-byte OBU whose header promises trimming or extension fields that
+/// its empty body lacks used to read as "incomplete", so the decoder
+/// returned Ok forever, produced nothing and buffered all later input.
+#[test]
+fn stream_recovers_after_a_too_short_obu() {
+    for short in [[(6 << 3) | 0x02, 0x00], [0x01, 0x00]] {
+        let descriptors = stereo_descriptors(48000, 0);
+        let mut decoder = stream_decoder(&descriptors, SoundSystem::A);
+        decoder.decode(&stereo_unit(100)).unwrap();
+        assert!(decoder.decode(&short).is_err());
+        for _ in 0..3 {
+            decoder.decode(&stereo_unit(100)).unwrap();
+        }
+        decoder.signal_end_of_decoding();
+        assert_eq!(drain(&mut decoder), 4, "{short:x?}");
+    }
+}
+
+/// An OBU whose outer framing is broken can't be skipped; the buffered
+/// input is dropped and decoding resumes with the next push.
+#[test]
+fn stream_drops_input_it_cannot_resynchronize() {
+    let descriptors = stereo_descriptors(48000, 0);
+    let mut decoder = stream_decoder(&descriptors, SoundSystem::A);
+    // obu_size is an over-long leb128 (9 continuation bytes).
+    assert!(
+        decoder
+            .decode(&[0x30, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff])
+            .is_err()
+    );
+    decoder.decode(&stereo_unit(100)).unwrap();
+    decoder.signal_end_of_decoding();
+    assert_eq!(drain(&mut decoder), 1);
+}
