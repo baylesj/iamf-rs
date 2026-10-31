@@ -21,7 +21,7 @@ pub use filters::FilterProfile;
 pub use sh::sh_coeffs;
 
 use crate::DecodeError;
-use convolver::{FftManager, PartitionedFftFilter};
+use convolver::{FftManager, PartitionedFftFilter, SmallFrameChannel};
 use limiter::ObrPeakLimiter;
 
 /// Ambisonic order used for loudspeaker/object content (obr
@@ -29,6 +29,13 @@ use limiter::ObrPeakLimiter;
 const DEFAULT_SPEAKER_ORDER: usize = 3;
 /// The embedded filters are 48 kHz recordings.
 const FILTER_SAMPLE_RATE: u32 = 48_000;
+/// Frames shorter than this use [`SmallFrameChannel`]'s fixed-block
+/// convolution; longer ones partition the filters by the frame size, as
+/// obr does.
+const SMALL_FRAME_BLOCK: usize = 64;
+/// Largest frame the renderer accepts (FLAC's largest block size); its
+/// memory grows with the frame size.
+const MAX_FRAME_SIZE: usize = 65_536;
 
 /// What the renderer consumes for one audio element.
 #[derive(Debug, Clone, Copy)]
@@ -73,6 +80,9 @@ pub struct BinauralRenderer {
     hoa_channels: usize,
     filters_left: Vec<PartitionedFftFilter>,
     filters_right: Vec<PartitionedFftFilter>,
+    /// Per-HOA-channel convolution for frames shorter than
+    /// [`SMALL_FRAME_BLOCK`] (then `filters_*` are empty).
+    small_frames: Vec<SmallFrameChannel>,
     fft: FftManager,
     limiter: ObrPeakLimiter,
     /// Scratch HOA bed, one plane per SH channel.
@@ -110,6 +120,11 @@ impl BinauralRenderer {
         if frame_size == 0 {
             return Err(DecodeError::InvalidDescriptors("empty frames".into()));
         }
+        if frame_size > MAX_FRAME_SIZE {
+            return Err(DecodeError::Unimplemented(
+                "binaural rendering of frames longer than 65536 samples",
+            ));
+        }
 
         let (order, encoding_matrix, input_channels) = match input {
             BinauralInput::Speakers { loudspeaker_layout } => {
@@ -128,7 +143,8 @@ impl BinauralRenderer {
                     hoa_channels: 0,
                     filters_left: Vec::new(),
                     filters_right: Vec::new(),
-                    fft: FftManager::new(frame_size),
+                    small_frames: Vec::new(),
+                    fft: FftManager::new(SMALL_FRAME_BLOCK),
                     limiter: ObrPeakLimiter::new(sample_rate, 50.0, -0.5),
                     bed: Vec::new(),
                     prev_obj_columns: None,
@@ -152,7 +168,8 @@ impl BinauralRenderer {
         };
         let hoa_channels = (order + 1) * (order + 1);
 
-        let mut fft = FftManager::new(frame_size);
+        let small = frame_size < SMALL_FRAME_BLOCK;
+        let mut fft = FftManager::new(if small { SMALL_FRAME_BLOCK } else { frame_size });
         let (mut left, mut right) = filters::sh_hrirs(order, profile)?;
         if sample_rate != FILTER_SAMPLE_RATE {
             // obr resamples the SH-HRIRs to the stream rate at load.
@@ -161,14 +178,26 @@ impl BinauralRenderer {
             }
         }
         debug_assert_eq!(left.len(), hoa_channels);
-        let filters_left = left
-            .iter()
-            .map(|hrir| PartitionedFftFilter::new(hrir, frame_size, &mut fft))
-            .collect();
-        let filters_right = right
-            .iter()
-            .map(|hrir| PartitionedFftFilter::new(hrir, frame_size, &mut fft))
-            .collect();
+        let (filters_left, filters_right, small_frames) = if small {
+            let channels = left
+                .iter()
+                .zip(&right)
+                .map(|(l, r)| SmallFrameChannel::new(l, r, SMALL_FRAME_BLOCK, &mut fft))
+                .collect();
+            (Vec::new(), Vec::new(), channels)
+        } else {
+            let partitioned = |hrirs: &[Vec<f32>], fft: &mut FftManager| {
+                hrirs
+                    .iter()
+                    .map(|hrir| PartitionedFftFilter::new(hrir, frame_size, fft))
+                    .collect()
+            };
+            (
+                partitioned(&left, &mut fft),
+                partitioned(&right, &mut fft),
+                Vec::new(),
+            )
+        };
 
         let prev_obj_columns = if matches!(input, BinauralInput::Objects { .. }) {
             let coeffs = sh_coeffs(0.0, 0.0, DEFAULT_SPEAKER_ORDER);
@@ -186,6 +215,7 @@ impl BinauralRenderer {
             hoa_channels,
             filters_left,
             filters_right,
+            small_frames,
             fft,
             // obr: PeakLimiter(sampling_rate, 50 ms release, -0.5 dB).
             limiter: ObrPeakLimiter::new(sample_rate, 50.0, -0.5),
@@ -333,6 +363,14 @@ impl BinauralRenderer {
     fn convolve_bed(&mut self, frame: usize) -> [Vec<f32>; 2] {
         let mut out = [vec![0.0f32; frame], vec![0.0f32; frame]];
         let mut spectrum = self.fft.spectrum_scratch();
+        if !self.small_frames.is_empty() {
+            let [left, right] = &mut out;
+            for (channel, bed_plane) in self.small_frames.iter_mut().zip(&self.bed) {
+                channel.process_into(bed_plane, left, right, &mut self.fft, &mut spectrum);
+            }
+            self.limiter.process(&mut out);
+            return out;
+        }
         for (channel, bed_plane) in self.bed.iter().enumerate() {
             self.fft.forward(bed_plane, &mut spectrum);
             self.filters_left[channel].filter(&spectrum, &self.fft);
@@ -343,5 +381,56 @@ impl BinauralRenderer {
 
         self.limiter.process(&mut out);
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: the convolver used to partition its 8192-tap filters
+    /// by the frame size, so one-sample frames cost ~3000x more per
+    /// sample than 960-sample ones (a CPU DoS from tiny LPCM frames).
+    /// Short frames now use a fixed 64-sample block and must render the
+    /// same signal as the frame-partitioned path.
+    #[test]
+    fn short_frames_render_like_long_frames() {
+        let input = BinauralInput::Speakers {
+            loudspeaker_layout: 2, // 5.1
+        };
+        let signal: Vec<Vec<f32>> = (0..6)
+            .map(|ch| {
+                (0..1024)
+                    .map(|n| ((n * (ch + 3)) as f32 * 0.01).sin() * 0.3)
+                    .collect()
+            })
+            .collect();
+        let render = |frame: usize| {
+            let mut renderer = BinauralRenderer::new(input, frame, 48_000).unwrap();
+            let mut out = [Vec::new(), Vec::new()];
+            for start in (0..1024).step_by(frame) {
+                let planes: Vec<Vec<f32>> = signal
+                    .iter()
+                    .map(|p| p[start..start + frame].to_vec())
+                    .collect();
+                let [l, r] = renderer.process(&planes).unwrap();
+                out[0].extend(l);
+                out[1].extend(r);
+            }
+            out
+        };
+        let reference = render(64);
+        for frame in [1, 8, 32] {
+            let got = render(frame);
+            for (g, w) in got.iter().zip(&reference) {
+                let max = g
+                    .iter()
+                    .zip(w)
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0, f32::max);
+                assert!(max < 1e-4, "frame {frame}: max diff {max}");
+            }
+        }
+        assert!(BinauralRenderer::new(input, MAX_FRAME_SIZE + 1, 48_000).is_err());
     }
 }

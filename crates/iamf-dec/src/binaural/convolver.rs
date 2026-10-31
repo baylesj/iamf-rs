@@ -226,9 +226,159 @@ impl PartitionedFftFilter {
     }
 }
 
+/// One HOA channel's convolution with a left and a right kernel for
+/// frames shorter than `block` samples, at a bounded cost per sample.
+///
+/// [`PartitionedFftFilter`] partitions the kernel into frame-sized blocks,
+/// so its cost per sample grows as frames shrink (8192 partitions for
+/// one-sample frames, ~3000x the cost at 960). This splits each kernel
+/// into a `block`-tap head, convolved directly sample by sample, and the
+/// rest, convolved block by block by a [`PartitionedFftFilter`] one block
+/// behind; the one-block delay is exactly the head's length, so the sum
+/// is the full convolution with no added latency.
+pub(super) struct SmallFrameChannel {
+    block: usize,
+    /// Previous block followed by the current (partial) block.
+    line: Vec<f32>,
+    /// Samples of the current block received so far.
+    filled: usize,
+    ears: [SmallFrameEar; 2],
+}
+
+struct SmallFrameEar {
+    head: Vec<f32>,
+    tail: Option<PartitionedFftFilter>,
+    /// Tail contribution for the current block.
+    tail_out: Vec<f32>,
+}
+
+impl SmallFrameChannel {
+    /// `fft` must be sized for `block`-sample frames.
+    pub(super) fn new(left: &[f32], right: &[f32], block: usize, fft: &mut FftManager) -> Self {
+        let ear = |kernel: &[f32], fft: &mut FftManager| {
+            let split = kernel.len().min(block);
+            SmallFrameEar {
+                head: kernel[..split].to_vec(),
+                tail: (kernel.len() > block)
+                    .then(|| PartitionedFftFilter::new(&kernel[block..], block, fft)),
+                tail_out: vec![0.0; block],
+            }
+        };
+        SmallFrameChannel {
+            block,
+            line: vec![0.0; 2 * block],
+            filled: 0,
+            ears: [ear(left, fft), ear(right, fft)],
+        }
+    }
+
+    /// Convolves `input` and adds the result into `left` and `right`
+    /// (each at least `input.len()` long).
+    pub(super) fn process_into(
+        &mut self,
+        input: &[f32],
+        left: &mut [f32],
+        right: &mut [f32],
+        fft: &mut FftManager,
+        spectrum: &mut [Complex],
+    ) {
+        let block = self.block;
+        for (t, &x) in input.iter().enumerate() {
+            let j = self.filled;
+            self.line[block + j] = x;
+            for (ear, out) in self.ears.iter().zip([&mut left[t], &mut right[t]]) {
+                let mut acc = ear.tail_out[j];
+                // line[block + j - i] is x[n - i]; i < block keeps the
+                // index within the previous block.
+                for (i, &h) in ear.head.iter().enumerate() {
+                    acc += h * self.line[block + j - i];
+                }
+                *out += acc;
+            }
+            self.filled += 1;
+            if self.filled == block {
+                fft.forward(&self.line[block..], spectrum);
+                for ear in &mut self.ears {
+                    ear.tail_out.fill(0.0);
+                    if let Some(tail) = &mut ear.tail {
+                        tail.filter(spectrum, fft);
+                        tail.output_into(&mut ear.tail_out);
+                    }
+                }
+                self.line.copy_within(block.., 0);
+                self.filled = 0;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Deterministic pseudo-random signal in [-1, 1).
+    fn noise(len: usize, seed: u32) -> Vec<f32> {
+        let mut state = seed.wrapping_mul(2_654_435_761).max(1);
+        (0..len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state as f32 / u32::MAX as f32 * 2.0 - 1.0
+            })
+            .collect()
+    }
+
+    /// Direct convolution, the reference.
+    fn convolve(x: &[f32], h: &[f32]) -> Vec<f32> {
+        (0..x.len())
+            .map(|n| {
+                h.iter()
+                    .enumerate()
+                    .take(n + 1)
+                    .map(|(i, &hi)| f64::from(hi) * f64::from(x[n - i]))
+                    .sum::<f64>() as f32
+            })
+            .collect()
+    }
+
+    /// Regression for the small-frame cost blow-up: the hybrid path is
+    /// the full convolution for any frame size below the block, including
+    /// sizes that don't divide it, with no added latency.
+    #[test]
+    fn small_frame_channel_matches_direct_convolution() {
+        const BLOCK: usize = 64;
+        let left = noise(1000, 1);
+        let right = noise(130, 2); // shorter than two blocks
+        let input = noise(3000, 3);
+        let want_left = convolve(&input, &left);
+        let want_right = convolve(&input, &right);
+        for frame in [1, 7, 8, 48, 63] {
+            let mut fft = FftManager::new(BLOCK);
+            let mut spectrum = fft.spectrum_scratch();
+            let mut channel = SmallFrameChannel::new(&left, &right, BLOCK, &mut fft);
+            let mut got = [vec![0.0f32; input.len()], vec![0.0f32; input.len()]];
+            for start in (0..input.len()).step_by(frame) {
+                let end = (start + frame).min(input.len());
+                let [l, r] = &mut got;
+                channel.process_into(
+                    &input[start..end],
+                    &mut l[start..end],
+                    &mut r[start..end],
+                    &mut fft,
+                    &mut spectrum,
+                );
+            }
+            for (got, want) in got.iter().zip([&want_left, &want_right]) {
+                let max = got
+                    .iter()
+                    .zip(want)
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0f32, f32::max);
+                assert!(max < 1e-3, "frame {frame}: max diff {max}");
+            }
+        }
+    }
 
     /// A unit-impulse kernel must pass the signal through unchanged.
     #[test]
