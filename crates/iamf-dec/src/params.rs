@@ -545,10 +545,19 @@ fn parse_recon_gain(
 /// values persist until the next block, matching the previous frame-snapshot
 /// behavior); `None` is returned only before any value has arrived, letting
 /// callers keep the descriptor defaults.
+///
+/// Blocks are positioned by [`ParamCursor::advance_to`]: a block that
+/// arrives after a gap (temporal units without a block) applies from its
+/// own position, and the gap keeps the previous value. Without this the
+/// result depended on how the input was chunked.
 #[derive(Debug, Clone)]
 pub struct ParamCursor<T> {
-    queue: std::collections::VecDeque<(T, usize)>,
+    /// Values with their remaining sample durations; `None` is a gap that
+    /// keeps the sticky value.
+    queue: std::collections::VecDeque<(Option<T>, usize)>,
     last: Option<T>,
+    /// Samples covered so far: pushed, gap-filled, or consumed while dry.
+    covered: usize,
 }
 
 impl<T> Default for ParamCursor<T> {
@@ -556,6 +565,7 @@ impl<T> Default for ParamCursor<T> {
         ParamCursor {
             queue: std::collections::VecDeque::new(),
             last: None,
+            covered: 0,
         }
     }
 }
@@ -564,32 +574,45 @@ impl<T: Clone> ParamCursor<T> {
     /// Appends a value with its sample duration to the timeline.
     pub fn push(&mut self, value: T, duration: usize) {
         if duration > 0 {
-            self.queue.push_back((value, duration));
+            self.queue.push_back((Some(value), duration));
+            self.covered = self.covered.saturating_add(duration);
         } else {
             // Zero-length coverage still updates the sticky value.
             self.last = Some(value);
         }
     }
 
+    /// Fills the timeline up to `target_samples` (the sample position a
+    /// newly arrived block starts at) with the sticky value, so the block
+    /// applies from there rather than right after the previous one.
+    pub fn advance_to(&mut self, target_samples: usize) {
+        if target_samples > self.covered {
+            self.queue.push_back((None, target_samples - self.covered));
+            self.covered = target_samples;
+        }
+    }
+
     /// Value in effect at the start of a `unit_len`-sample temporal unit;
     /// consumes the unit from the timeline.
     pub fn take_for_unit(&mut self, unit_len: usize) -> Option<T> {
-        let value = self
-            .queue
-            .front()
-            .map(|(v, _)| v.clone())
-            .or_else(|| self.last.clone());
+        let value = match self.queue.front() {
+            Some((Some(v), _)) => Some(v.clone()),
+            _ => self.last.clone(),
+        };
         let mut remaining = unit_len;
         while remaining > 0 {
             let Some((_, duration)) = self.queue.front_mut() else {
+                // Dry: the unit is covered by the sticky value.
+                self.covered = self.covered.saturating_add(remaining);
                 break;
             };
             let consumed = remaining.min(*duration);
             *duration -= consumed;
             remaining -= consumed;
             if *duration == 0 {
-                let (v, _) = self.queue.pop_front().expect("checked non-empty");
-                self.last = Some(v);
+                if let (Some(v), _) = self.queue.pop_front().expect("checked non-empty") {
+                    self.last = Some(v);
+                }
             }
         }
         value
@@ -597,6 +620,7 @@ impl<T: Clone> ParamCursor<T> {
 
     /// Clears all queued timeline values and reset state.
     pub fn clear(&mut self) {
+        self.covered = 0;
         self.queue.clear();
         self.last = None;
     }

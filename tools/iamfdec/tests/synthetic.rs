@@ -971,3 +971,65 @@ fn external_renderer_output_gain_and_lifecycle() {
     assert_eq!(out.len(), FRAME * 6 * 2);
     assert_eq!(log.lock().unwrap().configs[0].0, SoundSystem::B);
 }
+
+/// Regression: demixing (and recon-gain) blocks had no gap filling. With
+/// blocks for units 0 and 2 only, unit 1 took unit 2's mode when the
+/// whole stream was pushed before pulling (and in the batch decoder), but
+/// kept unit 0's when pulling after every push. The previous value now
+/// stays in effect over the gap in every driver and chunking.
+#[test]
+fn demix_gap_keeps_previous_mode_under_any_chunking() {
+    let head = descriptors(scalable_element(7), mix_presentation(100, 101));
+    let mut units = Vec::new();
+    for unit in 0..3 {
+        let mut bytes = Vec::new();
+        match unit {
+            0 => bytes.extend(demix_block(7, FRAME as u32, &[1])),
+            2 => bytes.extend(demix_block(7, FRAME as u32, &[2])),
+            _ => {}
+        }
+        push_unit(&mut bytes, unit);
+        units.push(bytes);
+    }
+    let whole: Vec<u8> = head.iter().copied().chain(units.concat()).collect();
+
+    // Push everything, then pull.
+    let all_at_once = decode_all(&whole, SoundSystem::B).unwrap();
+
+    // Pull after every unit.
+    let mut settings = StreamSettings::default();
+    settings.layout = SoundSystem::B;
+    let mut decoder =
+        StreamDecoder::new_from_descriptors(&head, settings, &DefaultFactory).unwrap();
+    let mut incremental = Vec::new();
+    for unit in &units {
+        decoder.decode(unit).unwrap();
+        while let Some(bytes) = decoder.get_output_temporal_unit().unwrap() {
+            incremental.extend(bytes);
+        }
+    }
+    assert_eq!(all_at_once, incremental, "output depends on chunking");
+
+    // Unit 1 keeps mode 1: same as a stream that repeats unit 0's block.
+    let mut explicit = head.clone();
+    for (unit, mode) in [(0, 1), (1, 1), (2, 2)] {
+        explicit.extend(demix_block(7, FRAME as u32, &[mode]));
+        push_unit(&mut explicit, unit);
+    }
+    assert_eq!(all_at_once, decode_all(&explicit, SoundSystem::B).unwrap());
+
+    // The batch decoder agrees.
+    let descriptors = Descriptors::collect(&whole).unwrap();
+    let mut batch =
+        PresentationDecoder::new(&descriptors, 0, SoundSystem::B, &DefaultFactory).unwrap();
+    for obu in ObuIter::new(&whole) {
+        batch.process_obu(&obu.unwrap()).unwrap();
+    }
+    let mix = batch.finish().unwrap();
+    let batch_bytes: Vec<u8> = mix
+        .interleaved
+        .iter()
+        .flat_map(|&s| iamf_dec::post::quantize_s16(s).to_le_bytes())
+        .collect();
+    assert_eq!(batch_bytes, all_at_once, "batch differs from stream");
+}
