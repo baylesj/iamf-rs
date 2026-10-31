@@ -1,0 +1,9 @@
+# Development and CI toolchain. The published crates keep their MSRV
+# (`rust-version` in Cargo.toml, checked by the `msrv` CI job); this pin
+# only makes local builds and CI reproducible. It also covers
+# crates/iamf-roar, whose ROAR dependency needs Rust >= 1.97.1.
+# Fuzzing uses its own nightly pin in fuzz/rust-toolchain.toml.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
