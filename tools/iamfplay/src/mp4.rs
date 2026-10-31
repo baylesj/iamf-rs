@@ -132,7 +132,8 @@ struct SampleTables {
     chunk_runs: Vec<(u32, u32)>,
 }
 
-fn parse_stbl(stbl: &[u8]) -> Result<(Vec<u8>, SampleTables), Mp4Error> {
+/// `file_len` bounds what the sample tables may claim.
+fn parse_stbl(stbl: &[u8], file_len: usize) -> Result<(Vec<u8>, SampleTables), Mp4Error> {
     let stsd = find_box(stbl, *b"stsd").ok_or(Mp4Error("no stsd".into()))?;
     let mut c = Cursor::new(stsd);
     c.u32()?; // version/flags
@@ -155,16 +156,20 @@ fn parse_stbl(stbl: &[u8]) -> Result<(Vec<u8>, SampleTables), Mp4Error> {
         if version != 1 {
             return err(format!("unsupported iacb configuration_version {version}"));
         }
-        // configOBUs_size is a leb128.
-        let mut size = 0u32;
-        for shift in (0..).step_by(7) {
+        // configOBUs_size is a leb128 (at most 8 bytes, value < 2^32).
+        let mut size = 0u64;
+        for i in 0..8 {
             let byte = b.u8()?;
-            size |= u32::from(byte & 0x7f) << shift;
+            size |= u64::from(byte & 0x7f) << (7 * i);
             if byte & 0x80 == 0 {
                 break;
             }
+            if i == 7 {
+                return err("invalid configOBUs_size");
+            }
         }
-        descriptors = Some(b.bytes(size as usize)?.to_vec());
+        let size = usize::try_from(size).map_err(|_| Mp4Error("configOBUs too large".into()))?;
+        descriptors = Some(b.bytes(size)?.to_vec());
     }
     let Some(descriptors) = descriptors else {
         return err("no iamf sample entry in stsd");
@@ -179,8 +184,15 @@ fn parse_stbl(stbl: &[u8]) -> Result<(Vec<u8>, SampleTables), Mp4Error> {
         return err("implausible sample count");
     }
     let sizes = if uniform != 0 {
+        // Every sample must fit in the file.
+        if (sample_count as u64).saturating_mul(u64::from(uniform)) > file_len as u64 {
+            return err("samples larger than the file");
+        }
         vec![uniform; sample_count]
     } else {
+        if sample_count > c.remaining() / 4 {
+            return err("truncated stsz");
+        }
         (0..sample_count)
             .map(|_| c.u32())
             .collect::<Result<_, _>>()?
@@ -206,7 +218,8 @@ fn parse_stbl(stbl: &[u8]) -> Result<(Vec<u8>, SampleTables), Mp4Error> {
     let mut c = Cursor::new(stsc);
     c.u32()?;
     let n = c.u32()? as usize;
-    let mut chunk_runs = Vec::with_capacity(n);
+    // Each entry is 12 bytes; don't reserve more than the box holds.
+    let mut chunk_runs = Vec::with_capacity(n.min(c.remaining() / 12));
     for _ in 0..n {
         let first_chunk = c.u32()?;
         let samples_per_chunk = c.u32()?;
@@ -239,7 +252,7 @@ pub(crate) fn demux(file: &[u8]) -> Result<Mp4Iamf, Mp4Error> {
         let Some(stbl) = find_box(minf, *b"stbl") else {
             continue;
         };
-        if let Ok(parsed) = parse_stbl(stbl) {
+        if let Ok(parsed) = parse_stbl(stbl, file.len()) {
             found = Some(parsed);
             break;
         }
@@ -254,8 +267,13 @@ pub(crate) fn demux(file: &[u8]) -> Result<Mp4Iamf, Mp4Error> {
         return err("fragmented MP4 is not supported");
     }
 
-    // Expand chunk runs into per-sample file offsets.
-    let mut media = Vec::with_capacity(tables.sizes.iter().map(|&s| s as usize).sum());
+    // Expand chunk runs into per-sample file offsets. The media can't be
+    // larger than the file, whatever the sample tables claim.
+    let claimed = tables
+        .sizes
+        .iter()
+        .fold(0usize, |sum, &s| sum.saturating_add(s as usize));
+    let mut media = Vec::with_capacity(claimed.min(file.len()));
     let mut sample = 0usize;
     for (run, &(first_chunk, per_chunk)) in tables.chunk_runs.iter().enumerate() {
         let last_chunk = tables
@@ -265,18 +283,24 @@ pub(crate) fn demux(file: &[u8]) -> Result<Mp4Iamf, Mp4Error> {
                 next_first
             });
         for chunk in first_chunk..last_chunk {
-            let Some(&base) = tables.chunk_offsets.get(chunk as usize - 1) else {
+            // stsc chunk numbers are 1-based; 0 is invalid.
+            let Some(&base) = (chunk as usize)
+                .checked_sub(1)
+                .and_then(|i| tables.chunk_offsets.get(i))
+            else {
                 break;
             };
-            let mut offset = base as usize;
+            let Ok(mut offset) = usize::try_from(base) else {
+                return err("chunk outside file bounds");
+            };
             for _ in 0..per_chunk {
                 let Some(&size) = tables.sizes.get(sample) else {
                     break;
                 };
-                let end = offset + size as usize;
-                if end > file.len() {
-                    return err("sample outside file bounds");
-                }
+                let end = match offset.checked_add(size as usize) {
+                    Some(end) if end <= file.len() => end,
+                    _ => return err("sample outside file bounds"),
+                };
                 media.extend_from_slice(&file[offset..end]);
                 offset = end;
                 sample += 1;
@@ -366,6 +390,69 @@ mod tests {
         let demuxed = demux(&file).expect("roundtrip demux");
         assert_eq!(demuxed.descriptors, descriptors);
         assert_eq!(demuxed.media, samples.concat());
+    }
+
+    /// Regression: hostile sample tables in a few hundred bytes used to
+    /// reserve gigabytes (aborting the player) or overflow arithmetic.
+    #[test]
+    fn hostile_sample_tables_are_errors() {
+        let iacb = boxed(*b"iacb", &[1, 0]);
+        let mut entry = vec![0u8; 28];
+        entry.extend(iacb);
+        let mut stsd = vec![0, 0, 0, 0, 0, 0, 0, 1];
+        stsd.extend(boxed(*b"iamf", &entry));
+        let stsd = boxed(*b"stsd", &stsd);
+        let table = |name: [u8; 4], fields: &[u32]| {
+            boxed(
+                name,
+                &fields
+                    .iter()
+                    .flat_map(|f| f.to_be_bytes())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let file = |stbl: Vec<u8>| {
+            let minf = boxed(*b"minf", &boxed(*b"stbl", &stbl));
+            let moov = boxed(*b"moov", &boxed(*b"trak", &boxed(*b"mdia", &minf)));
+            [boxed(*b"ftyp", b"iamf"), moov].concat()
+        };
+        for stbl in [
+            // 2^24 samples of 4 GB each, uniform size.
+            [
+                stsd.clone(),
+                table(*b"stsz", &[0, u32::MAX, 1 << 24]),
+                table(*b"stco", &[0, 1, 0]),
+                table(*b"stsc", &[0, 1, 1, 1, 1]),
+            ]
+            .concat(),
+            // 2^32 - 1 stsc entries.
+            [
+                stsd.clone(),
+                table(*b"stsz", &[0, 4, 1]),
+                table(*b"stco", &[0, 1, 0]),
+                table(*b"stsc", &[0, u32::MAX]),
+            ]
+            .concat(),
+            // First chunk 0 and a chunk offset past the end.
+            [
+                stsd.clone(),
+                table(*b"stsz", &[0, 4, 1]),
+                table(*b"stco", &[0, 1, u32::MAX]),
+                table(*b"stsc", &[0, 1, 0, 1, 1]),
+            ]
+            .concat(),
+        ] {
+            assert!(demux(&file(stbl)).is_err());
+        }
+        // A configOBUs_size leb128 longer than 8 bytes.
+        let mut entry = vec![0u8; 28];
+        entry.extend(boxed(
+            *b"iacb",
+            &[1, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01],
+        ));
+        let mut bad = vec![0, 0, 0, 0, 0, 0, 0, 1];
+        bad.extend(boxed(*b"iamf", &entry));
+        assert!(parse_stbl(&boxed(*b"stsd", &bad), 1 << 20).is_err());
     }
 
     #[test]
