@@ -244,13 +244,27 @@ fn decode_to_wav(data: &[u8], out_path: &str, opts: &Options) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Byte size of the data chunk for `samples` s16 samples, if the RIFF
+/// size fields (u32, data plus a 36-byte header) can hold it. Larger
+/// output used to wrap and write a corrupt header.
+fn wav_data_len(samples: usize) -> Option<u32> {
+    let data_len = u32::try_from(samples.checked_mul(2)?).ok()?;
+    data_len.checked_add(36)?;
+    Some(data_len)
+}
+
 fn write_wav_s16(
     path: &str,
     samples: &[f32],
     channels: u16,
     sample_rate: u32,
 ) -> std::io::Result<()> {
-    let data_len = (samples.len() * 2) as u32;
+    let data_len = wav_data_len(samples.len()).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "output exceeds the 4 GiB WAV size limit",
+        )
+    })?;
     let byte_rate = sample_rate * u32::from(channels) * 2;
     let mut wav = Vec::with_capacity(44 + samples.len() * 2);
     wav.extend(b"RIFF");
@@ -337,5 +351,21 @@ fn describe(descriptor: &Descriptor) {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wav_size_limit() {
+        assert_eq!(wav_data_len(10), Some(20));
+        assert_eq!(
+            wav_data_len((u32::MAX as usize - 36) / 2),
+            Some(u32::MAX - 37)
+        );
+        assert_eq!(wav_data_len(u32::MAX as usize / 2), None);
+        assert_eq!(wav_data_len(usize::MAX), None);
     }
 }
