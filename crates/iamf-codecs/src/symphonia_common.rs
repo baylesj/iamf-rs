@@ -14,18 +14,11 @@ pub(crate) struct SymphoniaSubstreamDecoder<D: Decoder> {
 }
 
 impl<D: Decoder> SymphoniaSubstreamDecoder<D> {
-    pub(crate) fn new(decoder: D, channels: u8, sample_rate: u32) -> Self {
-        Self {
-            decoder,
-            channels,
-            sample_rate,
-            scratch: None,
-        }
-    }
-}
-
-impl<D: Decoder> SubstreamDecoder for SymphoniaSubstreamDecoder<D> {
-    fn decode(&mut self, packet: &[u8], out: &mut DecodedFrame) -> Result<(), DecodeError> {
+    fn decode_unguarded(
+        &mut self,
+        packet: &[u8],
+        out: &mut DecodedFrame,
+    ) -> Result<(), DecodeError> {
         let packet = Packet::new_from_slice(0, 0, 0, packet);
         let decoded = self
             .decoder
@@ -46,6 +39,30 @@ impl<D: Decoder> SubstreamDecoder for SymphoniaSubstreamDecoder<D> {
         out.channels = self.channels;
         out.sample_rate = self.sample_rate;
         Ok(())
+    }
+
+    pub(crate) fn new(decoder: D, channels: u8, sample_rate: u32) -> Self {
+        Self {
+            decoder,
+            channels,
+            sample_rate,
+            scratch: None,
+        }
+    }
+}
+
+impl<D: Decoder> SubstreamDecoder for SymphoniaSubstreamDecoder<D> {
+    fn decode(&mut self, packet: &[u8], out: &mut DecodedFrame) -> Result<(), DecodeError> {
+        // symphonia asserts on some malformed packets. The adapters
+        // pre-check what they can; this keeps any remaining panic from
+        // unwinding into the decoder (it cannot help panic=abort builds).
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.decode_unguarded(packet, out)
+        }))
+        .unwrap_or_else(|_| {
+            self.decoder.reset();
+            Err(DecodeError::CorruptPacket("codec panicked".into()))
+        })
     }
 
     fn reset(&mut self) {
