@@ -177,6 +177,13 @@ impl ChannelReconstructor {
                 return Err(DecodeError::Unimplemented("reserved loudspeaker layouts"));
             }
         }
+        if layers.windows(2).any(|pair| {
+            !crate::channels::layer_extends(pair[0].loudspeaker_layout, pair[1].loudspeaker_layout)
+        }) {
+            return Err(DecodeError::InvalidDescriptors(
+                "each scalable layer must add channels to the previous one".into(),
+            ));
+        }
 
         // Layer selection: exact sound-system match, else the first layer
         // with more channels than the playback layout, else the highest.
@@ -445,6 +452,27 @@ pub fn ambisonics_from_planes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: a scalable element whose layers shrink (here 5.1.4,
+    /// then 5.1.2) used to underflow in the new-channel computation when
+    /// the upper layer was selected; it is now invalid descriptors.
+    #[test]
+    fn shrinking_layers_are_invalid() {
+        let layer = |loudspeaker_layout| ChannelAudioLayer {
+            loudspeaker_layout,
+            substream_count: 1,
+            coupled_substream_count: 1,
+            recon_gain_is_present: false,
+            output_gain: None,
+            expanded_loudspeaker_layout: None,
+        };
+        for target in [SoundSystem::C, SoundSystem::D, SoundSystem::Binaural] {
+            assert!(matches!(
+                ChannelReconstructor::with_layer_selection(&[layer(4), layer(3)], target, true),
+                Err(DecodeError::InvalidDescriptors(_))
+            ));
+        }
+    }
     use iamf_obu::descriptors::ChannelAudioLayer;
 
     fn layer(layout: u8, substreams: u8, coupled: u8) -> ChannelAudioLayer {
