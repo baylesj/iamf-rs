@@ -233,8 +233,19 @@ pub struct CodecConfig {
     pub decoder_config: DecoderConfig,
 }
 
+/// LPCM sample rates allowed by §3.6.4.
+const LPCM_SAMPLE_RATES: [u32; 5] = [16000, 32000, 44100, 48000, 96000];
+
+/// FLAC sample rates allowed by §3.6.3: the "common" rates of RFC 9639
+/// §9.1.2 (sample rate bits 0b0001..=0b1011).
+const FLAC_SAMPLE_RATES: [u32; 11] = [
+    88200, 176400, 192000, 8000, 16000, 22050, 24000, 32000, 44100, 48000, 96000,
+];
+
 impl CodecConfig {
-    /// Parses a codec config OBU payload.
+    /// Parses a codec config OBU payload. LPCM and FLAC sample rates
+    /// outside the sets the spec allows are rejected, since downstream
+    /// stages (resampling, timing) assume a sane rate.
     pub fn parse(r: &mut ByteReader<'_>) -> Result<Self> {
         let codec_config_id = r.read_leb128()?;
         let codec_id = CodecId::from_fourcc(r.read_fourcc()?);
@@ -255,10 +266,16 @@ impl CodecConfig {
             CodecId::Flac => Self::parse_flac_streaminfo(r)?,
             CodecId::Lpcm => {
                 let flags = r.read_u8()?;
+                let sample_size = r.read_u8()?;
+                let sample_rate = r.read_u32_be()?;
+                // §3.6.4: sample_rate SHALL be one of these.
+                if !LPCM_SAMPLE_RATES.contains(&sample_rate) {
+                    return Err(invalid(r));
+                }
                 DecoderConfig::Lpcm {
                     little_endian: flags & 0x01 != 0,
-                    sample_size: r.read_u8()?,
-                    sample_rate: r.read_u32_be()?,
+                    sample_size,
+                    sample_rate,
                 }
             }
             CodecId::AacLc => Self::parse_aac_decoder_config(r)?,
@@ -286,8 +303,14 @@ impl CodecConfig {
                     return Err(invalid(r));
                 }
                 let packed = u32::from_be_bytes(streaminfo[10..14].try_into().unwrap());
+                let sample_rate = packed >> 12 & 0xf_ffff;
+                // §3.6.3: one of the common rates of RFC 9639 §9.1.2
+                // (sample rate bits 0b0001..=0b1011).
+                if !FLAC_SAMPLE_RATES.contains(&sample_rate) {
+                    return Err(invalid(r));
+                }
                 return Ok(DecoderConfig::Flac {
-                    sample_rate: packed >> 12 & 0xf_ffff,
+                    sample_rate,
                     bits_per_sample: ((packed >> 4 & 0x1f) + 1) as u8,
                     streaminfo,
                 });
@@ -1427,6 +1450,51 @@ mod tests {
                 mapping_family: 0,
             }
         );
+    }
+
+    /// Regression: LPCM and FLAC sample rates outside the spec's sets
+    /// (§3.6.3, §3.6.4) used to be accepted; a rate of 0 later divided by
+    /// zero in the binaural resampler, and MHz rates made it allocate GBs.
+    #[test]
+    fn codec_config_rejects_unsupported_sample_rates() {
+        let lpcm = |rate: u32| {
+            let mut payload = vec![0x01];
+            payload.extend(b"ipcm");
+            payload.push(0x40);
+            payload.extend(0i16.to_be_bytes());
+            payload.extend([0x01, 16]);
+            payload.extend(rate.to_be_bytes());
+            CodecConfig::parse(&mut ByteReader::new(&payload))
+        };
+        for rate in [0, 1, 8000, 22050, 4_800_000, u32::MAX] {
+            assert!(
+                matches!(lpcm(rate), Err(Error::InvalidDescriptor { .. })),
+                "{rate}"
+            );
+        }
+        for rate in LPCM_SAMPLE_RATES {
+            lpcm(rate).unwrap();
+        }
+        let flac = |rate: u32| {
+            let mut payload = vec![0x01];
+            payload.extend(b"fLaC");
+            payload.push(0x40);
+            payload.extend(0i16.to_be_bytes());
+            payload.extend([0x80, 0x00, 0x00, 0x22]); // last, STREAMINFO, 34
+            payload.extend([0x00, 0x40, 0x00, 0x40, 0, 0, 0, 0, 0, 0]);
+            payload.extend((rate << 12 | 1 << 9 | 15 << 4).to_be_bytes());
+            payload.extend([0u8; 20]);
+            CodecConfig::parse(&mut ByteReader::new(&payload))
+        };
+        for rate in [0, 1, 50_000, 655_350, 0xf_ffff] {
+            assert!(
+                matches!(flac(rate), Err(Error::InvalidDescriptor { .. })),
+                "{rate}"
+            );
+        }
+        for rate in FLAC_SAMPLE_RATES {
+            flac(rate).unwrap();
+        }
     }
 
     #[test]
