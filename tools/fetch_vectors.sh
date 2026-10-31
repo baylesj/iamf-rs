@@ -4,15 +4,20 @@
 # .textproto describing it (is_valid_to_decode, codec, element types).
 #
 # Usage:
-#   tools/fetch_vectors.sh              # curated default set
+#   tools/fetch_vectors.sh              # curated v1.1 and v2.0 sets
 #   tools/fetch_vectors.sh test_000123  # specific vector(s)
 #   tools/fetch_vectors.sh --all        # every vector (~333, slow)
-#   tools/fetch_vectors.sh --v2         # curated IAMF v2.0 vectors (opt-in)
+#   tools/fetch_vectors.sh --v2         # only the curated IAMF v2.0 set
 #   tools/fetch_vectors.sh --demo      # real program material from the
 #                                      # iamf-tools web demo (for iamfplay)
 set -euo pipefail
 
-BASE_URL="https://raw.githubusercontent.com/AOMediaCodec/libiamf/main/tests"
+# Pinned upstream revisions, so that CI results only change when these do
+# (the CI vector cache is keyed on this file). Bump deliberately.
+LIBIAMF_REV="63cafdd9b2d7bdba08cfeec2f008718198d7362e"
+IAMF_TOOLS_REV="892f29f6de5e4e37d483e768bf00bcf580495d68"
+
+BASE_URL="https://raw.githubusercontent.com/AOMediaCodec/libiamf/$LIBIAMF_REV/tests"
 API_URL="https://api.github.com/repos/AOMediaCodec/libiamf/contents/tests"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/tests/vectors"
 
@@ -56,9 +61,9 @@ LOCAL_DEMO_DIR="${IAMF_DEMO_DIR:-}"
 
 if [[ "${1:-}" == "--demo" ]]; then
   # Produced demo content shipped with the iamf-tools web demo (the
-  # gh_pages/ directory of its main branch): 7.1.4 music in three codecs
+  # gh_pages/ directory at the pinned revision): 7.1.4 music in three codecs
   # plus a ~100 s third-order ambisonics soundtrack. Input for iamfplay.
-  DEMO_URL="https://raw.githubusercontent.com/AOMediaCodec/iamf-tools/main/gh_pages/web_demo/data"
+  DEMO_URL="https://raw.githubusercontent.com/AOMediaCodec/iamf-tools/$IAMF_TOOLS_REV/gh_pages/web_demo/data"
   DEMO_DEST="$(cd "$(dirname "$0")/.." && pwd)/tests/demo"
   mkdir -p "$DEMO_DEST"
   for name in 7_1_4_Opus 7_1_4_Flac 7_1_4_PCM16_48000 \
@@ -85,12 +90,12 @@ if [[ "${1:-}" == "--all" ]]; then
     echo "Found local tests dir: $LOCAL_TESTS_DIR"
     vectors=$(ls "$LOCAL_TESTS_DIR" | grep -oE '^test_[0-9_a-z]+\.iamf$' | sed -E 's/\.iamf$//' | sort -u)
   else
-    vectors=$(curl -fsSL "$API_URL?per_page=100" --get --data-urlencode "ref=main" |
+    vectors=$(curl -fsSL "$API_URL?per_page=100" --get --data-urlencode "ref=$LIBIAMF_REV" |
       grep -oE '"name": *"test_[0-9_a-z]+\.iamf"' | sed -E 's/.*"(test_[^"]+)\.iamf"/\1/')
     # The contents API paginates implicitly by directory listing; fall back to
     # the git tree API which returns everything in one call.
     if [[ $(echo "$vectors" | wc -l) -lt 100 ]]; then
-      vectors=$(curl -fsSL "https://api.github.com/repos/AOMediaCodec/libiamf/git/trees/main?recursive=1" |
+      vectors=$(curl -fsSL "https://api.github.com/repos/AOMediaCodec/libiamf/git/trees/$LIBIAMF_REV?recursive=1" |
         grep -oE '"path": *"tests/test_[0-9_a-z]+\.iamf"' | sed -E 's|.*"tests/(test_[^"]+)\.iamf"|\1|')
     fi
   fi
