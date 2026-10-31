@@ -361,3 +361,55 @@ fn failed_reset_with_new_mix_can_be_retried() {
     decoder.signal_end_of_decoding();
     assert_eq!(drain(&mut decoder), 1);
 }
+
+/// A temporal unit that never completes used to buffer decoded frames
+/// without limit (12 KB of input grew to 65 MB). A substream may now be
+/// at most one frame ahead: a frame that starts a new unit before the
+/// previous one completed drops the incomplete unit.
+#[test]
+fn incomplete_units_do_not_accumulate() {
+    let mut descriptors = sequence_header();
+    descriptors.extend(lpcm_codec(48000, FRAME as u32));
+    descriptors.extend(dual_mono_element(1, [0, 1]));
+    descriptors.extend(mix(7, &[1], 0));
+    let mut decoder = stream_decoder(&descriptors, SoundSystem::A);
+    // Substream 1 never arrives (and no temporal delimiters).
+    decoder.decode(&obu(6, &pcm(FRAME, 1, 100))).unwrap();
+    for _ in 0..1000 {
+        assert!(decoder.decode(&obu(6, &pcm(FRAME, 1, 100))).is_err());
+    }
+    // Only the newest substream-0 frame is buffered: one more frame for
+    // substream 1 completes exactly one unit.
+    decoder.decode(&obu(7, &pcm(FRAME, 1, 100))).unwrap();
+    decoder.signal_end_of_decoding();
+    assert_eq!(drain(&mut decoder), 1);
+}
+
+/// A temporal delimiter in the middle of a unit used to fail on every
+/// later delimiter too; the incomplete unit is now dropped.
+#[test]
+fn misaligned_delimiter_resynchronizes() {
+    let mut descriptors = sequence_header();
+    descriptors.extend(lpcm_codec(48000, FRAME as u32));
+    descriptors.extend(dual_mono_element(1, [0, 1]));
+    descriptors.extend(mix(7, &[1], 0));
+    let mut decoder = stream_decoder(&descriptors, SoundSystem::A);
+    let unit = |out: &mut Vec<u8>| {
+        out.extend(obu(4, &[]));
+        out.extend(obu(6, &pcm(FRAME, 1, 100)));
+        out.extend(obu(7, &pcm(FRAME, 1, 100)));
+    };
+    let mut lossy = Vec::new();
+    lossy.extend(obu(4, &[]));
+    lossy.extend(obu(6, &pcm(FRAME, 1, 100))); // substream 1 lost
+    assert!(decoder.decode(&lossy).is_ok());
+    let mut next = Vec::new();
+    unit(&mut next);
+    assert!(decoder.decode(&next).is_err()); // reports the lost unit
+    let mut rest = Vec::new();
+    unit(&mut rest);
+    unit(&mut rest);
+    decoder.decode(&rest).unwrap();
+    decoder.signal_end_of_decoding();
+    assert_eq!(drain(&mut decoder), 3);
+}
