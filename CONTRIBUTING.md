@@ -40,6 +40,12 @@ CI also runs a few more jobs:
 - **ROAR:** `crates/iamf-roar` is outside the workspace. If you change it,
   run fmt, clippy and test with `--manifest-path crates/iamf-roar/Cargo.toml`.
 - **Fuzz smoke test:** A short run of each fuzz target. See below.
+- **Chromium adapter:** Builds the `iamf-capi` staticlib and runs
+  `examples/chromium/iamf_rs_decoder_adapter_test.cc` against it.
+- **WASM demo:** Rebuilds `iamf-obr-wasm` for `wasm32-unknown-unknown` and
+  checks that it matches the committed `docs/obr_binaural.wasm`. If you
+  change `iamf-dec`'s binaural code or `iamf-obr-wasm`, rebuild that file
+  with the command in [crates/iamf-obr-wasm/README.md](crates/iamf-obr-wasm/README.md).
 
 ## Fuzzing
 
@@ -67,6 +73,8 @@ longer, with debug assertions, and uses the full vector set.
 - **Don't edit generated files by hand.** Regenerate `matrices.rs` and
   `assets/binaural/*.wav` with `tools/extract_*.py`, against pinned
   upstream revisions.
+- **Every bug fix comes with a regression test** that fails without the
+  fix. [docs/review-2026-10.md](docs/review-2026-10.md) lists examples.
 - **Test new parser code with bad input.** Add a fuzz corpus seed or unit
   tests that feed it malformed input.
 
