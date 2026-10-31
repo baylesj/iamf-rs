@@ -63,11 +63,15 @@ jobs:
             echo "error: aom-roar is in the workspace dependency graph" >&2
             exit 1
           fi
-      - name: Compile-check reference Chromium adapter
+      - name: Build and run the reference Chromium adapter test
         run: |
-          c++ -std=c++17 -fsyntax-only \
+          cargo build --locked --release -p iamf-capi
+          c++ -std=c++17 -Wall -Werror \
             -Iexamples/chromium -Icrates/iamf-capi/include \
-            examples/chromium/iamf_rs_decoder_adapter.cc
+            examples/chromium/iamf_rs_decoder_adapter.cc \
+            examples/chromium/iamf_rs_decoder_adapter_test.cc \
+            target/release/libiamf_rs.a -lpthread -ldl -lm -o adapter_test
+          ./adapter_test tests/vectors/test_000002.iamf
 
   msrv:
     runs-on: ubuntu-latest
