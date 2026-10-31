@@ -403,15 +403,16 @@ impl ParameterBlock {
             (csd, _) => duration.div_ceil(csd),
         };
 
-        let mut subblocks = Vec::new();
+        let mut subblocks: Vec<ParameterSubblock> = Vec::new();
         for i in 0..num_subblocks {
-            // A subblock consumes at least one byte; bail before the loop
-            // can be driven far by a hostile count.
+            // A subblock normally consumes at least one byte; bail before
+            // the loop can be driven far by a hostile count.
             if r.is_empty() {
                 return Err(Error::UnexpectedEof {
                     offset: r.position(),
                 });
             }
+            let subblock_start = r.position();
             let subblock_duration = if constant_subblock_duration == 0 {
                 if definition.mode {
                     r.read_leb128()?
@@ -439,6 +440,28 @@ impl ParameterBlock {
                     SubblockData::Position(pos)
                 }
             };
+            if r.position() == subblock_start {
+                // Only a recon-gain subblock for an element without
+                // recon-gain layers carries no bytes. Its remaining
+                // subblocks are identical and empty, so they are merged
+                // into this one: a 6-byte block could otherwise expand
+                // into billions of subblocks (hundreds of GB).
+                let remaining = if constant_subblock_duration == 0 {
+                    definition.subblock_durations[i as usize..]
+                        .iter()
+                        .fold(0u32, |sum, &d| sum.saturating_add(d))
+                } else {
+                    let elapsed = subblocks
+                        .iter()
+                        .fold(0u32, |sum, b| sum.saturating_add(b.duration));
+                    duration.saturating_sub(elapsed)
+                };
+                subblocks.push(ParameterSubblock {
+                    duration: remaining,
+                    data,
+                });
+                break;
+            }
             subblocks.push(ParameterSubblock {
                 duration: subblock_duration,
                 data,
@@ -661,6 +684,48 @@ mod tests {
         };
         assert_eq!(per_layer[0], None);
         assert_eq!(per_layer[1], Some((0x05, vec![200, 180])));
+    }
+
+    /// Regression: recon-gain subblocks for an element without recon-gain
+    /// layers carry no bytes, so the "at least one byte per subblock"
+    /// guard let a 6-byte block declare u32::MAX subblocks (an OOM abort).
+    /// The empty subblocks are now merged into one.
+    #[test]
+    fn empty_recon_gain_subblocks_are_merged() {
+        let layer = ChannelAudioLayer {
+            loudspeaker_layout: 2,
+            substream_count: 1,
+            coupled_substream_count: 0,
+            recon_gain_is_present: false,
+            output_gain: None,
+            expanded_loudspeaker_layout: None,
+        };
+        let layers = [layer];
+        // Mode 1: duration u32::MAX, constant_subblock_duration 1, then a
+        // trailing byte so the payload is not empty.
+        let mut payload = vec![0x07];
+        payload.extend([0xff, 0xff, 0xff, 0xff, 0x0f]);
+        payload.push(0x01);
+        payload.push(0x00);
+        let block = ParameterBlock::parse(
+            &payload,
+            &definition(true),
+            &ParamContext::ReconGain(&layers),
+        )
+        .unwrap();
+        assert_eq!(block.subblocks.len(), 1);
+        assert_eq!(block.subblocks[0].duration, u32::MAX);
+
+        // Mode 0 with explicit durations: the merged subblock covers the
+        // rest of the definition's durations.
+        let mut def = definition(false);
+        def.duration = 30;
+        def.constant_subblock_duration = 0;
+        def.subblock_durations = vec![10, 10, 10];
+        let block =
+            ParameterBlock::parse(&[0x07, 0x00], &def, &ParamContext::ReconGain(&layers)).unwrap();
+        assert_eq!(block.subblocks.len(), 1);
+        assert_eq!(block.subblocks[0].duration, 30);
     }
 
     #[test]
