@@ -263,6 +263,21 @@ pub unsafe extern "C" fn obr_renderer_destroy(renderer: *mut ObrWasmRenderer) {
 mod tests {
     use super::*;
 
+    /// Regression: a sample rate of 0 divided by zero in the HRIR
+    /// resampler, aborting the process (a trap in WASM). Unsupported
+    /// rates now return null.
+    #[test]
+    fn unsupported_sample_rates_return_null() {
+        for rate in [0, 4_800_000] {
+            assert!(obr_renderer_create_for_channels(12, 0, 128, rate, 1).is_null());
+            assert!(obr_renderer_create_hoa(3, 0, 128, rate).is_null());
+        }
+        let renderer = obr_renderer_create_for_channels(12, 0, 128, 44_100, 1);
+        assert!(!renderer.is_null());
+        // SAFETY: created above and destroyed once.
+        unsafe { obr_renderer_destroy(renderer) };
+    }
+
     #[test]
     fn renders_7_1_4_block_at_128_frames() {
         let renderer = obr_renderer_create_for_channels(12, 0, 128, 48_000, 1);

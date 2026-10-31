@@ -12,7 +12,16 @@ fn gcd(a: usize, b: usize) -> usize {
     if b == 0 { a } else { gcd(b, a % b) }
 }
 
+/// Highest rate the HRIRs are resampled to. The filters grow with the
+/// rate ratio, and IAMF's highest rate is 192 kHz.
+const MAX_RATE: u32 = 384_000;
+
 pub(super) fn rates_supported(source: u32, destination: u32) -> bool {
+    // gcd(r, 0) = r made a zero rate look supported; resample() then
+    // divided by zero.
+    if source == 0 || destination == 0 || source.max(destination) > MAX_RATE {
+        return false;
+    }
     let g = gcd(source as usize, destination as usize);
     let max_rate = (source.max(destination) as usize) / g;
     let mut filter_length = max_rate * TRANSITION_BANDWIDTH_RATIO;
@@ -123,6 +132,18 @@ pub(super) fn resample(input: &[f32], source: u32, destination: u32) -> Vec<f32>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: rates_supported(48000, 0) was true (gcd(48000, 0) =
+    /// 48000) and resample() then divided by zero; multiples of 48 kHz up
+    /// to ~60 MHz also passed and grew the filters with the ratio.
+    #[test]
+    fn zero_and_huge_rates_unsupported() {
+        assert!(!rates_supported(48_000, 0));
+        assert!(!rates_supported(0, 48_000));
+        assert!(!rates_supported(48_000, 4_800_000));
+        assert!(rates_supported(48_000, 96_000));
+        assert!(rates_supported(48_000, 44_100));
+    }
 
     #[test]
     fn identity_when_rates_match() {
