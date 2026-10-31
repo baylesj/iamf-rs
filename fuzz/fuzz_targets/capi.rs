@@ -20,7 +20,7 @@ use iamf_rs::{
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    if data.len() < 3 {
+    if data.len() < 4 {
         return;
     }
     // First bytes steer the settings so all layouts/orderings/types are hit.
@@ -35,12 +35,14 @@ fuzz_target!(|data: &[u8]| {
         channel_ordering: i32::from(data[1] & 1),
         disable_trim_start: data[1] >> 1 & 1,
         disable_trim_end: data[1] >> 2 & 1,
-        requested_profiles: u32::from(data[2] & 0x07),
+        // All six profile bits, so the IAMF v2.0 paths (objects, two sub
+        // mixes, expanded layouts) are reachable; 0 means the v1.1 set.
+        requested_profiles: u32::from(data[3] & 0x3f),
         enable_limiter: data[2] >> 3 & 1,
         enable_loudness_normalization: data[2] >> 4 & 1,
         loudness_target_db: -24.0,
     };
-    let payload = &data[3..];
+    let payload = &data[4..];
 
     // SAFETY: all pointers passed below are valid for the stated lengths,
     // and the handle is used single-threaded and destroyed exactly once.
