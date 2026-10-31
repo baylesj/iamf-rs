@@ -132,6 +132,12 @@ std::unique_ptr<IamfRsDecoderAdapter> IamfRsDecoderAdapter::CreateFromDescriptor
   if (input_buffer == nullptr || input_buffer_size == 0) {
     return nullptr;
   }
+  /* iamf-tools accepts no stream when no profile is requested, but
+   * iamfrs_settings.requested_profiles = 0 means "the default v1.1 set".
+   * Refuse here so both decoders behave alike. */
+  if (settings.requested_profile_versions.empty()) {
+    return nullptr;
+  }
   const iamfrs_settings c_settings = SettingsToC(settings);
   iamfrs_decoder* decoder = nullptr;
   if (iamfrs_decoder_create_from_descriptors(input_buffer, input_buffer_size,
