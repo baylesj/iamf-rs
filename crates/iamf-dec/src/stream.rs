@@ -1037,14 +1037,19 @@ impl StreamDecoder {
     /// §3.9: a temporal delimiter sits on a temporal-unit boundary, so
     /// every substream of every element must have the same number of
     /// buffered frames. A mismatch means a frame was lost or duplicated.
-    fn check_unit_alignment(&self) -> Result<(), DecodeError> {
+    /// On a mismatch the incomplete unit is dropped, so decoding resumes
+    /// aligned with the next unit.
+    fn check_unit_alignment(&mut self) -> Result<(), DecodeError> {
         let mut depth = None;
         for slot in &self.slots {
             for q in &slot.queues {
                 let d = q.len();
                 if *depth.get_or_insert(d) != d {
+                    self.drop_partial_unit();
                     return Err(DecodeError::CorruptPacket(
-                        "temporal delimiter mid-unit: substreams have unequal frame counts".into(),
+                        "temporal delimiter mid-unit: substreams have unequal frame counts; \
+                         dropped the incomplete unit"
+                            .into(),
                     ));
                 }
             }
@@ -1059,6 +1064,27 @@ impl StreamDecoder {
         trim_start: u32,
         trim_end: u32,
     ) -> Result<(), DecodeError> {
+        // §3.9: the OBUs of a temporal unit are contiguous, so a substream
+        // is never more than one frame ahead of another. A second frame for
+        // a substream whose unit is still incomplete means that unit lost
+        // frames: drop it (bounding what an incomplete stream can buffer)
+        // and report the loss after queuing this frame.
+        let min_depth = self.min_queue_depth();
+        let ahead = self.slots.iter().any(|slot| {
+            slot.substream_ids
+                .iter()
+                .zip(&slot.queues)
+                .any(|(&id, q)| id == substream_id && q.len() > min_depth)
+        });
+        let lost = if ahead {
+            self.drop_partial_unit();
+            Some(DecodeError::CorruptPacket(format!(
+                "audio frame for substream {substream_id} began a new temporal unit before the \
+                 previous one completed; dropped the incomplete unit"
+            )))
+        } else {
+            None
+        };
         for slot in &mut self.slots {
             let Some(index) = slot.substream_ids.iter().position(|&id| id == substream_id) else {
                 continue;
@@ -1079,9 +1105,37 @@ impl StreamDecoder {
                 trim_start,
                 trim_end,
             });
-            return Ok(());
+            break;
         }
-        Ok(())
+        lost.map_or(Ok(()), Err)
+    }
+
+    /// Fewest frames buffered on any substream: the number of complete
+    /// temporal units.
+    fn min_queue_depth(&self) -> usize {
+        self.slots
+            .iter()
+            .flat_map(|slot| slot.queues.iter().map(VecDeque::len))
+            .min()
+            .unwrap_or(0)
+    }
+
+    /// Drops the frames of the incomplete temporal unit (those beyond the
+    /// complete units), so that every substream is aligned again.
+    fn drop_partial_unit(&mut self) {
+        let complete = self.min_queue_depth();
+        for slot in &mut self.slots {
+            for (index, q) in slot.queues.iter_mut().enumerate() {
+                while q.len() > complete {
+                    let frame = q.pop_back().expect("longer than complete");
+                    if index == 0 {
+                        slot.samples_decoded = slot.samples_decoded.saturating_sub(
+                            frame.samples.len() / usize::from(slot.channels[0].max(1)),
+                        );
+                    }
+                }
+            }
+        }
     }
 
     fn handle_parameter_block(&mut self, payload: &[u8]) -> Result<(), DecodeError> {
