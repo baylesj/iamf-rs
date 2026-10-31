@@ -203,6 +203,15 @@ impl ExternalRenderer {
     }
 }
 
+/// Length of the OBU at the start of `bytes` from its outer framing alone
+/// (header byte, obu_size), when both are present and intact.
+fn outer_obu_len(bytes: &[u8]) -> Option<usize> {
+    let mut reader = ByteReader::new(bytes.get(1..)?);
+    let size = reader.read_leb128().ok()? as usize;
+    let len = 1 + reader.position() + size;
+    (len <= bytes.len()).then_some(len)
+}
+
 /// Output channel permutation for a target layout and ordering
 /// (iamf-tools `ChannelReorderer`): entry i is the rendered-channel index
 /// written to interleaved slot i.
@@ -963,33 +972,49 @@ impl StreamDecoder {
         result
     }
 
+    /// Handles every complete OBU in `pending[*consumed..]`.
+    ///
+    /// An OBU that fails is still consumed, so the next call resumes after
+    /// it instead of failing on it again. A malformed OBU is skipped by
+    /// its outer framing (header and obu_size) when that is intact;
+    /// otherwise the buffered input cannot be resynchronized and is
+    /// dropped.
     fn decode_pending(&mut self, pending: &[u8], consumed: &mut usize) -> Result<(), DecodeError> {
         loop {
-            let mut reader = ByteReader::new(&pending[*consumed..]);
+            let rest = &pending[*consumed..];
+            let mut reader = ByteReader::new(rest);
             match Obu::parse(&mut reader) {
                 Ok(obu) => {
-                    let advance = reader.position();
-                    let frame = AudioFrame::from_obu(&obu)
-                        .map_err(|e| DecodeError::CorruptPacket(e.to_string()))?;
-                    if let Some(frame) = frame {
-                        self.handle_frame(
-                            frame.substream_id,
-                            frame.data,
-                            frame.num_samples_to_trim_at_start,
-                            frame.num_samples_to_trim_at_end,
-                        )?;
-                    } else if obu.header.obu_type == ObuType::ParameterBlock {
-                        self.handle_parameter_block(obu.payload)?;
-                    } else if obu.header.obu_type == ObuType::TemporalDelimiter {
-                        self.check_unit_alignment()?;
-                    }
-                    // Descriptor OBUs after configuration are redundant
-                    // copies; ignored.
-                    *consumed += advance;
+                    *consumed += reader.position();
+                    self.handle_obu(&obu)?;
                 }
                 Err(Error::UnexpectedEof { .. }) => return Ok(()),
-                Err(e) => return Err(DecodeError::CorruptPacket(e.to_string())),
+                Err(e) => {
+                    *consumed += outer_obu_len(rest).unwrap_or(rest.len());
+                    return Err(DecodeError::CorruptPacket(e.to_string()));
+                }
             }
+        }
+    }
+
+    fn handle_obu(&mut self, obu: &Obu<'_>) -> Result<(), DecodeError> {
+        let frame =
+            AudioFrame::from_obu(obu).map_err(|e| DecodeError::CorruptPacket(e.to_string()))?;
+        if let Some(frame) = frame {
+            self.handle_frame(
+                frame.substream_id,
+                frame.data,
+                frame.num_samples_to_trim_at_start,
+                frame.num_samples_to_trim_at_end,
+            )
+        } else if obu.header.obu_type == ObuType::ParameterBlock {
+            self.handle_parameter_block(obu.payload)
+        } else if obu.header.obu_type == ObuType::TemporalDelimiter {
+            self.check_unit_alignment()
+        } else {
+            // Descriptor OBUs after configuration are redundant copies;
+            // ignored.
+            Ok(())
         }
     }
 
