@@ -1,6 +1,6 @@
 //! Audio frame OBU payloads (IAMF §3.9).
 
-use crate::{ByteReader, Obu, ObuType, Result};
+use crate::{ByteReader, Error, Obu, ObuType, Result};
 
 /// One coded audio frame for one substream.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +25,12 @@ impl<'a> AudioFrame<'a> {
             ObuType::AudioFrame => {
                 let mut r = ByteReader::new(obu.payload);
                 let id = r.read_leb128()?;
+                // §3.10: explicit_audio_substream_id SHALL be greater
+                // than 17; lower IDs belong to the implicit-ID OBU types
+                // and would alias their substreams.
+                if id <= MAX_IMPLICIT_SUBSTREAM_ID {
+                    return Err(Error::InvalidDescriptor { offset: 0 });
+                }
                 (id, r.rest())
             }
             _ => return Ok(None),
@@ -37,6 +43,10 @@ impl<'a> AudioFrame<'a> {
         }))
     }
 }
+
+/// Highest substream ID an implicit-ID audio frame OBU (types 6..=23)
+/// carries.
+const MAX_IMPLICIT_SUBSTREAM_ID: u32 = 17;
 
 #[cfg(test)]
 mod tests {
@@ -57,6 +67,29 @@ mod tests {
         let frame = AudioFrame::from_obu(&obus[1]).unwrap().unwrap();
         assert_eq!(frame.substream_id, 200);
         assert_eq!(frame.data, &[0xcc]);
+    }
+
+    /// Regression: explicit IDs 0..=17 are reserved for the implicit-ID
+    /// OBU types (§3.10) and used to be accepted, aliasing substreams.
+    #[test]
+    fn explicit_id_at_most_17_rejected() {
+        for id in [0u8, 3, 17] {
+            let data = [5 << 3, 0x02, id, 0xcc];
+            let obus: Vec<_> = ObuIter::new(&data).collect::<Result<_>>().unwrap();
+            assert!(matches!(
+                AudioFrame::from_obu(&obus[0]),
+                Err(Error::InvalidDescriptor { .. })
+            ));
+        }
+        let data = [5 << 3, 0x02, 18, 0xcc];
+        let obus: Vec<_> = ObuIter::new(&data).collect::<Result<_>>().unwrap();
+        assert_eq!(
+            AudioFrame::from_obu(&obus[0])
+                .unwrap()
+                .unwrap()
+                .substream_id,
+            18
+        );
     }
 
     #[test]
