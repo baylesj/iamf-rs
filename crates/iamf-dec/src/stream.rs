@@ -1024,6 +1024,11 @@ impl StreamDecoder {
             };
             let mut out = DecodedFrame::default();
             slot.decoders[index].decode(data, &mut out)?;
+            crate::element::check_decoded_frame(
+                &out,
+                slot.channels[index],
+                slot.codec_config.num_samples_per_frame,
+            )?;
             slot.sample_rate = out.sample_rate;
             if index == 0 {
                 slot.samples_decoded += out.samples.len() / usize::from(out.channels.max(1));

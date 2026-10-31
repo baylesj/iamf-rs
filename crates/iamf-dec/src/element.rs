@@ -104,11 +104,41 @@ impl SubstreamFrames {
     }
 }
 
+/// Checks that a codec returned exactly one frame of the shape the
+/// descriptors promise: `channels` channels of `frame_size` samples.
+///
+/// Every later stage (demixing, ambisonics, rendering, the binaural
+/// convolver) assumes the planes of one temporal unit have equal length.
+/// Codecs don't guarantee it: an empty Opus packet decodes to 120 ms of
+/// packet-loss concealment, LPCM accepts any whole number of sample
+/// frames, and a FLAC frame header carries its own block size, as does
+/// any injected [`crate::CodecFactory`].
+pub(crate) fn check_decoded_frame(
+    out: &DecodedFrame,
+    channels: u8,
+    frame_size: u32,
+) -> Result<(), DecodeError> {
+    let expected = usize::from(channels) * frame_size as usize;
+    if out.channels != channels || out.samples.len() != expected {
+        return Err(DecodeError::CorruptPacket(format!(
+            "decoded {} samples over {} channels; expected {frame_size} \
+             samples per channel over {channels}",
+            out.samples.len(),
+            out.channels
+        )));
+    }
+    Ok(())
+}
+
 /// Decodes every substream of a single audio element. Output is raw
 /// substream PCM in `substream_ids` order; reconstruction/rendering happen
 /// downstream.
 pub struct ElementDecoder {
     substream_ids: Vec<u32>,
+    /// Channels each substream must decode to.
+    channels: Vec<u8>,
+    /// Samples per channel each decoded frame must hold.
+    frame_size: u32,
     decoders: Vec<Box<dyn SubstreamDecoder>>,
     outputs: Vec<SubstreamFrames>,
     scratch: DecodedFrame,
@@ -157,6 +187,8 @@ impl ElementDecoder {
             .collect();
         Ok(ElementDecoder {
             substream_ids: element.substream_ids.clone(),
+            channels,
+            frame_size: codec_config.num_samples_per_frame,
             decoders,
             outputs,
             scratch: DecodedFrame::default(),
@@ -174,6 +206,7 @@ impl ElementDecoder {
             return Ok(false);
         };
         self.decoders[index].decode(frame.data, &mut self.scratch)?;
+        check_decoded_frame(&self.scratch, self.channels[index], self.frame_size)?;
         let out = &mut self.outputs[index];
         out.channels = self.scratch.channels;
         out.sample_rate = self.scratch.sample_rate;
