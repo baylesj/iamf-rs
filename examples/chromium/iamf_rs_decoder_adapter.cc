@@ -97,9 +97,12 @@ static_assert(static_cast<int>(ChannelOrdering::kIamfOrdering) ==
 iamfrs_settings SettingsToC(
     const iamf_tools::api::IamfDecoderFactory::Settings& settings) {
   iamfrs_settings c_settings = {};
-  c_settings.output_layout = static_cast<int32_t>(
-      settings.requested_mix.output_layout.value_or(
-          OutputLayout::kItu2051_SoundSystemA_0_2_0));
+  /* An unset layout asks for the stream's own layout (e.g. WebAudio wants
+   * the native multichannel mix), as in iamf-tools. */
+  c_settings.output_layout =
+      settings.requested_mix.output_layout.has_value()
+          ? static_cast<int32_t>(*settings.requested_mix.output_layout)
+          : IAMFRS_LAYOUT_UNSPECIFIED;
   /* OutputSampleType values match iamfrs_sample_type (1 = s16, 2 = s32). */
   c_settings.sample_type =
       static_cast<int32_t>(settings.requested_output_sample_type);

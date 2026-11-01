@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+No requested output layout (#17). Chromium leaves
+`RequestedMix::output_layout` unset to get a stream's native layout (for
+example, the multichannel mix WebAudio receives), but iamf-rs always
+rendered stereo.
+
+- **Breaking (Rust):** `StreamSettings::layout` is now
+  `Option<SoundSystem>`. The default is still `Some(SoundSystem::A)`;
+  existing code writes `settings.layout = Some(layout)`. `None` renders
+  to the selected mix's own layout: the first layout its first sub mix
+  declares that the decoder can render. `StreamDecoder::selected_mix`
+  reports the resolved layout, and `reset_with_new_mix(.., None, ..)`
+  keeps "the mix's own layout", resolved against the new mix.
+- New `Descriptors::native_layout` and
+  `Descriptors::select_mix_presentation_native`.
+- C ABI: a negative `output_layout` (`IAMFRS_LAYOUT_UNSPECIFIED`) asks
+  for the mix's own layout, and `IAMFRS_LAYOUT_EXTENSION_7_1_5_4 = 15`
+  (an iamf-rs extension) names the IAMF v2.0 7.1.5.4 layout, which the
+  ABI could already report. The Chromium adapter passes
+  `IAMFRS_LAYOUT_UNSPECIFIED` for an unset layout.
+
 Hardening and fixes from the October 2026 review. Each fix has its own
 commit and a regression test; [docs/review-2026-10.md](docs/review-2026-10.md)
 has the full list and the issues that may also exist upstream.
