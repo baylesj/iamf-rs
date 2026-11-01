@@ -537,3 +537,86 @@ fn streaming_limiter_matches_whole_stream_limiting() {
         .collect();
     assert_eq!(at_once, expected);
 }
+
+// -- Issues fixed before they were filed ---------------------------------
+
+/// #19: in IAMF v2.0, bit 1 of a Temporal Delimiter's header is
+/// `is_not_key_frame`, not a trimming flag. The parser reads trimming
+/// fields only for audio frames (since b67b189); this pins it end to end
+/// through the stream decoder.
+#[test]
+fn temporal_delimiters_marked_not_key_frame_decode() {
+    let descriptors = stereo_descriptors(48000, 0);
+    let mut decoder = stream_decoder(&descriptors, SoundSystem::A);
+    let mut stream = Vec::new();
+    for unit in 0..4 {
+        let flags = if unit == 0 { 0 } else { 0x02 }; // is_not_key_frame
+        stream.extend(obu_with_flags(4, flags, &[]));
+        stream.extend(obu(6, &pcm(FRAME, 2, 100)));
+    }
+    decoder.decode(&stream).unwrap();
+    decoder.signal_end_of_decoding();
+    assert_eq!(drain(&mut decoder), 4);
+}
+
+/// #18: IAMF v1.1 Base-Enhanced allows single-layer elements with
+/// `loudspeaker_layout` 15 and `expanded_loudspeaker_layout` 0..=12. All
+/// of them decode under the default (v1.1) profiles since a092e45, to
+/// stereo, to their parent layout and binaurally.
+#[test]
+fn v1_expanded_layouts_decode_with_default_profiles() {
+    for expanded in 0..=12u8 {
+        let info = iamf_dec::layout::expanded_loudspeaker_info(expanded).unwrap();
+        let substreams = u32::from(info.substreams);
+        let coupled = u32::from(info.coupled_substreams);
+        let mut element = leb(1);
+        element.extend([0, 0]); // channel-based, codec config 0
+        element.extend(leb(substreams));
+        for id in 0..substreams {
+            element.extend(leb(id));
+        }
+        element.push(0); // no parameters
+        element.push(1 << 5); // one layer
+        element.extend([15 << 4, info.substreams, info.coupled_substreams, expanded]);
+        let mut descriptors = obu(31, b"iamf\x02\x02"); // Base-Enhanced
+        descriptors.extend(lpcm_codec(48000, FRAME as u32));
+        descriptors.extend(obu(1, &element));
+        descriptors.extend(mix(7, &[1], 0));
+        let mut unit = obu(4, &[]);
+        for id in 0..substreams {
+            let channels = if id < coupled { 2 } else { 1 };
+            unit.extend(obu(
+                6 + u8::try_from(id).unwrap(),
+                &pcm(FRAME, channels, 3000),
+            ));
+        }
+        let parent = SoundSystem::from_bitstream_sound_system(match info.parent_speaker_layout {
+            4 => 3,  // 5.1.4 -> sound system D
+            7 => 9,  // 7.1.4 -> sound system J
+            _ => 13, // 9.1.6
+        })
+        .unwrap();
+        for layout in [SoundSystem::A, parent, SoundSystem::Binaural] {
+            let mut decoder = StreamDecoder::new_from_descriptors(
+                &descriptors,
+                settings(layout),
+                &DefaultFactory,
+            )
+            .unwrap_or_else(|e| panic!("expanded {expanded} to {layout:?}: {e}"));
+            decoder.decode(&unit).unwrap();
+            decoder.signal_end_of_decoding();
+            let pcm = decoder
+                .get_output_temporal_unit()
+                .unwrap()
+                .expect("one unit");
+            assert_eq!(
+                pcm.len(),
+                FRAME * layout.channels() * 2,
+                "expanded {expanded}"
+            );
+            if layout == parent {
+                assert!(pcm.iter().any(|&b| b != 0), "expanded {expanded}: silent");
+            }
+        }
+    }
+}
