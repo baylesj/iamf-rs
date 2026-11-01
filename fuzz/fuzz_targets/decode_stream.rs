@@ -36,7 +36,7 @@ fuzz_target!(|data: &[u8]| {
     // profile set and post-processing option gets coverage.
     let layout = SoundSystem::from_u8(data[0] % 15).expect("0..=14 are valid");
     let mut settings = StreamSettings::default();
-    settings.layout = layout;
+    settings.layout = Some(layout);
     settings.sample_type = None;
     settings.channel_ordering = if data[1] & 1 == 0 {
         ChannelOrdering::Iamf

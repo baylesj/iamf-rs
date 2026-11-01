@@ -72,8 +72,23 @@ int main(int argc, char** argv) {
             none, data.data(), data.size()) == nullptr,
         "empty requested_profile_versions is refused");
 
-  /* Defaults: stereo, s32le, trimming on. test_000002 is 8000 frames of
-   * 16 kHz stereo LPCM. */
+  /* #17: an explicitly requested layout is used as is. */
+  {
+    IamfDecoderFactory::Settings five_one;
+    five_one.requested_mix.output_layout =
+        iamf_tools::api::OutputLayout::kItu2051_SoundSystemB_0_5_0;
+    auto decoder = iamf_rs::IamfRsDecoderAdapter::CreateFromDescriptors(
+        five_one, data.data(), data.size());
+    int channels = 0;
+    Check(decoder != nullptr &&
+              decoder->GetNumberOfOutputChannels(channels).ok() &&
+              channels == 6,
+          "requested 5.1 gives six channels");
+  }
+
+  /* Defaults: no layout requested (the mix's own layout, stereo for
+   * test_000002), s32le, trimming on. test_000002 is 8000 frames of 16 kHz
+   * stereo LPCM. */
   IamfDecoderFactory::Settings settings;
   auto decoder = iamf_rs::IamfRsDecoderAdapter::CreateFromDescriptors(
       settings, data.data(), data.size());
@@ -84,6 +99,11 @@ int main(int argc, char** argv) {
   int channels = 0;
   Check(decoder->GetNumberOfOutputChannels(channels).ok() && channels == 2,
         "two output channels");
+  iamf_tools::api::SelectedMix selected;
+  Check(decoder->GetOutputMix(selected).ok() &&
+            selected.output_layout ==
+                iamf_tools::api::OutputLayout::kItu2051_SoundSystemA_0_2_0,
+        "an unset layout resolves to the mix's own (stereo)");
   Check(decoder->GetOutputSampleType() == OutputSampleType::kInt32LittleEndian,
         "s32le output");
   Check(decoder->Decode(data.data(), data.size()).ok(), "decode");

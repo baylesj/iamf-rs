@@ -70,6 +70,21 @@ pub const IAMFRS_LAYOUT_EXTENSION_6_9_0: i32 = 13;
 /// rendering for elements with `headphones_rendering_mode == 1` (with the
 /// `binaural` feature), the stereo gain matrices otherwise.
 pub const IAMFRS_LAYOUT_BINAURAL: i32 = 14;
+/// IAMF v2.0 7.1.5.4 (`sound_system == 14` in the bitstream). An iamf-rs
+/// extension: iamf-tools `OutputLayout` has no such value.
+pub const IAMFRS_LAYOUT_EXTENSION_7_1_5_4: i32 = 15;
+/// `output_layout` for "no preference": decode to the selected mix
+/// presentation's own layout (iamf-tools `RequestedMix` without an
+/// `output_layout`). Any negative value works.
+pub const IAMFRS_LAYOUT_UNSPECIFIED: i32 = -1;
+
+/// Maps an `IAMFRS_LAYOUT_*` value to the decoder's sound system.
+fn layout_from_c(value: i32) -> Option<SoundSystem> {
+    match value {
+        IAMFRS_LAYOUT_EXTENSION_7_1_5_4 => Some(SoundSystem::Ext7154),
+        _ => u8::try_from(value).ok().and_then(SoundSystem::from_u8),
+    }
+}
 
 fn status_of(err: &DecodeError) -> c_int {
     match err {
@@ -124,7 +139,11 @@ fn guard_handle(handle: &mut IamfrsDecoder, f: impl FnOnce(&mut IamfrsDecoder) -
 pub struct IamfrsSettings {
     /// One of the `IAMFRS_LAYOUT_*` constants: IAMF sound system numbering
     /// shared with iamf-tools `OutputLayout` (0 = stereo ... 13 = 9.1.6,
-    /// [`IAMFRS_LAYOUT_BINAURAL`] = 14).
+    /// [`IAMFRS_LAYOUT_BINAURAL`] = 14, plus the iamf-rs extension
+    /// [`IAMFRS_LAYOUT_EXTENSION_7_1_5_4`] = 15). A negative value
+    /// ([`IAMFRS_LAYOUT_UNSPECIFIED`]) decodes to the selected mix's own
+    /// layout: the first one its first sub mix declares that can be
+    /// rendered. `iamfrs_decoder_get_selected_layout` reports it.
     pub output_layout: i32,
     /// 0 = auto (from the stream's bit depth), 1 = s16le, 2 = s32le.
     pub sample_type: i32,
@@ -183,11 +202,13 @@ pub unsafe extern "C" fn iamfrs_decoder_create_from_descriptors(
     // SAFETY: `settings` is non-null (checked) and the caller promises a
     // valid IamfrsSettings.
     let c_settings = unsafe { &*settings };
-    let Some(layout) = u8::try_from(c_settings.output_layout)
-        .ok()
-        .and_then(SoundSystem::from_u8)
-    else {
-        return IAMFRS_ERR_INVALID_ARG;
+    let layout = if c_settings.output_layout < 0 {
+        None
+    } else {
+        match layout_from_c(c_settings.output_layout) {
+            Some(layout) => Some(layout),
+            None => return IAMFRS_ERR_INVALID_ARG,
+        }
     };
     let sample_type = match c_settings.sample_type {
         0 => None,
@@ -437,7 +458,8 @@ pub unsafe extern "C" fn iamfrs_decoder_reset(decoder: *mut IamfrsDecoder) -> c_
 /// without reparsing descriptors (iamf-tools `ResetWithNewMix`). Codec
 /// decoders shared between the old and new mix are reset and reused.
 /// `mix_presentation_id < 0` selects automatically; `output_layout < 0`
-/// keeps the current layout. Buffered audio and parameter state are
+/// keeps the current request (when that was unspecified, the new mix's own
+/// layout is used). Buffered audio and parameter state are
 /// dropped. On error the decoder is unconfigured until a successful
 /// reconfigure; destroy it or call this again with valid arguments.
 ///
@@ -464,10 +486,7 @@ pub unsafe extern "C" fn iamfrs_decoder_reset_with_new_mix(
     let layout = if output_layout < 0 {
         None
     } else {
-        match u8::try_from(output_layout)
-            .ok()
-            .and_then(SoundSystem::from_u8)
-        {
+        match layout_from_c(output_layout) {
             Some(layout) => Some(layout),
             None => return IAMFRS_ERR_INVALID_ARG,
         }
@@ -657,7 +676,13 @@ mod tests {
         ]
         .into_iter()
         .chain(LAYOUTS)
-        {
+        .chain([
+            (
+                "IAMFRS_LAYOUT_EXTENSION_7_1_5_4",
+                IAMFRS_LAYOUT_EXTENSION_7_1_5_4,
+            ),
+            ("IAMFRS_LAYOUT_UNSPECIFIED", IAMFRS_LAYOUT_UNSPECIFIED),
+        ]) {
             let needle = format!("{name} = {value},");
             assert!(header.contains(&needle), "header disagrees on {name}");
         }
@@ -944,9 +969,9 @@ mod tests {
                 IAMFRS_OK
             );
             assert_eq!((layout, channels), (IAMFRS_LAYOUT_BINAURAL as u32, 2));
-            // One past binaural is not a layout.
+            // One past the last layout (7.1.5.4) is not a layout.
             assert_eq!(
-                iamfrs_decoder_reset_with_new_mix(decoder, -1, IAMFRS_LAYOUT_BINAURAL + 1),
+                iamfrs_decoder_reset_with_new_mix(decoder, -1, IAMFRS_LAYOUT_EXTENSION_7_1_5_4 + 1),
                 IAMFRS_ERR_INVALID_ARG
             );
             iamfrs_decoder_destroy(decoder);
@@ -956,7 +981,7 @@ mod tests {
                 iamfrs_decoder_create_from_descriptors(
                     data.as_ptr(),
                     data.len(),
-                    &settings_for(IAMFRS_LAYOUT_BINAURAL + 1),
+                    &settings_for(IAMFRS_LAYOUT_EXTENSION_7_1_5_4 + 1),
                     &mut rejected
                 ),
                 IAMFRS_ERR_INVALID_ARG
@@ -1015,6 +1040,33 @@ mod tests {
             assert_eq!(iamfrs_decoder_reset(decoder), IAMFRS_ERR_INTERNAL);
             iamfrs_decoder_destroy(decoder);
         }
+    }
+
+    /// #17: a negative `output_layout` decodes to the selected mix's own
+    /// layout (WebAudio wants the native multichannel mix, and iamf-tools
+    /// treats an unset layout that way), and 15 maps to 7.1.5.4.
+    #[test]
+    fn c_api_unspecified_layout() {
+        let Some(data) = named_vector("test_000002") else {
+            return;
+        };
+        // test_000002's only mix declares stereo (sound system A).
+        let (pcm, channels, layout) =
+            decode_via_c_api(&data, &settings_for(IAMFRS_LAYOUT_UNSPECIFIED));
+        assert_eq!(
+            (channels, layout),
+            (2, IAMFRS_LAYOUT_SOUND_SYSTEM_A_0_2_0 as u32)
+        );
+        assert_eq!(pcm.len(), 8000 * 2 * 2);
+        assert_eq!(
+            layout_from_c(IAMFRS_LAYOUT_EXTENSION_7_1_5_4),
+            Some(SoundSystem::Ext7154)
+        );
+        assert_eq!(layout_from_c(16), None);
+        assert_eq!(
+            layout_from_c(IAMFRS_LAYOUT_BINAURAL),
+            Some(SoundSystem::Binaural)
+        );
     }
 
     #[test]

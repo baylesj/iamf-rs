@@ -233,7 +233,7 @@ mod tests {
         let stream = generate();
         let split = crate::descriptor_split(&stream).expect("valid demo stream");
         let mut settings = StreamSettings::default();
-        settings.layout = layout;
+        settings.layout = Some(layout);
         let mut dec =
             StreamDecoder::new_from_descriptors(&stream[..split], settings, &DefaultFactory)
                 .expect("demo descriptors accepted");

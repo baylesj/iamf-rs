@@ -179,7 +179,7 @@ fn hrtf_stream_matches_batch() {
         .collect();
 
     let mut settings = StreamSettings::default();
-    settings.layout = SoundSystem::Binaural;
+    settings.layout = Some(SoundSystem::Binaural);
     let mut decoder =
         StreamDecoder::new_from_descriptors(&data, settings, &DefaultFactory).unwrap();
     let mut streamed = Vec::new();
@@ -204,7 +204,7 @@ fn v2_binaural_stream_matches_batch() {
             .flat_map(|s| s.to_le_bytes())
             .collect();
         let mut v2_settings = StreamSettings::default();
-        v2_settings.layout = SoundSystem::Binaural;
+        v2_settings.layout = Some(SoundSystem::Binaural);
         v2_settings.requested_profiles = iamf_dec::profile::ProfileSet::all();
         let mut v2_dec =
             StreamDecoder::new_from_descriptors(&v2_data, v2_settings, &DefaultFactory).unwrap();

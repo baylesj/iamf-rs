@@ -76,6 +76,12 @@ enum iamfrs_output_layout {
    * elements with headphones_rendering_mode == 1 (binaural feature), the
    * stereo matrices otherwise, matching iamf-tools/obr. */
   IAMFRS_LAYOUT_BINAURAL = 14,
+  /* IAMF v2.0 7.1.5.4. An iamf-rs extension: iamf_tools OutputLayout has
+   * no such value. */
+  IAMFRS_LAYOUT_EXTENSION_7_1_5_4 = 15,
+  /* No preference (any negative value): decode to the selected mix's own
+   * layout, as iamf_tools does for a RequestedMix without output_layout. */
+  IAMFRS_LAYOUT_UNSPECIFIED = -1,
 };
 
 /* Decoder configuration, mirroring iamf_tools IamfDecoderFactory::Settings.
@@ -87,7 +93,10 @@ typedef struct IamfrsSettings {
    * 0=stereo(A) 1=5.1(B) 2=5.1.2(C) 3=5.1.4(D) 4=E 5=F 6=G 7=H(22.2)
    * 8=7.1(I) 9=7.1.4(J) 10=7.1.2 11=3.1.2 12=mono 13=9.1.6
    * 14=binaural (HRTF for elements with headphones_rendering_mode == 1,
-   * stereo fallback otherwise, matching iamf-tools/obr). */
+   * stereo fallback otherwise, matching iamf-tools/obr), 15=7.1.5.4.
+   * Negative (IAMFRS_LAYOUT_UNSPECIFIED): the selected mix's own layout,
+   * the first one its first sub mix declares that can be rendered;
+   * iamfrs_decoder_get_selected_layout reports it. */
   int32_t output_layout;
   /* 0 = auto (from the stream's bit depth), 1 = s16le, 2 = s32le. */
   int32_t sample_type;
@@ -173,7 +182,8 @@ int iamfrs_decoder_reset(iamfrs_decoder *decoder);
  * without reparsing descriptors (iamf_tools ResetWithNewMix). Codec
  * decoders shared between the old and new mix are reset and reused.
  * mix_presentation_id < 0 selects automatically; output_layout < 0 keeps
- * the current layout. Buffered audio and parameter state are dropped. On
+ * the current request (when that was unspecified, the new mix's own layout
+ * is used). Buffered audio and parameter state are dropped. On
  * error the decoder is unconfigured until a successful reconfigure. */
 int iamfrs_decoder_reset_with_new_mix(iamfrs_decoder *decoder,
                                       int64_t mix_presentation_id,

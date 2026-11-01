@@ -51,7 +51,7 @@ fn stream_decode_with(
     trimming: TrimmingSettings,
 ) -> Vec<u8> {
     let mut settings = StreamSettings::default();
-    settings.layout = SoundSystem::from_u8(sound_system).unwrap();
+    settings.layout = Some(SoundSystem::from_u8(sound_system).unwrap());
     settings.sample_type = Some(OutputSampleType::Int16LittleEndian);
     settings.mix_selection = MixSelection::ByIndex(0);
     settings.trimming = trimming;
@@ -206,7 +206,7 @@ fn reset_with_new_mix_matches_fresh_decoder() {
     let data = require_vectors!(vector("test_000070"), format_args!("test_000070"));
     let fresh = |sound_system: u8| {
         let mut settings = StreamSettings::default();
-        settings.layout = SoundSystem::from_u8(sound_system).unwrap();
+        settings.layout = Some(SoundSystem::from_u8(sound_system).unwrap());
         let mut decoder =
             StreamDecoder::new_from_descriptors(&data, settings, &DefaultFactory).unwrap();
         decoder.decode(&data).unwrap();
@@ -340,7 +340,7 @@ fn android_channel_ordering() {
     let data = require_vectors!(vector("test_000070"), format_args!("test_000070"));
     let decode = |ordering| {
         let mut settings = StreamSettings::default();
-        settings.layout = SoundSystem::from_u8(9).unwrap();
+        settings.layout = Some(SoundSystem::from_u8(9).unwrap());
         settings.channel_ordering = ordering;
         let mut decoder =
             StreamDecoder::new_from_descriptors(&data, settings, &DefaultFactory).unwrap();

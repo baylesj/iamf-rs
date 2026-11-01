@@ -141,7 +141,7 @@ fn bench_stream(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(case.label), &data, |b, data| {
             b.iter(|| {
                 let mut settings = StreamSettings::default();
-                settings.layout = SoundSystem::from_u8(case.sound_system).unwrap();
+                settings.layout = Some(SoundSystem::from_u8(case.sound_system).unwrap());
                 let mut decoder =
                     StreamDecoder::new_from_descriptors(data, settings, &DefaultFactory).unwrap();
                 let mut bytes = 0usize;

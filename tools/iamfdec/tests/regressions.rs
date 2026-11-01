@@ -118,7 +118,7 @@ fn stereo_unit(value: i16) -> Vec<u8> {
 
 fn settings(layout: SoundSystem) -> StreamSettings {
     let mut settings = StreamSettings::default();
-    settings.layout = layout;
+    settings.layout = Some(layout);
     settings
 }
 
@@ -536,4 +536,94 @@ fn streaming_limiter_matches_whole_stream_limiting() {
         .flat_map(|&s| iamf_dec::post::quantize_s16(s).to_le_bytes())
         .collect();
     assert_eq!(at_once, expected);
+}
+
+// -- #17: no requested output layout -------------------------------------
+
+/// Mix presentation `id` over stereo element 1 whose single sub mix
+/// declares `layouts` (layout bytes: type << 6 | sound_system << 2), each
+/// with zero loudness.
+fn mix_with_layouts(id: u32, layouts: &[u8]) -> Vec<u8> {
+    let mut payload = leb(id);
+    payload.extend([0, 1]); // count_label, num_sub_mixes
+    payload.extend(leb(1));
+    payload.extend(leb(1));
+    payload.extend([0, 0]);
+    payload.extend(gain_param(101));
+    payload.extend(gain_param(200));
+    payload.extend(leb(u32::try_from(layouts.len()).unwrap()));
+    for &layout in layouts {
+        payload.extend([layout, 0, 0, 0, 0, 0]);
+    }
+    obu(2, &payload)
+}
+
+/// A loudspeaker layout byte for bitstream `sound_system`.
+const fn ss(sound_system: u8) -> u8 {
+    2 << 6 | sound_system << 2
+}
+
+/// A binaural layout byte.
+const BINAURAL_LAYOUT: u8 = 3 << 6;
+
+fn native_decoder(mixes: &[Vec<u8>], selection: iamf_dec::stream::MixSelection) -> StreamDecoder {
+    let mut descriptors = sequence_header();
+    descriptors.extend(lpcm_codec(48000, FRAME as u32));
+    descriptors.extend(stereo_element(1, 0));
+    for mix in mixes {
+        descriptors.extend(mix);
+    }
+    let mut settings = StreamSettings::default();
+    settings.layout = None;
+    settings.mix_selection = selection;
+    StreamDecoder::new_from_descriptors(&descriptors, settings, &DefaultFactory).unwrap()
+}
+
+/// With no requested layout, the decoder renders to the selected mix's own
+/// layout: the first one its first sub mix declares that it can render
+/// (iamf-tools `RequestedMix` without `output_layout`). WebAudio relies on
+/// this to get the native multichannel mix instead of a stereo downmix.
+#[test]
+fn unspecified_layout_uses_the_mix_layout() {
+    use iamf_dec::stream::MixSelection;
+    // 5.1 (sound system B) first, then stereo.
+    let mut decoder = native_decoder(&[mix_with_layouts(7, &[ss(1), ss(0)])], MixSelection::Auto);
+    assert_eq!(decoder.selected_mix(), (7, SoundSystem::B));
+    assert_eq!(decoder.num_output_channels(), 6);
+    decoder.decode(&stereo_unit(100)).unwrap();
+    decoder.signal_end_of_decoding();
+    let unit = decoder
+        .get_output_temporal_unit()
+        .unwrap()
+        .expect("one unit");
+    assert_eq!(unit.len(), FRAME * 6 * 2);
+
+    // Reserved layout types are skipped; binaural counts as a layout.
+    let decoder = native_decoder(
+        &[mix_with_layouts(7, &[1 << 6, BINAURAL_LAYOUT])],
+        MixSelection::Auto,
+    );
+    assert_eq!(decoder.selected_mix(), (7, SoundSystem::Binaural));
+
+    // A requested mix is honored with its own layout; a mix with no usable
+    // layout is passed over.
+    let mixes = [
+        mix_with_layouts(7, &[1 << 6]),
+        mix_with_layouts(8, &[ss(9)]),
+        mix_with_layouts(9, &[ss(11)]),
+    ];
+    let decoder = native_decoder(&mixes, MixSelection::Auto);
+    assert_eq!(decoder.selected_mix(), (8, SoundSystem::J));
+    let decoder = native_decoder(&mixes, MixSelection::ById(9));
+    assert_eq!(decoder.selected_mix(), (9, SoundSystem::Ext312));
+    let mut decoder = native_decoder(&mixes, MixSelection::ByIndex(2));
+    assert_eq!(decoder.selected_mix(), (9, SoundSystem::Ext312));
+
+    // reset_with_new_mix without a layout keeps "the mix's own layout".
+    assert_eq!(
+        decoder
+            .reset_with_new_mix(MixSelection::ById(8), None, &DefaultFactory)
+            .unwrap(),
+        (8, SoundSystem::J)
+    );
 }
