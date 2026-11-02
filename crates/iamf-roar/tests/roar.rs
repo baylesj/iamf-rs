@@ -79,7 +79,7 @@ fn try_decode(
     renderer: Renderer,
 ) -> Result<Vec<f64>, DecodeError> {
     let mut settings = StreamSettings::default();
-    settings.layout = target;
+    settings.layout = Some(target);
     settings.sample_type = Some(OutputSampleType::Int32LittleEndian);
     settings.mix_selection = MixSelection::ByIndex(0);
     // headphones_rendering_mode 2 (head-locked) is allowed only by the IAMF
@@ -250,7 +250,7 @@ fn roar_decoder_geometry() {
     let data = require_vectors!(vector("test_000070"), format_args!("test_000070"));
     for renderer in [Renderer::Builtin, Renderer::Roar] {
         let mut settings = StreamSettings::default();
-        settings.layout = SoundSystem::J;
+        settings.layout = Some(SoundSystem::J);
         let decoder = new_decoder(&data, settings, renderer).unwrap();
         assert_eq!(decoder.num_output_channels(), 12);
         assert_eq!(decoder.sample_rate(), 48000);
@@ -283,7 +283,7 @@ fn cli_matches_streaming_decoder() {
     );
 
     let mut settings = StreamSettings::default();
-    settings.layout = SoundSystem::B;
+    settings.layout = Some(SoundSystem::B);
     settings.sample_type = Some(OutputSampleType::Int16LittleEndian);
     settings.loudness_target_db = Some(0.0);
     settings.enable_limiter = true;

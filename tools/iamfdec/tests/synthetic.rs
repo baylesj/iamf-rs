@@ -195,7 +195,7 @@ fn scalable_unit_frames(unit: usize) -> [Vec<i16>; 4] {
 
 fn decode_all(data: &[u8], layout: SoundSystem) -> Result<Vec<u8>, DecodeError> {
     let mut settings = StreamSettings::default();
-    settings.layout = layout;
+    settings.layout = Some(layout);
     let mut decoder = StreamDecoder::new_from_descriptors(data, settings, &DefaultFactory)?;
     decoder.decode(data)?;
     let mut out = Vec::new();
@@ -564,7 +564,7 @@ fn selected_mix_id(stream: &[u8], selection: MixSelection, layout: SoundSystem) 
         .unwrap();
     let id = descriptors.mix_presentations[index].mix_presentation_id;
     let mut settings = StreamSettings::default();
-    settings.layout = layout;
+    settings.layout = Some(layout);
     settings.mix_selection = selection;
     let streamed = StreamDecoder::new_from_descriptors(stream, settings, &DefaultFactory)
         .unwrap()
@@ -835,7 +835,7 @@ fn fake_decoder(
 ) -> (StreamDecoder, Arc<Mutex<RendererLog>>) {
     let log = Arc::new(Mutex::new(RendererLog::default()));
     let mut settings = StreamSettings::default();
-    settings.layout = layout;
+    settings.layout = Some(layout);
     // headphones_rendering_mode 2 (head-locked) is allowed only by the IAMF
     // v2.0 profiles, which the default request leaves out.
     settings.requested_profiles = ProfileSet::all();
@@ -998,7 +998,7 @@ fn demix_gap_keeps_previous_mode_under_any_chunking() {
 
     // Pull after every unit.
     let mut settings = StreamSettings::default();
-    settings.layout = SoundSystem::B;
+    settings.layout = Some(SoundSystem::B);
     let mut decoder =
         StreamDecoder::new_from_descriptors(&head, settings, &DefaultFactory).unwrap();
     let mut incremental = Vec::new();

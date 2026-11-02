@@ -74,7 +74,7 @@ fn predecode(
     mix: MixSelection,
 ) -> Result<Render, String> {
     let mut settings = StreamSettings::default();
-    settings.layout = layout;
+    settings.layout = Some(layout);
     settings.sample_type = None;
     settings.mix_selection = mix;
     let start = Instant::now();

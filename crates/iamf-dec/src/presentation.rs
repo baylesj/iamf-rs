@@ -175,6 +175,68 @@ impl Descriptors {
     }
 }
 
+impl Descriptors {
+    /// The layout a mix presentation is authored for: the first layout of
+    /// its first sub mix that maps to a [`SoundSystem`] (loudspeaker sound
+    /// systems, including IAMF v2.0 7.1.5.4, and binaural). `None` when it
+    /// declares none (or only reserved layout types).
+    pub fn native_layout(&self, mix_index: usize) -> Option<SoundSystem> {
+        use iamf_obu::descriptors::Layout;
+        self.mix_presentations
+            .get(mix_index)?
+            .sub_mixes
+            .first()?
+            .layouts
+            .iter()
+            .find_map(|(layout, _)| match layout {
+                Layout::LoudspeakersSsConvention { sound_system } => {
+                    SoundSystem::from_bitstream_sound_system(*sound_system)
+                }
+                Layout::Binaural => Some(SoundSystem::Binaural),
+                Layout::Reserved { .. } => None,
+            })
+    }
+
+    /// Selects a mix presentation when the caller gave no output layout,
+    /// returning it with its [`Descriptors::native_layout`]. The mix that
+    /// `selection` names is tried first, then every mix in order; the first
+    /// that the requested profiles allow and that renders to its own
+    /// layout wins.
+    pub fn select_mix_presentation_native(
+        &self,
+        selection: MixSelection,
+        requested_profiles: ProfileSet,
+    ) -> Result<(usize, SoundSystem), DecodeError> {
+        let preferred = match selection {
+            MixSelection::ByIndex(index) => Some(index),
+            MixSelection::ById(id) => self
+                .mix_presentations
+                .iter()
+                .position(|m| m.mix_presentation_id == id),
+            _ => None,
+        };
+        let mut last_error = None;
+        for index in preferred.into_iter().chain(0..self.mix_presentations.len()) {
+            let Some(layout) = self.native_layout(index) else {
+                continue;
+            };
+            match self.select_mix_presentation(
+                MixSelection::ByIndex(index),
+                layout,
+                requested_profiles,
+            ) {
+                Ok(selected) => return Ok((selected, layout)),
+                Err(e) => last_error = Some(e),
+            }
+        }
+        Err(last_error.unwrap_or_else(|| {
+            DecodeError::InvalidDescriptors(
+                "no mix presentation declares a layout the decoder can render".into(),
+            )
+        }))
+    }
+}
+
 /// Final rendered output of one sub mix.
 #[derive(Debug)]
 pub struct RenderedMix {

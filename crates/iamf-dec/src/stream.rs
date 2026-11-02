@@ -87,8 +87,12 @@ impl Default for TrimmingSettings {
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct StreamSettings {
-    /// Target loudspeaker layout or binaural rendering mode.
-    pub layout: SoundSystem,
+    /// Target loudspeaker layout or binaural rendering mode. `None` asks
+    /// for the selected mix presentation's own layout: the first layout
+    /// its first sub mix declares that the decoder can render (iamf-tools
+    /// `RequestedMix` with no `output_layout`). The resolved layout is
+    /// reported by [`StreamDecoder::selected_mix`]. Default: stereo.
+    pub layout: Option<SoundSystem>,
     /// `None` selects s16le or s32le from the stream's bit depth.
     pub sample_type: Option<OutputSampleType>,
     /// Which mix presentation to decode.
@@ -144,7 +148,7 @@ pub enum MixSelection {
 impl Default for StreamSettings {
     fn default() -> Self {
         StreamSettings {
-            layout: SoundSystem::A,
+            layout: Some(SoundSystem::A),
             sample_type: Some(OutputSampleType::Int16LittleEndian),
             mix_selection: MixSelection::Auto,
             channel_ordering: ChannelOrdering::default(),
@@ -779,11 +783,20 @@ impl StreamDecoder {
         // fits within some requested profile's limits (and, here, can be
         // rendered to the target); among those, §7.4.1 creator-preferred
         // selection applies.
-        let mix_index = parsed.select_mix_presentation(
-            settings.mix_selection,
-            settings.layout,
-            settings.requested_profiles,
-        )?;
+        let (mix_index, target) = match settings.layout {
+            Some(layout) => (
+                parsed.select_mix_presentation(
+                    settings.mix_selection,
+                    layout,
+                    settings.requested_profiles,
+                )?,
+                layout,
+            ),
+            None => parsed.select_mix_presentation_native(
+                settings.mix_selection,
+                settings.requested_profiles,
+            )?,
+        };
         let mix = &parsed.mix_presentations[mix_index];
         if mix.sub_mixes.is_empty() || mix.sub_mixes.len() > 2 {
             // Guaranteed by the profile filter; kept as a defensive check.
@@ -926,10 +939,9 @@ impl StreamDecoder {
                 });
             }
             let norm_gain = match settings.loudness_target_db {
-                Some(target_db) => content_loudness_db(sub_mix, settings.layout)
-                    .map_or(1.0, |content_db| {
-                        10f32.powf((target_db - content_db) / 20.0)
-                    }),
+                Some(target_db) => content_loudness_db(sub_mix, target).map_or(1.0, |content_db| {
+                    10f32.powf((target_db - content_db) / 20.0)
+                }),
                 None => 1.0,
             };
             sub_mixes.push(SubMixState {
@@ -969,9 +981,9 @@ impl StreamDecoder {
             slots,
             sub_mixes,
             param_index,
-            target: settings.layout,
+            target,
             sample_type,
-            permutation: output_permutation(settings.layout, settings.channel_ordering),
+            permutation: output_permutation(target, settings.channel_ordering),
             settings,
             selected_mix_id: mix.mix_presentation_id,
             limiter: None,
@@ -1834,8 +1846,9 @@ impl StreamDecoder {
         (self.selected_mix_id, self.target)
     }
 
-    /// Marks end of stream. Our pipeline holds no look-ahead, so any
-    /// complete buffered units remain pullable and nothing else changes.
+    /// Marks end of stream: complete buffered units remain pullable, and
+    /// with the limiter on, the last units (held for its look-ahead) become
+    /// available.
     pub fn signal_end_of_decoding(&mut self) {
         self.ended = true;
     }
@@ -1899,8 +1912,10 @@ impl StreamDecoder {
     ) -> Result<(u32, SoundSystem), DecodeError> {
         let mut settings = self.settings;
         settings.mix_selection = selection;
+        // `None` keeps the current request, including "the mix's own
+        // layout", which then resolves against the new mix.
         if let Some(layout) = layout {
-            settings.layout = layout;
+            settings.layout = Some(layout);
         }
         let mut reuse: Vec<(u32, Vec<Box<dyn SubstreamDecoder>>)> = self
             .slots

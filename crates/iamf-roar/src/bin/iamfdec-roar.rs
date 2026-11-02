@@ -113,7 +113,7 @@ fn decode_to_wav(data: &[u8], out_path: &str, opts: &Options) -> Result<(), Stri
     let target = SoundSystem::from_u8(sound_system)
         .ok_or_else(|| format!("unknown sound system {sound_system}"))?;
     let mut settings = StreamSettings::default();
-    settings.layout = target;
+    settings.layout = Some(target);
     settings.mix_selection = MixSelection::Auto;
     settings.sample_type = Some(OutputSampleType::Int16LittleEndian);
     settings.trimming = opts.trimming;
