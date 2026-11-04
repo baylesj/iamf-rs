@@ -84,6 +84,6 @@ jobs:
       - name: Fetch every conformance vector
         run: ./tools/fetch_vectors.sh --all
       - name: Test against the full vector set (debug, overflow checks on)
-        run: cargo test --locked --workspace --all-features
+        run: cargo test --locked --no-fail-fast --workspace --all-features
       - name: Test against the full vector set (release)
-        run: cargo test --locked --release --workspace --all-features
+        run: cargo test --locked --no-fail-fast --release --workspace --all-features
