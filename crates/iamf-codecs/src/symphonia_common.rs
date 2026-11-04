@@ -1,41 +1,38 @@
-//! Shared adapter: drives a symphonia `Decoder` as an IAMF
+//! Shared adapter: drives a symphonia `AudioDecoder` as an IAMF
 //! [`SubstreamDecoder`] (one raw codec frame per IAMF audio frame OBU).
 
 use iamf_dec::{DecodeError, DecodedFrame, SubstreamDecoder};
-use symphonia_core::audio::SampleBuffer;
-use symphonia_core::codecs::Decoder;
-use symphonia_core::formats::Packet;
+use symphonia_core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
+use symphonia_core::packet::PacketRef;
+use symphonia_core::units::{Duration, Timestamp};
 
-pub(crate) struct SymphoniaSubstreamDecoder<D: Decoder> {
+/// Options for every symphonia decoder we create. Gapless trimming is off:
+/// IAMF trims with the audio frame OBU's `num_samples_to_trim_*` fields,
+/// so the codec must return every decoded frame, priming included.
+pub(crate) fn decoder_options() -> AudioDecoderOptions {
+    let mut options = AudioDecoderOptions::default();
+    options.gapless = false;
+    options
+}
+
+pub(crate) struct SymphoniaSubstreamDecoder<D: AudioDecoder> {
     decoder: D,
     channels: u8,
     sample_rate: u32,
-    scratch: Option<SampleBuffer<f32>>,
 }
 
-impl<D: Decoder> SymphoniaSubstreamDecoder<D> {
+impl<D: AudioDecoder> SymphoniaSubstreamDecoder<D> {
     fn decode_unguarded(
         &mut self,
         packet: &[u8],
         out: &mut DecodedFrame,
     ) -> Result<(), DecodeError> {
-        let packet = Packet::new_from_slice(0, 0, 0, packet);
+        let packet = PacketRef::new(0, Timestamp::ZERO, Duration::ZERO, packet);
         let decoded = self
             .decoder
-            .decode(&packet)
+            .decode_ref(&packet)
             .map_err(|e| DecodeError::CorruptPacket(e.to_string()))?;
-        let spec = *decoded.spec();
-        let duration = decoded.capacity() as u64;
-        let scratch = self
-            .scratch
-            .get_or_insert_with(|| SampleBuffer::new(duration, spec));
-        if scratch.capacity() < decoded.frames() * spec.channels.count() {
-            *scratch = SampleBuffer::new(duration, spec);
-        }
-        scratch.copy_interleaved_ref(decoded);
-
-        out.samples.clear();
-        out.samples.extend_from_slice(scratch.samples());
+        decoded.copy_to_vec_interleaved(&mut out.samples);
         out.channels = self.channels;
         out.sample_rate = self.sample_rate;
         Ok(())
@@ -46,12 +43,11 @@ impl<D: Decoder> SymphoniaSubstreamDecoder<D> {
             decoder,
             channels,
             sample_rate,
-            scratch: None,
         }
     }
 }
 
-impl<D: Decoder> SubstreamDecoder for SymphoniaSubstreamDecoder<D> {
+impl<D: AudioDecoder> SubstreamDecoder for SymphoniaSubstreamDecoder<D> {
     fn decode(&mut self, packet: &[u8], out: &mut DecodedFrame) -> Result<(), DecodeError> {
         // symphonia asserts on some malformed packets. The adapters
         // pre-check what they can; this keeps any remaining panic from

@@ -4,7 +4,8 @@
 
 use iamf_dec::{CodecFactory, DecodeError, SubstreamDecoder};
 use iamf_obu::descriptors::{CodecConfig, CodecId, DecoderConfig};
-use symphonia_core::codecs::{CODEC_TYPE_AAC, CodecParameters, Decoder, DecoderOptions};
+use symphonia_core::codecs::audio::AudioCodecParameters;
+use symphonia_core::codecs::audio::well_known::CODEC_ID_AAC;
 
 use crate::symphonia_common::SymphoniaSubstreamDecoder;
 
@@ -42,13 +43,16 @@ impl CodecFactory for AacFactory {
             // frequency indices.
             asc[1] = (asc[1] & !0x78) | (channels << 3);
         }
-        let mut params = CodecParameters::new();
+        let mut params = AudioCodecParameters::new();
         params
-            .for_codec(CODEC_TYPE_AAC)
+            .for_codec(CODEC_ID_AAC)
             .with_sample_rate(sample_rate)
             .with_extra_data(asc.into_boxed_slice());
-        let decoder = symphonia_codec_aac::AacDecoder::try_new(&params, &DecoderOptions::default())
-            .map_err(|e| DecodeError::CorruptPacket(format!("aac init: {e}")))?;
+        let decoder = symphonia_codec_aac::AacDecoder::try_new(
+            &params,
+            &crate::symphonia_common::decoder_options(),
+        )
+        .map_err(|e| DecodeError::CorruptPacket(format!("aac init: {e}")))?;
         Ok(Box::new(SymphoniaSubstreamDecoder::new(
             decoder,
             channels,
