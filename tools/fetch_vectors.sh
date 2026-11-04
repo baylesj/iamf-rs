@@ -18,7 +18,6 @@ LIBIAMF_REV="63cafdd9b2d7bdba08cfeec2f008718198d7362e"
 IAMF_TOOLS_REV="892f29f6de5e4e37d483e768bf00bcf580495d68"
 
 BASE_URL="https://raw.githubusercontent.com/AOMediaCodec/libiamf/$LIBIAMF_REV/tests"
-API_URL="https://api.github.com/repos/AOMediaCodec/libiamf/contents/tests"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/tests/vectors"
 
 # Curated spread: LPCM/Opus/AAC-LC codecs, channel- and scene-based
@@ -90,14 +89,21 @@ if [[ "${1:-}" == "--all" ]]; then
     echo "Found local tests dir: $LOCAL_TESTS_DIR"
     vectors=$(ls "$LOCAL_TESTS_DIR" | grep -oE '^test_[0-9_a-z]+\.iamf$' | sed -E 's/\.iamf$//' | sort -u)
   else
-    vectors=$(curl -fsSL "$API_URL?per_page=100" --get --data-urlencode "ref=$LIBIAMF_REV" |
-      grep -oE '"name": *"test_[0-9_a-z]+\.iamf"' | sed -E 's/.*"(test_[^"]+)\.iamf"/\1/')
-    # The contents API paginates implicitly by directory listing; fall back to
-    # the git tree API which returns everything in one call.
-    if [[ $(echo "$vectors" | wc -l) -lt 100 ]]; then
-      vectors=$(curl -fsSL "https://api.github.com/repos/AOMediaCodec/libiamf/git/trees/$LIBIAMF_REV?recursive=1" |
-        grep -oE '"path": *"tests/test_[0-9_a-z]+\.iamf"' | sed -E 's|.*"tests/(test_[^"]+)\.iamf"|\1|')
-    fi
+    # List tests/ with git rather than the GitHub API: the contents API
+    # stops at 1,000 entries (tests/ has ~1,900), and the API is
+    # rate-limited for unauthenticated callers. A shallow, blobless fetch
+    # of the pinned commit downloads only tree objects (~200 KB).
+    listing="$(mktemp -d)"
+    trap 'rm -rf "$listing"' EXIT
+    git -C "$listing" init -q
+    git -C "$listing" fetch -q --depth 1 --filter=blob:none \
+      https://github.com/AOMediaCodec/libiamf.git "$LIBIAMF_REV"
+    vectors=$(git -C "$listing" ls-tree --name-only FETCH_HEAD tests/ |
+      sed -nE 's|^tests/(test_[0-9a-z_]+)\.iamf$|\1|p')
+  fi
+  if [[ -z "$vectors" ]]; then
+    echo "no vectors listed for libiamf $LIBIAMF_REV" >&2
+    exit 1
   fi
   set -- $vectors
 elif [[ "${1:-}" == "--v2" ]]; then
