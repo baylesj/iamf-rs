@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+symphonia 0.6. The FLAC and AAC-LC decoders move from symphonia 0.5 to
+0.6.1. symphonia 0.5's AAC decoder indexed past its scale-factor band
+table when a frame's `max_sfb` was too large for its sample rate. The
+adapter caught the panic, but `panic = "abort"` builds would still have
+crashed. 0.6.1 rejects the frame instead. Found by the nightly fuzzer.
+Gapless trimming in symphonia stays off, because IAMF trims frames
+itself.
+
 No requested output layout (#17). Chromium leaves
 `RequestedMix::output_layout` unset to get a stream's native layout (for
 example, the multichannel mix WebAudio receives), but iamf-rs always
